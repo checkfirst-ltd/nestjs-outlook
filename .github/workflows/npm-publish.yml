@@ -5,28 +5,61 @@ on:
     workflows: [release-please]
     types:
       - completed
-  release:
-    types: [published]
+    branches:
+      - main
 
 jobs:
   publish-npm:
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'release' }}
+    if: ${{ github.event.workflow_run.conclusion == 'success' && contains(github.event.workflow_run.head_branch, 'main') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0
-          ref: main
+      - name: Get latest tag
+        id: get-latest-tag
+        run: |
+          git fetch --tags
+          LATEST_TAG=$(git describe --tags --abbrev=0)
+          echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
+          echo "Latest tag: $LATEST_TAG"
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
           node-version: '18.x'
           registry-url: 'https://registry.npmjs.org'
+      - name: Check if tag was created in the trigger workflow
+        id: check-tag-in-workflow
+        run: |
+          TRIGGER_SHA="${{ github.event.workflow_run.head_sha }}"
+          TAG_SHA=$(git rev-list -n 1 $LATEST_TAG)
+          echo "Trigger SHA: $TRIGGER_SHA, Tag SHA: $TAG_SHA"
+          if [ "$TRIGGER_SHA" = "$TAG_SHA" ]; then
+            echo "SHOULD_PUBLISH=true" >> $GITHUB_ENV
+            echo "Tag was created in the triggering workflow run"
+          else
+            echo "SHOULD_PUBLISH=false" >> $GITHUB_ENV
+            echo "Tag was not created in the triggering workflow run, skipping publish"
+          fi
       - name: Install dependencies
+        if: env.SHOULD_PUBLISH == 'true'
         run: npm ci
       - name: Build
+        if: env.SHOULD_PUBLISH == 'true'
         run: npm run build
+      - name: Check tag matches package version
+        if: env.SHOULD_PUBLISH == 'true'
+        id: check-version
+        run: |
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION=${LATEST_TAG#v}
+          echo "Package version: $PACKAGE_VERSION, Tag version: $TAG_VERSION"
+          if [ "$PACKAGE_VERSION" != "$TAG_VERSION" ]; then
+            echo "Version mismatch! Package version ($PACKAGE_VERSION) does not match tag version ($TAG_VERSION)"
+            exit 1
+          fi
       - name: Publish to npm
+        if: env.SHOULD_PUBLISH == 'true'
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }} 
