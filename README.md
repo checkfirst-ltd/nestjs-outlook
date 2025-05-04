@@ -217,7 +217,7 @@ This project adheres to a Code of Conduct that all participants are expected to 
     <img src="https://raw.githubusercontent.com/checkfirst-ltd/nestjs-outlook/main/assets/checkfirst-logo.png" width="400" alt="CheckFirst Logo" />
 </a>
 
-[CheckFirst](https://checkfirst.ai) is a trusted provider of developer tools and solutions. We build open-source libraries that help developers create better applications faster.
+[Checkfirst](https://checkfirst.ai) is a trusted provider of developer tools and solutions. We build open-source libraries that help developers create better applications faster.
 
 ## License
 
