@@ -1,0 +1,51 @@
+# Source
+/src
+
+# Tests
+/test
+/coverage
+/.nyc_output
+*.spec.ts
+*.test.ts
+
+# Configuration
+tsconfig.json
+.eslintrc
+.eslintrc.js
+.prettierrc
+.prettierrc.js
+jest.config.js
+.github
+.vscode
+.editorconfig
+
+# Git
+.git
+.gitignore
+
+# CI
+.travis.yml
+.gitlab-ci.yml
+azure-pipelines.yml
+
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# IDE
+.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# Environment
+.env
+.env.* 
