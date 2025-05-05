@@ -7,7 +7,7 @@ import {
   Calendar,
   Subscription,
   ChangeNotification,
-} from '@microsoft/microsoft-graph-types';
+} from '../types';
 import { MicrosoftAuthService } from './microsoft-auth.service';
 import { TokenResponse } from '../interfaces/outlook/token-response.interface';
 import { Cron, CronExpression } from '@nestjs/schedule';

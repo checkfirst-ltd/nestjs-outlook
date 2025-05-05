@@ -28,3 +28,6 @@ export * from './entities/outlook-webhook-subscription.entity';
 
 // Repositories
 export * from './repositories/outlook-webhook-subscription.repository';
+
+// Types
+export * from './types';
