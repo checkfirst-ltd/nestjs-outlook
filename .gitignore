@@ -1,6 +1,6 @@
 # compiled output
-/dist
-/node_modules
+**/dist
+**/node_modules
 
 # Logs
 logs
@@ -44,3 +44,7 @@ lerna-debug.log*
 # npm package files
 .npm
 .npmrc 
+
+# yalc
+**/.yalc
+**/yalc.lock

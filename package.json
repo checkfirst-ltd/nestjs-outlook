@@ -6,6 +6,7 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "rimraf dist && tsc",
+    "dev": "concurrently \"tsc --watch\" \"chokidar dist -c 'yalc push'\"",
     "format": "prettier --write \"src/**/*.ts\"",
     "lint": "eslint \"src/**/*.ts\" --fix",
     "test": "jest",
@@ -79,6 +80,8 @@
     "@types/node": "^20.0.0",
     "@typescript-eslint/eslint-plugin": "^6.0.0",
     "@typescript-eslint/parser": "^6.0.0",
+    "chokidar-cli": "^3.0.0",
+    "concurrently": "^9.1.2",
     "eslint": "^8.57.1",
     "eslint-config-prettier": "^9.0.0",
     "eslint-plugin-prettier": "^5.0.0",
@@ -92,7 +95,8 @@
     "ts-jest": "^29.1.0",
     "typeorm": "^0.3.0",
     "typescript": "^5.0.0",
-    "typescript-eslint": "^8.31.1"
+    "typescript-eslint": "^8.31.1",
+    "yalc": "^1.0.0-pre.53"
   },
   "files": [
     "dist/**/*",
