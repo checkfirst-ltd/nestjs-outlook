@@ -48,3 +48,13 @@ lerna-debug.log*
 # yalc
 **/.yalc
 **/yalc.lock
+
+# sqlite
+**/*.db
+**/*.db-journal
+**/db.sqlite
+**/db.sqlite-journal
+**/db.sqlite3
+**/db.sqlite3-journal
+**/db.sqlite3.db
+**/db.sqlite3.db-journal
