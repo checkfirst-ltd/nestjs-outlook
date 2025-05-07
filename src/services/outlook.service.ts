@@ -148,9 +148,11 @@ export class OutlookService {
       expirationDateTime.setHours(expirationDateTime.getHours() + 72); // 3 days from now
 
       const appUrl = this.microsoftConfig.backendBaseUrl || 'http://localhost:3000';
+      const basePath = this.microsoftConfig.basePath;
+      const basePathUrl = basePath ? `${appUrl}/${basePath}` : appUrl;
 
       // Create subscription payload with proper URL encoding
-      const notificationUrl = `${appUrl}/api/v1/outlook/webhook`;
+      const notificationUrl = `${basePathUrl}/outlook/webhook`;
 
       // Create subscription payload
       const subscriptionData = {
@@ -165,6 +167,7 @@ export class OutlookService {
 
       this.logger.debug(`Creating webhook subscription with notificationUrl: ${notificationUrl}`);
 
+      this.logger.debug(`Subscription data: ${JSON.stringify(subscriptionData)}`);
       // Create the subscription with Microsoft Graph API
       const response = await axios.post<Subscription>(
         'https://graph.microsoft.com/v1.0/subscriptions',
