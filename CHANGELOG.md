@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.0.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v2.0.0...v3.0.0) (2025-05-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* Add support for sending emails
+
+### Features
+
+* Add support for sending emails ([cd66ecd](https://github.com/checkfirst-ltd/nestjs-outlook/commit/cd66ecd3cc05536c54b724c68ec73566b09cc4d0))
+* Notify when emails are created/updated/deleted ([eacdfba](https://github.com/checkfirst-ltd/nestjs-outlook/commit/eacdfba7d5667c848a576d043107e2a3962fc121))
+
+
+### Bug Fixes
+
+* Fix basePath in webhook notifications ([f1b3ff7](https://github.com/checkfirst-ltd/nestjs-outlook/commit/f1b3ff7ae23d60543922911b06eb9c1114273268))
+
 ## [2.0.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v1.0.0...v2.0.0) (2025-05-05)
 
 
