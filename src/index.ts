@@ -4,11 +4,11 @@
 export * from './microsoft-outlook.module';
 
 // Controllers
-export * from './controllers/outlook.controller';
+export * from './controllers/calendar.controller';
+export * from './controllers/microsoft-auth.controller';
 
 // Services
-export * from './services/outlook.service';
-export * from './services/microsoft-auth.service';
+export * from './services';
 
 // DTOs
 export * from './dto/outlook-webhook-notification.dto';

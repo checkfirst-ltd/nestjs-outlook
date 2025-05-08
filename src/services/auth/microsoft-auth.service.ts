@@ -1,18 +1,18 @@
 import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import axios from 'axios';
-import { TokenResponse } from '../interfaces/outlook/token-response.interface';
+import { TokenResponse } from '../../interfaces/outlook/token-response.interface';
 import * as qs from 'querystring';
-import { OutlookService } from './outlook.service';
+import { CalendarService } from '../calendar/calendar.service';
 import { Subscription } from '@microsoft/microsoft-graph-types';
-import { MICROSOFT_CONFIG } from '../constants';
-import { MicrosoftOutlookConfig } from '../interfaces/config/outlook-config.interface';
-import { OutlookEventTypes } from '../event-types.enum';
+import { MICROSOFT_CONFIG } from '../../constants';
+import { MicrosoftOutlookConfig } from '../../interfaces/config/outlook-config.interface';
+import { OutlookEventTypes } from '../../event-types.enum';
 import * as crypto from 'crypto';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { MicrosoftCsrfTokenRepository } from '../repositories/microsoft-csrf-token.repository';
-import { MicrosoftTokenApiResponse } from '../interfaces/microsoft-auth/microsoft-token-api-response.interface';
-import { StateObject } from '../interfaces/microsoft-auth/state-object.interface';
+import { MicrosoftCsrfTokenRepository } from '../../repositories/microsoft-csrf-token.repository';
+import { MicrosoftTokenApiResponse } from '../../interfaces/microsoft-auth/microsoft-token-api-response.interface';
+import { StateObject } from '../../interfaces/microsoft-auth/state-object.interface';
 
 @Injectable()
 export class MicrosoftAuthService {
@@ -28,8 +28,8 @@ export class MicrosoftAuthService {
 
   constructor(
     private readonly eventEmitter: EventEmitter2,
-    @Inject(forwardRef(() => OutlookService))
-    private readonly outlookService: OutlookService,
+    @Inject(forwardRef(() => CalendarService))
+    private readonly calendarService: CalendarService,
     @Inject(MICROSOFT_CONFIG)
     private readonly microsoftConfig: MicrosoftOutlookConfig,
     private readonly csrfTokenRepository: MicrosoftCsrfTokenRepository,
@@ -46,7 +46,7 @@ export class MicrosoftAuthService {
     this.redirectUri = this.buildRedirectUri(this.microsoftConfig);
     console.log('Redirect URI:', this.redirectUri);
     this.tokenEndpoint = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
-    this.scope = ['offline_access', 'Calendars.ReadWrite', 'Calendars.Read', 'User.Read'].join(' ');
+    this.scope = ['offline_access', 'Calendars.ReadWrite', 'Calendars.Read', 'User.Read', 'Mail.Send'].join(' ');
 
     // Log the redirect URI to help with debugging
     this.logger.log(`Microsoft OAuth redirect URI set to: ${this.redirectUri}`);
@@ -278,7 +278,7 @@ export class MicrosoftAuthService {
 
       // Create webhook subscription for the user's calendar
       try {
-        await this.outlookService.createWebhookSubscription(
+        await this.calendarService.createWebhookSubscription(
           Number(stateData.userId),
           tokenData.access_token,
           tokenData.refresh_token,
@@ -365,11 +365,7 @@ export class MicrosoftAuthService {
   }
 
   /**
-   * Renew a webhook subscription
-   * @param subscriptionId - The ID of the subscription to renew
-   * @param accessToken - The access token to use for renewal
-   * @param refreshToken - The refresh token to use if access token needs refresh
-   * @returns Updated webhook subscription with new expiration date
+   * Renew webhook subscription with refreshed token if needed
    */
   async renewWebhookSubscription(
     subscriptionId: string,
@@ -377,27 +373,23 @@ export class MicrosoftAuthService {
     refreshToken: string,
   ): Promise<Subscription> {
     try {
-      // Check if token needs refresh
-      try {
-        // First attempt with current access token
-        return await this.outlookService.renewWebhookSubscription(subscriptionId, accessToken);
-      } catch (error) {
-        this.logger.warn(
-          `Access token might be expired, attempting refresh: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        );
-
-        // If token is expired, refresh it and try again
-        const newTokens = await this.refreshAccessToken(refreshToken);
-        return await this.outlookService.renewWebhookSubscription(
+      // Try to renew with current token
+      return await this.calendarService.renewWebhookSubscription(subscriptionId, accessToken);
+    } catch (error: unknown) {
+      if (axios.isAxiosError(error) && error.response?.status === 401) {
+        this.logger.log('Access token expired during webhook renewal, refreshing token...');
+        
+        // Refresh the token
+        const tokenResponse = await this.refreshAccessToken(refreshToken);
+        
+        // Retry with the new token
+        return await this.calendarService.renewWebhookSubscription(
           subscriptionId,
-          newTokens.access_token,
+          tokenResponse.access_token,
         );
       }
-    } catch (error) {
-      this.logger.error(
-        `Failed to renew webhook subscription: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      );
-      throw new Error('Failed to renew webhook subscription');
+      
+      throw error;
     }
   }
 
@@ -412,4 +404,4 @@ export class MicrosoftAuthService {
     const currentTimeWithBuffer = new Date(Date.now() + bufferMinutes * 60 * 1000);
     return tokenExpiry < currentTimeWithBuffer;
   }
-}
+} 

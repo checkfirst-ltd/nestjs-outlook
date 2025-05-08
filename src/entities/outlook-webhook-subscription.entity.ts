@@ -29,7 +29,7 @@ export class OutlookWebhookSubscription {
   @Column({ name: 'notification_url', length: 255 })
   notificationUrl: string = '';
 
-  @Column({ name: 'expiration_date_time', type: 'timestamp' })
+  @Column({ name: 'expiration_date_time', type: 'datetime' })
   expirationDateTime: Date = new Date();
 
   @Column({ name: 'is_active', default: true })

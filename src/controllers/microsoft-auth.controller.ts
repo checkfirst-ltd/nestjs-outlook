@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 import { Response } from 'express';
 import { ApiTags, ApiResponse, ApiQuery, ApiOperation, ApiProduces } from '@nestjs/swagger';
-import { MicrosoftAuthService } from '../services/microsoft-auth.service';
+import { MicrosoftAuthService } from '../services/auth/microsoft-auth.service';
 
 @ApiTags('Microsoft Auth')
 @Controller('auth/microsoft')

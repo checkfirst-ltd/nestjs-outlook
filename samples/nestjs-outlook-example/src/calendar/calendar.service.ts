@@ -1,6 +1,11 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import { OutlookEventTypes, OutlookResourceData, TokenResponse, OutlookService } from '@checkfirst/nestjs-outlook';
+import { 
+  OutlookEventTypes, 
+  OutlookResourceData, 
+  TokenResponse, 
+  CalendarService as MicrosoftCalendarService 
+} from '@checkfirst/nestjs-outlook';
 import { UserCalendarRepository } from './repositories/user-calendar.repository';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -12,7 +17,7 @@ export class CalendarService {
 
   constructor(
     private readonly userCalendarRepository: UserCalendarRepository,
-    private readonly outlookService: OutlookService,
+    private readonly microsoftCalendarService: MicrosoftCalendarService,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
   ) {}
@@ -47,7 +52,7 @@ export class CalendarService {
 
     try {
       // Create the event using stored credentials
-      const result = await this.outlookService.createEvent(
+      const result = await this.microsoftCalendarService.createEvent(
         event,
         userCalendar.accessToken,
         userCalendar.refreshToken,
@@ -104,7 +109,7 @@ export class CalendarService {
       const tokenExpiry = new Date(Date.now() + expiresIn * 1000);
 
       // Get the default calendar ID from Microsoft Graph API
-      const calendarId = await this.outlookService.getDefaultCalendarId(tokenData.access_token);
+      const calendarId = await this.microsoftCalendarService.getDefaultCalendarId(tokenData.access_token);
       this.logger.log(`Retrieved default calendar ID: ${calendarId} for user ${userId}`);
 
       // Get the existing calendar for this user if any

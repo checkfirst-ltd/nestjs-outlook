@@ -1,16 +1,10 @@
 import { Module } from '@nestjs/common';
-import { CalendarController } from './calendar.controller';
-import { CalendarService } from './calendar.service';
-import { TypeOrmModule } from '@nestjs/typeorm';
-import { UserCalendar } from './entities/user-calendar.entity';
-import { UserCalendarRepository } from './repositories/user-calendar.repository';
-import { User } from '../users/entities/user.entity';
+import { AuthController } from './auth.controller';
 import { MicrosoftOutlookModule } from '@checkfirst/nestjs-outlook';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([UserCalendar, User]),
     // Initialize MicrosoftOutlookModule for this feature module
     MicrosoftOutlookModule.forRootAsync({
       imports: [ConfigModule],
@@ -24,11 +18,6 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
       }),
     }),
   ],
-  controllers: [CalendarController],
-  providers: [
-    CalendarService, 
-    UserCalendarRepository,
-  ],
-  exports: [CalendarService, UserCalendarRepository],
+  controllers: [AuthController],
 })
-export class CalendarModule {} 
+export class AuthModule {} 

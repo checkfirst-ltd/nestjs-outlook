@@ -15,6 +15,9 @@ export type {
   EmailAddress,
   Location,
   
+  // Email related types
+  Message,
+  
   // Webhook related types
   Subscription,
   ChangeNotification,

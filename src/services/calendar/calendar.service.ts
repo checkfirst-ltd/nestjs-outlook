@@ -7,19 +7,19 @@ import {
   Calendar,
   Subscription,
   ChangeNotification,
-} from '../types';
-import { MicrosoftAuthService } from './microsoft-auth.service';
-import { TokenResponse } from '../interfaces/outlook/token-response.interface';
+} from '../../types';
+import { MicrosoftAuthService } from '../auth/microsoft-auth.service';
+import { TokenResponse } from '../../interfaces/outlook/token-response.interface';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { OutlookWebhookSubscriptionRepository } from '../repositories/outlook-webhook-subscription.repository';
-import { OutlookResourceData } from '../dto/outlook-webhook-notification.dto';
-import { MICROSOFT_CONFIG } from '../constants';
-import { MicrosoftOutlookConfig } from '../interfaces/config/outlook-config.interface';
-import { OutlookEventTypes } from '../event-types.enum';
+import { OutlookWebhookSubscriptionRepository } from '../../repositories/outlook-webhook-subscription.repository';
+import { OutlookResourceData } from '../../dto/outlook-webhook-notification.dto';
+import { MICROSOFT_CONFIG } from '../../constants';
+import { MicrosoftOutlookConfig } from '../../interfaces/config/outlook-config.interface';
+import { OutlookEventTypes } from '../../event-types.enum';
 
 @Injectable()
-export class OutlookService {
-  private readonly logger = new Logger(OutlookService.name);
+export class CalendarService {
+  private readonly logger = new Logger(CalendarService.name);
 
   constructor(
     @Inject(forwardRef(() => MicrosoftAuthService))
@@ -93,8 +93,8 @@ export class OutlookService {
             );
 
             // Update the access token
-            currentAccessToken = refreshedTokens.access_token;
-            currentRefreshToken = refreshedTokens.refresh_token;
+            currentAccessToken = refreshedTokens.access_token || currentAccessToken;
+            currentRefreshToken = refreshedTokens.refresh_token || currentRefreshToken;
             tokensRefreshed = true;
 
             this.logger.log('Token refreshed successfully');
@@ -152,7 +152,7 @@ export class OutlookService {
       const basePathUrl = basePath ? `${appUrl}/${basePath}` : appUrl;
 
       // Create subscription payload with proper URL encoding
-      const notificationUrl = `${basePathUrl}/outlook/webhook`;
+      const notificationUrl = `${basePathUrl}/calendar/webhook`;
 
       // Create subscription payload
       const subscriptionData = {
@@ -200,7 +200,7 @@ export class OutlookService {
       );
 
       return response.data;
-    } catch (error) {
+    } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       this.logger.error(`Failed to create webhook subscription: ${errorMessage}`);
       throw new Error(`Failed to create webhook subscription: ${errorMessage}`);
@@ -208,7 +208,7 @@ export class OutlookService {
   }
 
   /**
-   * Renew a webhook subscription before it expires
+   * Renew an existing webhook subscription
    * @param subscriptionId - ID of the subscription to renew
    * @param accessToken - Access token for Microsoft Graph API
    * @returns The renewed subscription data
@@ -218,16 +218,19 @@ export class OutlookService {
     accessToken: string,
   ): Promise<Subscription> {
     try {
-      // Set a new expiration date (max 3 days as per Microsoft documentation)
+      // Set new expiration date (max 3 days from now)
       const expirationDateTime = new Date();
-      expirationDateTime.setHours(expirationDateTime.getHours() + 72); // 3 days from now
+      expirationDateTime.setHours(expirationDateTime.getHours() + 72);
 
-      // Update the subscription with Microsoft Graph API
+      // Prepare the renewal payload
+      const renewalData = {
+        expirationDateTime: expirationDateTime.toISOString(),
+      };
+
+      // Make the request to Microsoft Graph API to renew the subscription
       const response = await axios.patch<Subscription>(
         `https://graph.microsoft.com/v1.0/subscriptions/${subscriptionId}`,
-        {
-          expirationDateTime: expirationDateTime.toISOString(),
-        },
+        renewalData,
         {
           headers: {
             Authorization: `Bearer ${accessToken}`,
@@ -236,19 +239,18 @@ export class OutlookService {
         },
       );
 
-      this.logger.log(
-        `Renewed webhook subscription ${subscriptionId} until ${expirationDateTime.toISOString()}`,
-      );
+      // Update the expiration date in our database
+      if (response.data.expirationDateTime) {
+        await this.webhookSubscriptionRepository.updateSubscriptionExpiration(
+          subscriptionId,
+          new Date(response.data.expirationDateTime),
+        );
+      }
 
-      // Update the subscription in the database
-      await this.webhookSubscriptionRepository.updateSubscriptionExpiration(
-        subscriptionId,
-        expirationDateTime,
-        accessToken,
-      );
+      this.logger.log(`Renewed webhook subscription: ${subscriptionId}`);
 
       return response.data;
-    } catch (error) {
+    } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       this.logger.error(`Failed to renew webhook subscription: ${errorMessage}`);
       throw new Error(`Failed to renew webhook subscription: ${errorMessage}`);
@@ -259,33 +261,36 @@ export class OutlookService {
    * Delete a webhook subscription
    * @param subscriptionId - ID of the subscription to delete
    * @param accessToken - Access token for Microsoft Graph API
-   * @returns Success status
+   * @returns True if deletion was successful
    */
   async deleteWebhookSubscription(subscriptionId: string, accessToken: string): Promise<boolean> {
     try {
-      await axios.delete(`https://graph.microsoft.com/v1.0/subscriptions/${subscriptionId}`, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
+      // Make the request to Microsoft Graph API to delete the subscription
+      await axios.delete(
+        `https://graph.microsoft.com/v1.0/subscriptions/${subscriptionId}`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
         },
-      });
+      );
 
-      this.logger.log(`Deleted webhook subscription ${subscriptionId}`);
-
-      // Deactivate subscription in the database
+      // Remove the subscription from our database
       await this.webhookSubscriptionRepository.deactivateSubscription(subscriptionId);
 
+      this.logger.log(`Deleted webhook subscription: ${subscriptionId}`);
+
       return true;
-    } catch (error) {
+    } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       this.logger.error(`Failed to delete webhook subscription: ${errorMessage}`);
 
-      // If error is 404 (subscription not found), deactivate it locally
+      // If we get a 404, the subscription doesn't exist anymore at Microsoft,
+      // so we should remove it from our database
       if (axios.isAxiosError(error) && error.response?.status === 404) {
         await this.webhookSubscriptionRepository.deactivateSubscription(subscriptionId);
-        this.logger.log(
-          `Subscription ${subscriptionId} not found on Microsoft servers, deactivated locally`,
-        );
+        this.logger.log(`Subscription not found, removed from database: ${subscriptionId}`);
         return true;
       }
 
@@ -294,119 +299,152 @@ export class OutlookService {
   }
 
   /**
-   * Scheduled task to renew expiring subscriptions
-   * Runs every day at 2 AM to check and renew subscriptions expiring within 24 hours
+   * Scheduled job that checks for webhook subscriptions that will expire soon
+   * and renews them
    */
-  @Cron(CronExpression.EVERY_DAY_AT_2AM)
+  @Cron(CronExpression.EVERY_HOUR)
   async renewSubscriptions(): Promise<void> {
-    this.logger.log('Running scheduled task to check for expiring subscriptions');
-
     try {
-      // Find subscriptions that will expire within 24 hours
-      const expiringSubscriptions =
-        await this.webhookSubscriptionRepository.findSubscriptionsNeedingRenewal(24);
+      // Get subscriptions that expire within the next 24 hours
+      const expiringLimit = new Date();
+      expiringLimit.setHours(expiringLimit.getHours() + 24);
 
-      if (expiringSubscriptions.length === 0) {
-        this.logger.log('No subscriptions need renewal at this time');
+      const subscriptions = await this.webhookSubscriptionRepository.findSubscriptionsNeedingRenewal(
+        24 // hours until expiration
+      );
+
+      if (subscriptions.length === 0) {
+        this.logger.debug('No subscriptions need renewal');
         return;
       }
 
-      this.logger.log(
-        `Found ${String(expiringSubscriptions.length)} subscriptions expiring within 24 hours`,
-      );
+      this.logger.log(`Found ${String(subscriptions.length)} subscriptions that need renewal`);
 
       // Renew each subscription
-      for (const subscription of expiringSubscriptions) {
+      for (const subscription of subscriptions) {
         try {
-          await this.microsoftAuthService.renewWebhookSubscription(
-            subscription.subscriptionId,
-            subscription.accessToken,
-            subscription.refreshToken,
-          );
+          // Check if we need to refresh the access token first
+          let accessToken = subscription.accessToken;
 
-          this.logger.log(
-            `Successfully renewed subscription ${subscription.subscriptionId} for user ${String(subscription.userId)}`,
-          );
+          if (subscription.refreshToken) {
+            try {
+              const tokenResponse = await this.microsoftAuthService.refreshAccessToken(
+                subscription.refreshToken,
+                subscription.userId,
+              );
+              accessToken = tokenResponse.access_token;
+
+              // Create expiration date (3 days from now)
+              const newExpirationDate = new Date();
+              newExpirationDate.setHours(newExpirationDate.getHours() + 72); // 3 days
+              
+              // Update the subscription in the repository with the new tokens
+              await this.webhookSubscriptionRepository.updateSubscriptionExpiration(
+                subscription.subscriptionId,
+                newExpirationDate,
+                accessToken
+              );
+            } catch (refreshError) {
+              this.logger.error(
+                `Failed to refresh token for subscription ${subscription.subscriptionId}:`,
+                refreshError,
+              );
+              continue; // Skip this subscription and try the next one
+            }
+          }
+
+          // Now renew the subscription with the (possibly refreshed) access token
+          await this.renewWebhookSubscription(subscription.subscriptionId, accessToken);
         } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
           this.logger.error(
-            `Failed to renew subscription ${subscription.subscriptionId}: ${errorMessage}`,
+            `Failed to renew subscription ${subscription.subscriptionId}:`,
+            error,
           );
-          // Continue with next subscription even if one fails
+          // Continue with the next subscription even if this one failed
         }
       }
-
-      this.logger.log('Finished renewing webhook subscriptions');
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      this.logger.error(`Error in scheduled task to renew subscriptions: ${errorMessage}`);
+      this.logger.error('Error in subscription renewal job:', error);
     }
   }
 
   /**
-   * Handle webhook notifications from Microsoft Graph API
-   * Supports event deletion, creation, and updates
-   *
-   * @param notification - The notification item from Microsoft Graph
-   * @returns Result of the operation
+   * Handle a webhook notification from Microsoft
+   * @param notificationItem - The notification data from Microsoft
+   * @returns Success status and message
    */
   async handleOutlookWebhook(
     notificationItem: ChangeNotification,
   ): Promise<{ success: boolean; message: string }> {
     try {
-      // Cast the resourceData to our class
-      const resourceData = notificationItem.resourceData as OutlookResourceData;
+      // Extract necessary information from the notification
+      const { subscriptionId, clientState, resource, changeType } = notificationItem;
 
-      if (!resourceData.id) {
-        throw new Error('No event ID found in the webhook notification payload');
-      }
+      this.logger.debug(`Received webhook notification for subscription: ${subscriptionId || 'unknown'}`);
+      this.logger.debug(`Resource: ${resource || 'unknown'}, ChangeType: ${String(changeType || 'unknown')}`);
 
-      this.logger.log(
-        `Processing Outlook event ${String(notificationItem.changeType)} for event ID: ${resourceData.id}`,
+      // Find the subscription in our database to verify it's legitimate
+      const subscription = await this.webhookSubscriptionRepository.findBySubscriptionId(
+        subscriptionId || '',
       );
 
-      // Handle different event types
-      switch (notificationItem.changeType) {
-        case 'deleted':
-          // Emit an event that will be caught by the calendar service
-          await Promise.resolve(
-            this.eventEmitter.emit(OutlookEventTypes.EVENT_DELETED, resourceData),
-          );
-          return {
-            success: true,
-            message: `Event deletion notification processed for ID: ${resourceData.id}`,
-          };
-
-        case 'created':
-          await Promise.resolve(
-            this.eventEmitter.emit(OutlookEventTypes.EVENT_CREATED, resourceData),
-          );
-          return {
-            success: true,
-            message: `Event creation notification processed for ID: ${resourceData.id}`,
-          };
-
-        case 'updated':
-          await Promise.resolve(
-            this.eventEmitter.emit(OutlookEventTypes.EVENT_UPDATED, resourceData),
-          );
-          return {
-            success: true,
-            message: `Event update notification processed for ID: ${resourceData.id}`,
-          };
-
-        default: {
-          const changeType = 'unknown';
-          return {
-            success: false,
-            message: `Notification type '${changeType}' not supported`,
-          };
-        }
+      if (!subscription) {
+        this.logger.warn(`Unknown subscription ID: ${subscriptionId || 'unknown'}`);
+        return { success: false, message: 'Unknown subscription' };
       }
-    } catch (error) {
+
+      // Verify the client state for additional security
+      if (subscription.clientState && clientState !== subscription.clientState) {
+        this.logger.warn('Client state mismatch');
+        return { success: false, message: 'Client state mismatch' };
+      }
+
+      // Extract the user ID from the client state (should be in format "user_123_randomstring")
+      const userId = subscription.userId;
+
+      if (!userId) {
+        this.logger.warn('Could not determine user ID from client state');
+        return { success: false, message: 'Invalid client state format' };
+      }
+
+      // Determine the type of change (created, updated, deleted)
+      let eventType: string | null;
+      switch (changeType) {
+        case 'created':
+          eventType = OutlookEventTypes.EVENT_CREATED;
+          break;
+        case 'updated':
+          eventType = OutlookEventTypes.EVENT_UPDATED;
+          break;
+        case 'deleted':
+          eventType = OutlookEventTypes.EVENT_DELETED;
+          break;
+        default:
+          eventType = null;
+          this.logger.warn(`Unknown change type received: ${String(changeType)}`);
+          return { success: false, message: `Unsupported change type: ${String(changeType)}` };
+      }
+
+      // Process the resource data
+      const resourceData: OutlookResourceData = {
+        id: '',
+        userId,
+        subscriptionId,
+        resource,
+        changeType,
+      };
+
+      // Emit an event for other parts of the application to handle
+      if (eventType) {
+        this.eventEmitter.emit(eventType, resourceData);
+        this.logger.log(`Processed webhook notification: ${eventType}`);
+      }
+
+      return { success: true, message: 'Notification processed' };
+    } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      this.logger.error(`Failed to process Outlook webhook notification: ${errorMessage}`);
-      throw new Error(`Failed to process Outlook webhook notification: ${errorMessage}`);
+      this.logger.error(`Error processing webhook notification: ${errorMessage}`);
+      return { success: false, message: errorMessage };
     }
   }
 }

@@ -2,16 +2,17 @@ import { Module, ConfigurableModuleBuilder } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ScheduleModule } from '@nestjs/schedule';
 import { EventEmitterModule } from '@nestjs/event-emitter';
-import { OutlookService } from './services/outlook.service';
-import { MicrosoftAuthService } from './services/microsoft-auth.service';
+import { MicrosoftAuthService } from './services/auth/microsoft-auth.service';
 import { MicrosoftAuthController } from './controllers/microsoft-auth.controller';
-import { OutlookController } from './controllers/outlook.controller';
+import { CalendarController } from './controllers/calendar.controller';
 import { OutlookWebhookSubscription } from './entities/outlook-webhook-subscription.entity';
 import { OutlookWebhookSubscriptionRepository } from './repositories/outlook-webhook-subscription.repository';
 import { MICROSOFT_CONFIG } from './constants';
 import { MicrosoftOutlookConfig } from './interfaces/config/outlook-config.interface';
 import { MicrosoftCsrfToken } from './entities/csrf-token.entity';
 import { MicrosoftCsrfTokenRepository } from './repositories/microsoft-csrf-token.repository';
+import { CalendarService } from './services/calendar/calendar.service';
+import { EmailService } from './services/email/email.service';
 
 export const { ConfigurableModuleClass, MODULE_OPTIONS_TOKEN } =
   new ConfigurableModuleBuilder<MicrosoftOutlookConfig>().setClassMethodName('forRoot').build();
@@ -26,7 +27,7 @@ export const { ConfigurableModuleClass, MODULE_OPTIONS_TOKEN } =
     TypeOrmModule.forFeature([OutlookWebhookSubscription, MicrosoftCsrfToken]),
     EventEmitterModule.forRoot(),
   ],
-  controllers: [MicrosoftAuthController, OutlookController],
+  controllers: [MicrosoftAuthController, CalendarController],
   providers: [
     {
       provide: MICROSOFT_CONFIG,
@@ -35,9 +36,10 @@ export const { ConfigurableModuleClass, MODULE_OPTIONS_TOKEN } =
     },
     OutlookWebhookSubscriptionRepository,
     MicrosoftCsrfTokenRepository,
-    OutlookService,
+    CalendarService,
+    EmailService,
     MicrosoftAuthService,
   ],
-  exports: [OutlookService, MicrosoftAuthService],
+  exports: [CalendarService, EmailService, MicrosoftAuthService],
 })
 export class MicrosoftOutlookModule extends ConfigurableModuleClass {}
