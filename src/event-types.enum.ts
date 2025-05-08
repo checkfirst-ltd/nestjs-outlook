@@ -10,4 +10,9 @@ export enum OutlookEventTypes {
   EVENT_DELETED = 'outlook.event.deleted',
   EVENT_CREATED = 'outlook.event.created',
   EVENT_UPDATED = 'outlook.event.updated',
+  
+  // Email events
+  EMAIL_RECEIVED = 'outlook.email.received',
+  EMAIL_UPDATED = 'outlook.email.updated',
+  EMAIL_DELETED = 'outlook.email.deleted',
 }

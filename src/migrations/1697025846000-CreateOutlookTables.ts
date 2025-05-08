@@ -17,7 +17,8 @@ export class CreateOutlookTables1697025846000 implements MigrationInterface {
         access_token TEXT,
         refresh_token TEXT,
         created_at TIMESTAMP DEFAULT NOW() NOT NULL,
-        updated_at TIMESTAMP DEFAULT NOW() NOT NULL
+        updated_at TIMESTAMP DEFAULT NOW() NOT NULL,
+        CONSTRAINT "UQ_outlook_webhook_subscriptions_id" UNIQUE (subscription_id)
       );
     `);
 

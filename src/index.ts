@@ -6,6 +6,7 @@ export * from './microsoft-outlook.module';
 // Controllers
 export * from './controllers/calendar.controller';
 export * from './controllers/microsoft-auth.controller';
+export * from './controllers/email.controller';
 
 // Services
 export * from './services';

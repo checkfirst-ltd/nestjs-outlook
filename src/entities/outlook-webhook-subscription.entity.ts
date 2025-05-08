@@ -8,10 +8,10 @@ import {
 
 @Entity('outlook_webhook_subscriptions')
 export class OutlookWebhookSubscription {
-  @PrimaryGeneratedColumn()
-  id: number = 0;
+  @PrimaryGeneratedColumn('increment')
+  id!: number;
 
-  @Column({ name: 'subscription_id', length: 255 })
+  @Column({ name: 'subscription_id', length: 255, unique: true })
   subscriptionId: string = '';
 
   @Column({ name: 'user_id' })

@@ -24,7 +24,7 @@ export class OutlookResourceData {
   '@odata.id'?: string;
 
   @ApiProperty({
-    description: 'The HTTP entity tag that represents the version of the object',
+    description: 'The OData entity tag that represents the version of the object',
     example: 'W/"ZWRafd0rFkORSLqrpwPMEQlFkSo="',
     required: false,
   })
@@ -39,6 +39,39 @@ export class OutlookResourceData {
   @IsString()
   @IsNotEmpty()
   id: string = '';
+
+  @ApiProperty({
+    description: 'The user ID associated with the resource',
+    example: 123,
+  })
+  userId?: number;
+
+  @ApiProperty({
+    description: 'The subscription ID that triggered this notification',
+    example: '08ee466c-5ceb-4af2-a98f-aea3316a854c',
+  })
+  subscriptionId?: string;
+
+  @ApiProperty({
+    description: 'The resource path that changed',
+    example: '/me/messages/AAMkAGVmMDEzMTM4LTZmYWUtNDdkNC1hMDZiLTU1OGY5OTZhYmY4OABGAAAAAAAiQ8W967B7TKBjgx9rVEURBwAiIsqMbYjsT5e-T7KzowPTAAAAAAEMAAAiIsqMbYjsT5e-T7KzowPTAAAYbuK-AAA=',
+  })
+  resource?: string;
+
+  @ApiProperty({
+    description: 'The type of change that occurred',
+    example: 'created',
+  })
+  changeType?: string;
+
+  @ApiProperty({
+    description: 'Additional data for the resource (like email content for new emails)',
+    required: false,
+    type: 'object',
+  })
+  @IsObject()
+  @IsOptional()
+  data?: Record<string, unknown>;
 
   // We don't add API decorators for the index signature
   [key: string]: unknown;

@@ -13,7 +13,27 @@ export class OutlookWebhookSubscriptionRepository {
   async saveSubscription(
     subscription: Partial<OutlookWebhookSubscription>,
   ): Promise<OutlookWebhookSubscription> {
-    const newSubscription = this.repository.create(subscription);
+    // Check if a subscription with this subscriptionId already exists
+    if (subscription.subscriptionId) {
+      const existingSubscription = await this.repository.findOne({
+        where: { subscriptionId: subscription.subscriptionId }
+      });
+
+      if (existingSubscription) {
+        // Update the existing subscription but preserve the auto-generated id
+        const originalId = existingSubscription.id;
+        Object.assign(existingSubscription, subscription);
+        existingSubscription.id = originalId; // Ensure ID doesn't get overwritten
+        return this.repository.save(existingSubscription);
+      }
+    }
+
+    // Create a new subscription if none exists
+    // Use TypeORM's create method which safely copies properties while excluding 'id'
+    const subscriptionWithoutId = { ...subscription };
+    delete subscriptionWithoutId.id;
+    const newSubscription = this.repository.create(subscriptionWithoutId);
+    
     return this.repository.save(newSubscription);
   }
 

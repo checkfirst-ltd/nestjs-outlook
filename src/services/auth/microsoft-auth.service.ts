@@ -4,6 +4,7 @@ import axios from 'axios';
 import { TokenResponse } from '../../interfaces/outlook/token-response.interface';
 import * as qs from 'querystring';
 import { CalendarService } from '../calendar/calendar.service';
+import { EmailService } from '../email/email.service';
 import { Subscription } from '@microsoft/microsoft-graph-types';
 import { MICROSOFT_CONFIG } from '../../constants';
 import { MicrosoftOutlookConfig } from '../../interfaces/config/outlook-config.interface';
@@ -25,11 +26,15 @@ export class MicrosoftAuthService {
   private readonly scope: string;
   // CSRF token expiration time (30 minutes)
   private readonly CSRF_TOKEN_EXPIRY = 30 * 60 * 1000;
+  // Map to track subscription creation in progress for a user
+  private subscriptionInProgress = new Map<number, boolean>();
 
   constructor(
     private readonly eventEmitter: EventEmitter2,
     @Inject(forwardRef(() => CalendarService))
     private readonly calendarService: CalendarService,
+    @Inject(forwardRef(() => EmailService))
+    private readonly emailService: EmailService,
     @Inject(MICROSOFT_CONFIG)
     private readonly microsoftConfig: MicrosoftOutlookConfig,
     private readonly csrfTokenRepository: MicrosoftCsrfTokenRepository,
@@ -46,7 +51,7 @@ export class MicrosoftAuthService {
     this.redirectUri = this.buildRedirectUri(this.microsoftConfig);
     console.log('Redirect URI:', this.redirectUri);
     this.tokenEndpoint = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
-    this.scope = ['offline_access', 'Calendars.ReadWrite', 'Calendars.Read', 'User.Read', 'Mail.Send'].join(' ');
+    this.scope = ['offline_access', 'Calendars.ReadWrite', 'Calendars.Read', 'User.Read', 'Mail.Send', 'Mail.ReadWrite', 'Mail.Read'].join(' ');
 
     // Log the redirect URI to help with debugging
     this.logger.log(`Microsoft OAuth redirect URI set to: ${this.redirectUri}`);
@@ -276,25 +281,76 @@ export class MicrosoftAuthService {
         this.eventEmitter.emit(OutlookEventTypes.AUTH_TOKENS_SAVE, stateData.userId, tokenData),
       );
 
-      // Create webhook subscription for the user's calendar
-      try {
-        await this.calendarService.createWebhookSubscription(
-          Number(stateData.userId),
-          tokenData.access_token,
-          tokenData.refresh_token,
-        );
-        this.logger.log(`Successfully created webhook subscription for user ${String(stateData.userId)}`);
-      } catch (webhookError) {
-        // Don't fail authentication if webhook creation fails
-        this.logger.error(
-          `Failed to create webhook subscription: ${webhookError instanceof Error ? webhookError.message : 'Unknown error'}`,
-        );
-      }
+      const userId = Number(stateData.userId);
+      const accessToken = tokenData.access_token;
+      const refreshToken = tokenData.refresh_token;
+
+      // Setup subscriptions (both calendar and email)
+      await this.setupSubscriptions(userId, accessToken, refreshToken);
 
       return tokenData;
     } catch (error) {
       this.logger.error(`Error exchanging code for token:`, error);
       throw new Error('Failed to exchange code for token');
+    }
+  }
+
+  /**
+   * Setup webhook subscriptions for a user
+   * @param userId User ID
+   * @param accessToken Access token
+   * @param refreshToken Refresh token
+   */
+  private async setupSubscriptions(
+    userId: number, 
+    accessToken: string, 
+    refreshToken: string
+  ): Promise<void> {
+    // Check if subscription setup is already in progress for this user
+    if (this.subscriptionInProgress.get(userId)) {
+      this.logger.log(`Subscription setup already in progress for user ${String(userId)}`);
+      return;
+    }
+
+    try {
+      // Mark subscription setup as in progress
+      this.subscriptionInProgress.set(userId, true);
+
+      // Create webhook subscription for the user's calendar
+      try {
+        await this.calendarService.createWebhookSubscription(
+          userId,
+          accessToken,
+          refreshToken,
+        );
+        this.logger.log(`Successfully created calendar webhook subscription for user ${String(userId)}`);
+      } catch (calendarError) {
+        // Don't fail authentication if webhook creation fails
+        this.logger.error(
+          `Failed to create calendar webhook subscription: ${calendarError instanceof Error ? calendarError.message : 'Unknown error'}`,
+        );
+      }
+
+      // Create webhook subscription for the user's email
+      try {
+        await this.emailService.createWebhookSubscription(
+          userId,
+          accessToken,
+          refreshToken,
+        );
+        this.logger.log(`Successfully created email webhook subscription for user ${String(userId)}`);
+      } catch (emailError) {
+        // Don't fail authentication if webhook creation fails
+        this.logger.error(
+          `Failed to create email webhook subscription: ${emailError instanceof Error ? emailError.message : 'Unknown error'}`,
+        );
+      }
+    } catch (error) {
+      this.logger.error(`Error setting up subscriptions: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      // Continue without failing authentication
+    } finally {
+      // Mark subscription setup as complete
+      this.subscriptionInProgress.set(userId, false);
     }
   }
 
