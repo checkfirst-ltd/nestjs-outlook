@@ -6,9 +6,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { CalendarModule } from './calendar/calendar.module';
 import { EmailModule } from './email/email.module';
 import { AuthModule } from './auth/auth.module';
-import * as path from 'path';
-// Resolve the path to the nestjs-outlook package - works with npm link
-const outlookPackagePath = path.dirname(require.resolve('@checkfirst/nestjs-outlook/package.json'));
+import { typeOrmModuleOptions } from './config/database.config';
 
 @Module({
   imports: [
@@ -29,17 +27,7 @@ const outlookPackagePath = path.dirname(require.resolve('@checkfirst/nestjs-outl
         return {};
       }],
     }),
-    TypeOrmModule.forRoot({
-      type: 'sqlite',
-      database: 'db.sqlite',
-      entities: [
-        // App entities
-        __dirname + '/**/*.entity{.ts,.js}',
-        // Outlook module entities
-        path.join(outlookPackagePath, 'dist', 'entities', '*.entity.js'),
-      ],
-      synchronize: true, // Don't use this in production
-    }),
+    TypeOrmModule.forRoot(typeOrmModuleOptions),
     ScheduleModule.forRoot(),
     EventEmitterModule.forRoot(),
     // Import our feature modules
