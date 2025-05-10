@@ -17,7 +17,7 @@ export interface MicrosoftOutlookConfig {
   /**
    * The base url of the backend. e.g. https://dev.dashboard.checkfirstapp.com
    */
-  backendBaseUrl?: string;
+  backendBaseUrl: string;
   /**
    * The base path of the backend. e.g. api/v1
    */
