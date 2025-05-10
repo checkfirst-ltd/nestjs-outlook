@@ -26,36 +26,18 @@ export class UserCalendarRepository extends Repository<UserCalendar> {
     });
   }
 
-  async saveCalendarCredentials(
+  async saveCalendarDetails(
     userId: number,
+    externalUserId: string,
     calendarId: string,
-    accessToken: string,
-    refreshToken: string,
-    tokenExpiry: Date,
   ): Promise<UserCalendar> {
     const calendar = this.create({
       userId,
+      externalUserId,
       calendarId,
-      accessToken,
-      refreshToken,
-      tokenExpiry,
+      active: true,
     });
 
     return this.save(calendar);
-  }
-
-  async updateTokens(
-    id: number,
-    accessToken: string,
-    refreshToken: string,
-    tokenExpiry: Date,
-  ): Promise<UserCalendar | null> {
-    await this.update(id, {
-      accessToken,
-      refreshToken,
-      tokenExpiry,
-    });
-
-    return this.findOne({ where: { id } });
   }
 } 

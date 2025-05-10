@@ -21,17 +21,11 @@ export class UserCalendar {
   @Column({ name: 'user_id' })
   userId: number;
 
+  @Column({ name: 'external_user_id' })
+  externalUserId: string;
+
   @Column({ name: 'calendar_id', length: 255 })
   calendarId: string;
-
-  @Column({ name: 'access_token', type: 'text' })
-  accessToken: string;
-
-  @Column({ name: 'refresh_token', type: 'text' })
-  refreshToken: string;
-
-  @Column({ name: 'token_expiry', type: 'datetime' })
-  tokenExpiry: Date;
 
   @Column({ default: true })
   active: boolean;

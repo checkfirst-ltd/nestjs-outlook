@@ -114,23 +114,8 @@ ${bodyType === 'html'
       // Send the email using the EmailService from nestjs-outlook
       const result = await this.microsoftEmailService.sendEmail(
         message,
-        userCalendar.accessToken,
-        userCalendar.refreshToken,
-        userCalendar.tokenExpiry.toISOString(),
-        userId
+        userCalendar.externalUserId
       );
-
-      // If tokens were refreshed during the operation, update them in the database
-      if (result.tokensRefreshed && result.refreshedTokens) {
-        const tokenExpiry = new Date(Date.now() + (result.refreshedTokens.expires_in || 3600) * 1000);
-        await this.userCalendarRepository.updateTokens(
-          userCalendar.id,
-          result.refreshedTokens.access_token,
-          result.refreshedTokens.refresh_token,
-          tokenExpiry,
-        );
-        this.logger.log(`Updated tokens for user ${userId} after refresh during email sending`);
-      }
 
       return {
         success: true,

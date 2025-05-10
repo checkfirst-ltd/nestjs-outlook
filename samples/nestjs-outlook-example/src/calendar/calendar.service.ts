@@ -2,8 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { 
   OutlookEventTypes, 
-  OutlookResourceData, 
-  TokenResponse, 
+  OutlookResourceData,
   CalendarService as MicrosoftCalendarService 
 } from '@checkfirst/nestjs-outlook';
 import { UserCalendarRepository } from './repositories/user-calendar.repository';
@@ -51,27 +50,13 @@ export class CalendarService {
     };
 
     try {
-      // Create the event using stored credentials
+      // Create the event using the Microsoft service
+      // The service now handles token management internally
       const result = await this.microsoftCalendarService.createEvent(
         event,
-        userCalendar.accessToken,
-        userCalendar.refreshToken,
-        userCalendar.tokenExpiry.toISOString(),
-        userId,
-        userCalendar.calendarId,
+        userCalendar.externalUserId,
+        userCalendar.calendarId
       );
-
-      // If tokens were refreshed during the operation, update them in the database
-      if (result.tokensRefreshed && result.refreshedTokens) {
-        const tokenExpiry = new Date(Date.now() + (result.refreshedTokens.expires_in || 3600) * 1000);
-        await this.userCalendarRepository.updateTokens(
-          userCalendar.id,
-          result.refreshedTokens.access_token,
-          result.refreshedTokens.refresh_token,
-          tokenExpiry,
-        );
-        this.logger.log(`Updated tokens for user ${userId} after refresh during event creation`);
-      }
 
       return result.event;
     } catch (error) {
@@ -84,13 +69,13 @@ export class CalendarService {
     }
   }
 
-  @OnEvent(OutlookEventTypes.AUTH_TOKENS_SAVE)
-  async handleAuthTokensSave(userId: string, tokenData: TokenResponse) {
+  @OnEvent(OutlookEventTypes.USER_AUTHENTICATED)
+  async handleUserAuthenticated(externalUserId: string, data: { externalUserId: string, scopes: string[] }) {
     try {
-      this.logger.log(`Saving tokens for user ${userId}`);
+      this.logger.log(`User authenticated: ${externalUserId}`);
 
       // First ensure the user exists
-      const userIdNum = Number(userId);
+      const userIdNum = Number(externalUserId);
       let user = await this.userRepository.findOne({ where: { id: userIdNum } });
       
       if (!user) {
@@ -101,47 +86,37 @@ export class CalendarService {
           createdAt: new Date(),
           updatedAt: new Date(),
         });
-        this.logger.log(`Created new user with ID ${userId}`);
+        this.logger.log(`Created new user with ID ${externalUserId}`);
       }
 
-      // Calculate token expiry
-      const expiresIn = tokenData.expires_in || 3600; // Default to 1 hour if not provided
-      const tokenExpiry = new Date(Date.now() + expiresIn * 1000);
-
-      // Get the default calendar ID from Microsoft Graph API
-      const calendarId = await this.microsoftCalendarService.getDefaultCalendarId(tokenData.access_token);
-      this.logger.log(`Retrieved default calendar ID: ${calendarId} for user ${userId}`);
+      // Get the default calendar ID
+      const calendarId = await this.microsoftCalendarService.getDefaultCalendarId(externalUserId);
+      this.logger.log(`Retrieved default calendar ID: ${calendarId} for user ${externalUserId}`);
 
       // Get the existing calendar for this user if any
       const existingCalendar = await this.userCalendarRepository.findActiveByUserId(userIdNum);
 
       if (existingCalendar) {
-        // Update existing calendar tokens
-        await this.userCalendarRepository.updateTokens(
-          existingCalendar.id,
-          tokenData.access_token,
-          tokenData.refresh_token,
-          tokenExpiry,
-        );
-        this.logger.log(`Updated tokens for existing calendar for user ${userId}`);
+        // Update existing calendar
+        existingCalendar.externalUserId = externalUserId;
+        existingCalendar.calendarId = calendarId;
+        await this.userCalendarRepository.save(existingCalendar);
+        this.logger.log(`Updated calendar for user ${externalUserId}`);
       } else {
-        // Create new calendar entry with the actual calendar ID
-        await this.userCalendarRepository.saveCalendarCredentials(
+        // Create new calendar entry
+        await this.userCalendarRepository.saveCalendarDetails(
           userIdNum,
-          calendarId,
-          tokenData.access_token,
-          tokenData.refresh_token,
-          tokenExpiry,
+          externalUserId,
+          calendarId
         );
-        this.logger.log(`Created new calendar entry for user ${userId} with calendar ID: ${calendarId}`);
+        this.logger.log(`Created new calendar entry for user ${externalUserId} with calendar ID: ${calendarId}`);
       }
     } catch (error) {
       this.logger.error(
-        `Failed to save/update tokens for user ${userId}: ${
+        `Failed to handle user authentication for user ${externalUserId}: ${
           error instanceof Error ? error.message : 'Unknown error'
         }`,
       );
-      throw new Error('Failed to save Outlook calendar tokens');
     }
   }
 
