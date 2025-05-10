@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.0.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v3.1.0...v4.0.0) (2025-05-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **auth:** centralize token management with MicrosoftUser entity
+
+### Features
+
+* **auth:** centralize token management with MicrosoftUser entity ([25a538d](https://github.com/checkfirst-ltd/nestjs-outlook/commit/25a538d68b0d6ac522e91e47bcb20d76a8ae8217))
+
 ## [3.1.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v3.0.0...v3.1.0) (2025-05-10)
 
 
