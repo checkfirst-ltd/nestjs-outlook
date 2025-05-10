@@ -3,8 +3,7 @@
  */
 export enum OutlookEventTypes {
   // Authentication events
-  AUTH_TOKENS_SAVE = 'microsoft.auth.tokens.save',
-  AUTH_TOKENS_UPDATE = 'microsoft.auth.tokens.update',
+  USER_AUTHENTICATED = 'microsoft.auth.user.authenticated',
   
   // Calendar events
   EVENT_DELETED = 'outlook.event.deleted',

@@ -2,10 +2,8 @@ import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import axios from 'axios';
 import { TokenResponse } from '../../interfaces/outlook/token-response.interface';
-import * as qs from 'querystring';
 import { CalendarService } from '../calendar/calendar.service';
 import { EmailService } from '../email/email.service';
-import { Subscription } from '@microsoft/microsoft-graph-types';
 import { MICROSOFT_CONFIG } from '../../constants';
 import { MicrosoftOutlookConfig } from '../../interfaces/config/outlook-config.interface';
 import { OutlookEventTypes } from '../../enums/event-types.enum';
@@ -15,6 +13,21 @@ import { MicrosoftCsrfTokenRepository } from '../../repositories/microsoft-csrf-
 import { MicrosoftTokenApiResponse } from '../../interfaces/microsoft-auth/microsoft-token-api-response.interface';
 import { StateObject } from '../../interfaces/microsoft-auth/state-object.interface';
 import { PermissionScope } from '../../enums/permission-scope.enum';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { MicrosoftUser } from '../../entities/microsoft-user.entity';
+
+/**
+ * Important terminology:
+ * 
+ * - externalUserId: The ID of the user in the host application that uses this library.
+ *   This is what we store in the MicrosoftUser entity to identify which external user
+ *   the Microsoft tokens belong to.
+ * 
+ * - userId: Sometimes used within internal webhook subscription methods to refer to 
+ *   our own internal subscription record IDs. When calling token-related methods,
+ *   always use externalUserId.
+ */
 
 @Injectable()
 export class MicrosoftAuthService {
@@ -47,6 +60,8 @@ export class MicrosoftAuthService {
     @Inject(MICROSOFT_CONFIG)
     private readonly microsoftConfig: MicrosoftOutlookConfig,
     private readonly csrfTokenRepository: MicrosoftCsrfTokenRepository,
+    @InjectRepository(MicrosoftUser)
+    private readonly microsoftUserRepository: Repository<MicrosoftUser>,
   ) {
     console.log('MicrosoftAuthService constructor - microsoftConfig:', {
       clientId: this.microsoftConfig.clientId,
@@ -270,6 +285,151 @@ export class MicrosoftAuthService {
   }
 
   /**
+   * Save a Microsoft user with token information and scopes
+   */
+  private async saveMicrosoftUser(
+    externalUserId: string,
+    accessToken: string,
+    refreshToken: string,
+    expiresIn: number,
+    scopes: string
+  ): Promise<void> {
+    // Find existing user or create a new one
+    let user = await this.microsoftUserRepository.findOne({
+      where: { externalUserId: externalUserId, isActive: true }
+    });
+    
+    if (!user) {
+      user = new MicrosoftUser();
+      user.externalUserId = externalUserId;
+    }
+    
+    // Update token information
+    user.accessToken = accessToken;
+    user.refreshToken = refreshToken;
+    user.tokenExpiry = new Date(Date.now() + expiresIn * 1000);
+    user.scopes = scopes;
+    user.isActive = true;
+    
+    await this.microsoftUserRepository.save(user);
+  }
+
+  /**
+   * Get Microsoft user token info
+   */
+  private async getMicrosoftUserTokenInfo(externalUserId: string): Promise<{
+    accessToken: string;
+    refreshToken: string;
+    tokenExpiry: Date;
+    scopes: string;
+  } | null> {
+    const user = await this.microsoftUserRepository.findOne({
+      where: { externalUserId: externalUserId, isActive: true }
+    });
+    
+    if (!user) {
+      return null;
+    }
+    
+    return {
+      accessToken: user.accessToken,
+      refreshToken: user.refreshToken,
+      tokenExpiry: user.tokenExpiry,
+      scopes: user.scopes,
+    };
+  }
+
+  /**
+   * Gets a valid access token for a user, refreshing it if necessary
+   * @param externalUserId - External user ID
+   * @returns Valid access token string
+   */
+  async getUserAccessTokenByExternalUserId(externalUserId: string): Promise<string> {
+    try {
+      // Get the user's token information from the database
+      const userInfo = await this.getMicrosoftUserTokenInfo(externalUserId);
+      
+      if (!userInfo) {
+        throw new Error(`No token information found for user ${externalUserId}`);
+      }
+      
+      // Find the user to get the internal user ID
+      const user = await this.microsoftUserRepository.findOne({
+        where: { externalUserId: externalUserId, isActive: true }
+      });
+      
+      if (!user) {
+        throw new Error(`Could not find user record for ${externalUserId}`);
+      }
+      
+      // Process the token information using the common helper
+      return await this.processTokenInfo(userInfo, user.id);
+    } catch (error) {
+      this.logger.error(`Error getting access token for user ${externalUserId}:`, error);
+      throw new Error(`Failed to get valid access token: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Gets a valid access token for a user using their internal user ID,
+   * refreshing it if necessary
+   * @param internalUserId - Internal user ID
+   * @returns Valid access token string
+   */
+  async getUserAccessTokenByUserId(internalUserId: number | string): Promise<string> {
+    try {
+      // Find the Microsoft user entry by the internal userId
+      const user = await this.microsoftUserRepository.findOne({
+        where: { id: typeof internalUserId === 'string' ? parseInt(internalUserId, 10) : internalUserId }
+      });
+      
+      if (!user) {
+        throw new Error(`No Microsoft user found with internal ID ${String(internalUserId)}`);
+      }
+      
+      // Process the token information directly from the user entity
+      return await this.processTokenInfo({
+        accessToken: user.accessToken,
+        refreshToken: user.refreshToken,
+        tokenExpiry: user.tokenExpiry,
+        scopes: user.scopes
+      }, user.id);
+    } catch (error) {
+      this.logger.error(`Error getting access token for internal user ID ${String(internalUserId)}:`, error);
+      throw new Error(`Failed to get valid access token: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Common helper to process token information and refresh if needed
+   * @param tokenInfo - Token information with access token, refresh token, expiry date and scopes
+   * @param userId - Internal user ID for refreshing tokens
+   * @returns Valid access token
+   */
+  private async processTokenInfo(
+    tokenInfo: {
+      accessToken: string;
+      refreshToken: string;
+      tokenExpiry: Date;
+      scopes: string;
+    },
+    userId: number
+  ): Promise<string> {
+    // Check if the token is still valid
+    if (!this.isTokenExpired(tokenInfo.tokenExpiry)) {
+      // Token is still valid, return it
+      return tokenInfo.accessToken;
+    }
+    
+    // Token is expired, refresh it
+    this.logger.log(`Access token for user ID ${String(userId)} is expired, refreshing...`);
+    
+    const accessToken = await this.refreshAccessToken(tokenInfo.refreshToken, userId);
+    
+    return accessToken;
+  }
+
+  /**
    * Exchange authorization code for tokens
    * @param code Authorization code
    * @param state Base64 encoded state string
@@ -331,17 +491,25 @@ export class MicrosoftAuthService {
         expires_in: tokenResponse.data.expires_in,
       };
 
-      // Emit event directly with parameters instead of a payload object
-      await Promise.resolve(
-        this.eventEmitter.emit(OutlookEventTypes.AUTH_TOKENS_SAVE, stateData.userId, tokenData),
+      // Save Microsoft user with their tokens and scopes for later use
+      await this.saveMicrosoftUser(
+        stateData.userId,
+        tokenData.access_token,
+        tokenData.refresh_token,
+        tokenData.expires_in,
+        scopeString // Store the exact Microsoft scopes used
       );
 
-      const userId = Number(stateData.userId);
-      const accessToken = tokenData.access_token;
-      const refreshToken = tokenData.refresh_token;
+      // Emit event that the user has been authenticated
+      await Promise.resolve(
+        this.eventEmitter.emit(OutlookEventTypes.USER_AUTHENTICATED, stateData.userId, {
+          externalUserId: stateData.userId,
+          scopes: scopesToUse
+        }),
+      );
 
       // Setup subscriptions (both calendar and email)
-      await this.setupSubscriptions(userId, accessToken, refreshToken, scopesToUse);
+      await this.setupSubscriptions(stateData.userId, scopesToUse);
 
       return tokenData;
     } catch (error) {
@@ -349,40 +517,33 @@ export class MicrosoftAuthService {
       throw new Error('Failed to exchange code for token');
     }
   }
-
+  
   /**
    * Setup webhook subscriptions for a user based on requested scopes
-   * @param userId User ID
-   * @param accessToken Access token
-   * @param refreshToken Refresh token
-   * @param scopes Requested permission scopes
+   * @param userId - User ID
+   * @param scopes - Requested permission scopes
    */
   private async setupSubscriptions(
-    userId: number, 
-    accessToken: string, 
-    refreshToken: string,
+    userId: string, 
     scopes: PermissionScope[] = this.defaultScopes
   ): Promise<void> {
     // Check if subscription setup is already in progress for this user
-    if (this.subscriptionInProgress.get(userId)) {
-      this.logger.log(`Subscription setup already in progress for user ${String(userId)}`);
+    const userIdNum = parseInt(userId, 10);
+    if (this.subscriptionInProgress.get(userIdNum)) {
+      this.logger.log(`Subscription setup already in progress for user ${userId}`);
       return;
     }
 
     try {
       // Mark subscription setup as in progress
-      this.subscriptionInProgress.set(userId, true);
+      this.subscriptionInProgress.set(userIdNum, true);
 
       // Check if calendar permissions were requested
       if (this.hasCalendarPermission(scopes)) {
         // Create webhook subscription for the user's calendar
         try {
-          await this.calendarService.createWebhookSubscription(
-            userId,
-            accessToken,
-            refreshToken,
-          );
-          this.logger.log(`Successfully created calendar webhook subscription for user ${String(userId)}`);
+          await this.calendarService.createWebhookSubscription(userId);
+          this.logger.log(`Successfully created calendar webhook subscription for user ${userId}`);
         } catch (calendarError) {
           // Don't fail authentication if webhook creation fails
           this.logger.error(
@@ -395,12 +556,8 @@ export class MicrosoftAuthService {
       if (this.hasEmailPermission(scopes)) {
         // Create webhook subscription for the user's email
         try {
-          await this.emailService.createWebhookSubscription(
-            userId,
-            accessToken,
-            refreshToken,
-          );
-          this.logger.log(`Successfully created email webhook subscription for user ${String(userId)}`);
+          await this.emailService.createWebhookSubscription(userId);
+          this.logger.log(`Successfully created email webhook subscription for user ${userId}`);
         } catch (emailError) {
           // Don't fail authentication if webhook creation fails
           this.logger.error(
@@ -413,107 +570,91 @@ export class MicrosoftAuthService {
       // Continue without failing authentication
     } finally {
       // Mark subscription setup as complete
-      this.subscriptionInProgress.set(userId, false);
+      this.subscriptionInProgress.set(userIdNum, false);
     }
   }
 
   /**
    * Refresh an access token using a refresh token
    * @param refreshToken - The refresh token to use
-   * @param userId - User ID associated with the token
-   * @param calendarId - Calendar ID associated with the token
-   * @param scopes - Permission scopes to request in the refresh
-   * @returns New token response with refreshed access token and refresh token
+   * @param userId - Internal user ID associated with the token
+   * @returns New access token
    */
   async refreshAccessToken(
     refreshToken: string,
-    userId?: number,
-    calendarId?: string,
-    scopes: PermissionScope[] = this.defaultScopes
-  ): Promise<TokenResponse> {
+    userId: number
+  ): Promise<string> {
     try {
-      const scopeString = this.mapToMicrosoftScopes(scopes).join(' ');
+      // Get the user to access its properties
+      const user = await this.microsoftUserRepository.findOne({
+        where: { id: userId }
+      });
       
-      const payload = {
+      if (!user) {
+        throw new Error(`No user found with ID ${String(userId)}`);
+      }
+      
+      const scopeString = user.scopes;
+      this.logger.debug(`Using saved scopes from database: ${scopeString}`);
+      
+      this.logger.debug(`Refreshing token for user ID ${String(userId)} with scopes: ${scopeString}`);
+      
+      // Prepare parameters as specified in Microsoft documentation
+      const payload = new URLSearchParams({
         client_id: this.clientId,
         client_secret: this.clientSecret,
         refresh_token: refreshToken,
         grant_type: 'refresh_token',
         scope: scopeString,
-      };
-
-      const response = await axios.post<MicrosoftTokenApiResponse>(
-        this.tokenEndpoint,
-        qs.stringify(payload),
-        {
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-        },
-      );
-
-      // Validate required fields
-      if (!response.data.access_token || !response.data.expires_in) {
-        throw new Error('Invalid token refresh response from Microsoft');
-      }
-
-      // Microsoft might not return a new refresh token, in which case we should reuse the old one
-      const newRefreshToken = response.data.refresh_token || refreshToken;
-
-      const tokenData: TokenResponse = {
-        access_token: response.data.access_token,
-        refresh_token: newRefreshToken,
-        expires_in: response.data.expires_in,
-      };
-
-      // If userId and calendarId are provided, emit event to update the token
-      if (userId !== undefined && calendarId) {
-        const userIdStr = String(userId);
-        const calendarIdStr = String(calendarId);
-        await Promise.resolve(
-          this.eventEmitter.emit(
-            OutlookEventTypes.AUTH_TOKENS_UPDATE,
-            userIdStr,
-            calendarIdStr,
-            tokenData,
-          ),
-        );
-      }
-
-      return tokenData;
-    } catch (error) {
-      this.logger.error('Error refreshing access token:', error);
-      throw new Error('Failed to refresh access token from Microsoft');
-    }
-  }
-
-  /**
-   * Renew webhook subscription with refreshed token if needed
-   */
-  async renewWebhookSubscription(
-    subscriptionId: string,
-    accessToken: string,
-    refreshToken: string,
-    scopes: PermissionScope[] = this.defaultScopes
-  ): Promise<Subscription> {
-    try {
-      // Try to renew with current token
-      return await this.calendarService.renewWebhookSubscription(subscriptionId, accessToken);
-    } catch (error: unknown) {
-      if (axios.isAxiosError(error) && error.response?.status === 401) {
-        this.logger.log('Access token expired during webhook renewal, refreshing token...');
-        
-        // Refresh the token
-        const tokenResponse = await this.refreshAccessToken(refreshToken, undefined, undefined, scopes);
-        
-        // Retry with the new token
-        return await this.calendarService.renewWebhookSubscription(
-          subscriptionId,
-          tokenResponse.access_token,
-        );
-      }
+      });
       
-      throw error;
+      try {
+        const response = await axios.post<MicrosoftTokenApiResponse>(
+          this.tokenEndpoint,
+          payload.toString(),
+          {
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+          },
+        );
+
+        // Validate required fields
+        if (!response.data.access_token || !response.data.expires_in) {
+          throw new Error('Invalid token refresh response from Microsoft');
+        }
+
+        // Microsoft might not return a new refresh token, in which case we should reuse the old one
+        const newRefreshToken = response.data.refresh_token || refreshToken;
+        const newAccessToken = response.data.access_token;
+
+        // Update Microsoft user record with new tokens
+        user.accessToken = newAccessToken;
+        user.refreshToken = newRefreshToken;
+        user.tokenExpiry = new Date(Date.now() + response.data.expires_in * 1000);
+        
+        await this.microsoftUserRepository.save(user);
+
+        // Return just the access token
+        return newAccessToken;
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.response) {
+          // Log detailed API error information
+          this.logger.error(
+            `Microsoft API error refreshing token for user ID ${String(userId)}: Status: ${String(error.response.status)}, Response: ${JSON.stringify(error.response.data)}`
+          );
+          
+          // Check for specific error conditions from Microsoft
+          const errorData = error.response.data as { error?: string };
+          if (errorData.error === 'invalid_grant') {
+            throw new Error('Microsoft refresh token is invalid or expired');
+          }
+        }
+        throw error; // Re-throw for the outer catch to handle
+      }
+    } catch (error) {
+      this.logger.error(`Error refreshing access token for user ID ${String(userId)}:`, error);
+      throw new Error('Failed to refresh access token from Microsoft');
     }
   }
 

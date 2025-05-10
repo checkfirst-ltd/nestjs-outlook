@@ -14,6 +14,7 @@ import { MicrosoftCsrfToken } from './entities/csrf-token.entity';
 import { MicrosoftCsrfTokenRepository } from './repositories/microsoft-csrf-token.repository';
 import { CalendarService } from './services/calendar/calendar.service';
 import { EmailService } from './services/email/email.service';
+import { MicrosoftUser } from './entities/microsoft-user.entity';
 
 export const { ConfigurableModuleClass, MODULE_OPTIONS_TOKEN } =
   new ConfigurableModuleBuilder<MicrosoftOutlookConfig>().setClassMethodName('forRoot').build();
@@ -25,7 +26,11 @@ export const { ConfigurableModuleClass, MODULE_OPTIONS_TOKEN } =
 @Module({
   imports: [
     ScheduleModule.forRoot(),
-    TypeOrmModule.forFeature([OutlookWebhookSubscription, MicrosoftCsrfToken]),
+    TypeOrmModule.forFeature([
+      OutlookWebhookSubscription, 
+      MicrosoftCsrfToken,
+      MicrosoftUser,
+    ]),
     EventEmitterModule.forRoot(),
   ],
   controllers: [MicrosoftAuthController, CalendarController, EmailController],

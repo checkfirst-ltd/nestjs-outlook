@@ -16,11 +16,11 @@ An opinionated NestJS module for Microsoft Outlook integration that provides eas
 
 ## Features
 
-- 🔄 Simplified Microsoft OAuth flow
-- 📅 Calendar events management
-- 📧 Email sending capabilities
-- 🔔 Real-time webhooks for changes
-- 🔐 Secure token storage and refresh
+- 🔗 Simple Microsoft authentication integration
+- 📅 Calendar management (create/update/delete events)
+- 📧 Email sending with rich content
+- 🔔 Real-time notifications via webhooks
+- 🔍 Event-driven architecture for easy integration
 
 ## Installation
 
@@ -32,66 +32,42 @@ npm install @checkfirst/nestjs-outlook
 
 ### 1. Database Setup
 
-This library requires two database tables in your application's database. Create these tables using a migration:
+This library requires database tables to store authentication and subscription data. You can use the built-in migrations to set up these tables automatically.
+
+For details, see the [Migration Guide](src/migrations/README.md).
+
+Alternatively, you can create the tables manually based on your database dialect (PostgreSQL, MySQL, etc.):
 
 ```typescript
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
 export class CreateOutlookTables1697025846000 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
-    // Create outlook_webhook_subscriptions table
-    await queryRunner.query(`
-      CREATE TABLE outlook_webhook_subscriptions (
-        id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-        subscription_id VARCHAR(255) NOT NULL,
-        user_id INTEGER NOT NULL,
-        resource VARCHAR(255) NOT NULL,
-        change_type VARCHAR(255) NOT NULL,
-        client_state VARCHAR(255) NOT NULL,
-        notification_url VARCHAR(255) NOT NULL,
-        expiration_date_time TIMESTAMP NOT NULL,
-        is_active BOOLEAN DEFAULT true,
-        access_token TEXT,
-        refresh_token TEXT,
-        created_at TIMESTAMP DEFAULT NOW() NOT NULL,
-        updated_at TIMESTAMP DEFAULT NOW() NOT NULL
-      );
-    `);
-
-    // Create microsoft_csrf_tokens table
-    await queryRunner.query(`
-      CREATE TABLE microsoft_csrf_tokens (
-        id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-        token VARCHAR(64) NOT NULL,
-        user_id VARCHAR(255) NOT NULL,
-        expires TIMESTAMP NOT NULL,
-        created_at TIMESTAMP DEFAULT NOW() NOT NULL,
-        CONSTRAINT "UQ_microsoft_csrf_tokens_token" UNIQUE (token)
-      );
-    `);
+    // Create required tables for webhooks, authentication, and user data
+    // See the Migration Guide for details
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
+    // Drop tables in reverse order
     await queryRunner.query(`DROP TABLE IF EXISTS outlook_webhook_subscriptions`);
     await queryRunner.query(`DROP TABLE IF EXISTS microsoft_csrf_tokens`);
+    await queryRunner.query(`DROP TABLE IF EXISTS microsoft_users`);
   }
 }
 ```
 
-You can customize this migration to match your database dialect (PostgreSQL, MySQL, etc.) if needed.
-
 ### 2. Microsoft App Registration
 
-Register your application in the Azure Portal to get a client ID and secret:
+Register your application with Microsoft to get the necessary credentials:
 
 1. Go to the [Azure Portal](https://portal.azure.com/)
 2. Navigate to Azure Active Directory > App registrations
 3. Create a new registration
-4. Configure redirects to include your callback URL
-5. Add the following Microsoft Graph API permissions:
-   - `Calendars.ReadWrite` - For calendar operations
-   - `Mail.Send` - For sending emails
-   - `offline_access` - For refresh tokens
+4. Configure redirects to include your callback URL (e.g., `https://your-api.example.com/auth/microsoft/callback`)
+5. Add Microsoft Graph API permissions based on what features you need:
+   - `Calendars.ReadWrite` - For calendar features
+   - `Mail.Send` - For email features
+   - `offline_access` - Required for all applications
 
 ### 3. Import Required Modules
 
@@ -167,7 +143,7 @@ export class AuthController {
 
 ## Permission Scopes
 
-The library provides a flexible permission system that allows you to request only the specific permissions your application needs:
+You can request specific Microsoft permissions based on what your application needs:
 
 ```typescript
 import { PermissionScope } from '@checkfirst/nestjs-outlook';
@@ -180,7 +156,7 @@ PermissionScope.EMAIL_WRITE        // Read-write access to emails
 PermissionScope.EMAIL_SEND         // Permission to send emails
 ```
 
-When requesting login URLs, you can specify exactly which permissions you need:
+When getting a login URL, specify which permissions you need:
 
 ```typescript
 // For a calendar-only app
@@ -194,33 +170,24 @@ const loginUrl = await microsoftAuthService.getLoginUrl(userId, [
 ]);
 ```
 
-The system will automatically include the necessary base permissions (`offline_access` and `User.Read`) and map your requested permissions to the appropriate Microsoft Graph API scopes.
-
 ## Available Services and Controllers
 
-The library provides specialized services and controllers for Microsoft Graph API operations:
+The library provides specialized services and controllers for Microsoft integration:
 
 ### 1. MicrosoftAuthService and MicrosoftAuthController
 
-Handle authentication, token management, and OAuth flow:
+Handles the authentication flow with Microsoft:
 
 ```typescript
-// Initiate the OAuth flow - redirects user to Microsoft login
+// Get a login URL to redirect your user to Microsoft's OAuth page
 const loginUrl = await microsoftAuthService.getLoginUrl(userId);
-
-// Exchange OAuth code for tokens (used in callback endpoint)
-const tokens = await microsoftAuthService.exchangeCodeForToken(code, state);
-
-// Refresh an expired access token
-const newTokens = await microsoftAuthService.refreshAccessToken(refreshToken, userId);
-
-// Check if a token is expired
-const isExpired = microsoftAuthService.isTokenExpired(tokenExpiryDate);
 ```
+
+After the user authenticates with Microsoft, they'll be redirected to your callback URL where you can complete the process.
 
 ### 2. CalendarService and CalendarController
 
-Manage calendar operations with Microsoft Graph API:
+Manage calendar operations:
 
 ```typescript
 // Create a calendar event
@@ -236,27 +203,22 @@ const event = {
   },
 };
 
+// Create the event
 const result = await calendarService.createEvent(
   event,
-  accessToken,
-  refreshToken,
-  tokenExpiry,
-  userId,
+  externalUserId,
   calendarId
 );
 
 // Get user's default calendar ID
-const calendarId = await calendarService.getDefaultCalendarId(accessToken);
-
-// Create webhook subscription for calendar events
-await calendarService.createWebhookSubscription(userId, accessToken, refreshToken);
+const calendarId = await calendarService.getDefaultCalendarId(externalUserId);
 ```
 
 The CalendarController provides a webhook endpoint at `/calendar/webhook` for receiving notifications from Microsoft Graph about calendar changes.
 
 ### 3. EmailService
 
-Provides email sending capabilities via Microsoft Graph API:
+Send emails:
 
 ```typescript
 // Create email message
@@ -278,62 +240,45 @@ const message = {
 // Send the email
 const result = await emailService.sendEmail(
   message,
-  accessToken,
-  refreshToken,
-  tokenExpiry,
-  userId
+  externalUserId
 );
 ```
 
 ## Events
 
-The library uses NestJS's EventEmitter to emit events for various Outlook activities. You can listen to these events in your application to react to changes.
+The library emits events for various Microsoft activities that you can listen to in your application.
 
 ### Available Events
 
-The library exposes event types through the `OutlookEventTypes` enum:
-
-- `OutlookEventTypes.AUTH_TOKENS_SAVE` - Emitted when OAuth tokens are initially saved
-- `OutlookEventTypes.AUTH_TOKENS_UPDATE` - Emitted when OAuth tokens are refreshed
-- `OutlookEventTypes.EVENT_CREATED` - Emitted when a new Outlook calendar event is created via webhook
-- `OutlookEventTypes.EVENT_UPDATED` - Emitted when an Outlook calendar event is updated via webhook
-- `OutlookEventTypes.EVENT_DELETED` - Emitted when an Outlook calendar event is deleted via webhook
+- `USER_AUTHENTICATED` - When a user completes authentication with Microsoft
+- `EVENT_CREATED` - When a new calendar event is created 
+- `EVENT_UPDATED` - When a calendar event is updated
+- `EVENT_DELETED` - When a calendar event is deleted
+- `EMAIL_RECEIVED` - When a new email is received
+- `EMAIL_UPDATED` - When an email is updated
+- `EMAIL_DELETED` - When an email is deleted
 
 ### Listening to Events
-
-You can listen to these events in your application using the `@OnEvent` decorator from `@nestjs/event-emitter` and the `OutlookEventTypes` enum:
 
 ```typescript
 import { Injectable } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import { OutlookEventTypes, OutlookResourceData, TokenResponse } from '@checkfirst/nestjs-outlook';
+import { OutlookEventTypes, OutlookResourceData } from '@checkfirst/nestjs-outlook';
 
 @Injectable()
 export class YourService {
-  // Handle token save event
-  @OnEvent(OutlookEventTypes.AUTH_TOKENS_SAVE)
-  async handleAuthTokensSave(userId: string, tokenData: TokenResponse) {
-    console.log(`Saving new tokens for user ${userId}`);
-    // Save tokens to your database
+  // Handle user authentication event
+  @OnEvent(OutlookEventTypes.USER_AUTHENTICATED)
+  async handleUserAuthenticated(externalUserId: string, data: { externalUserId: string, scopes: string[] }) {
+    console.log(`User ${externalUserId} authenticated with Microsoft`);
+    // Perform any custom logic needed when a user authenticates
   }
 
   // Handle calendar events
   @OnEvent(OutlookEventTypes.EVENT_CREATED)
   handleOutlookEventCreated(data: OutlookResourceData) {
-    console.log('New Outlook event created:', data.id);
+    console.log('New calendar event created:', data.id);
     // Handle the new event
-  }
-
-  @OnEvent(OutlookEventTypes.EVENT_UPDATED)
-  handleOutlookEventUpdated(data: OutlookResourceData) {
-    console.log('Outlook event updated:', data.id);
-    // Handle the updated event
-  }
-
-  @OnEvent(OutlookEventTypes.EVENT_DELETED)
-  handleOutlookEventDeleted(data: OutlookResourceData) {
-    console.log('Outlook event deleted:', data.id);
-    // Handle the deleted event
   }
 }
 ```

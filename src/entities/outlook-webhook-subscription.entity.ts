@@ -35,12 +35,6 @@ export class OutlookWebhookSubscription {
   @Column({ name: 'is_active', default: true })
   isActive: boolean = true;
 
-  @Column({ name: 'access_token', type: 'text', nullable: true })
-  accessToken: string = '';
-
-  @Column({ name: 'refresh_token', type: 'text', nullable: true })
-  refreshToken: string = '';
-
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date = new Date();
 

@@ -5,7 +5,6 @@ import axios from 'axios';
 import { MicrosoftAuthService } from '../auth/microsoft-auth.service';
 import { MICROSOFT_CONFIG } from '../../constants';
 import { MicrosoftOutlookConfig } from '../../interfaces/config/outlook-config.interface';
-import { TokenResponse } from '../../interfaces/outlook/token-response.interface';
 import { Message, ChangeNotification, Subscription } from '@microsoft/microsoft-graph-types';
 import { OutlookWebhookSubscriptionRepository } from '../../repositories/outlook-webhook-subscription.repository';
 import { OutlookResourceData } from '../../dto/outlook-webhook-notification.dto';
@@ -28,53 +27,21 @@ export class EmailService {
    * Sends an email using Microsoft Graph API
    * 
    * @param message - The email message to send
-   * @param accessToken - Access token for Microsoft Graph API
-   * @param refreshToken - Refresh token for Microsoft Graph API
-   * @param tokenExpiry - Expiry date of the access token
-   * @param userId - User ID associated with the email account
-   * @returns The sent message data and refreshed token data if tokens were refreshed
+   * @param externalUserId - External user ID associated with the email account
+   * @returns The sent message data
    */
   async sendEmail(
     message: Partial<Message>,
-    accessToken: string,
-    refreshToken: string,
-    tokenExpiry: string | undefined,
-    userId: number,
-  ): Promise<{ message: Message; tokensRefreshed: boolean; refreshedTokens?: TokenResponse }> {
+    externalUserId: string,
+  ): Promise<{ message: Message }> {
     try {
-      let currentAccessToken = accessToken;
-      let currentRefreshToken = refreshToken;
-      let tokensRefreshed = false;
-      let refreshedTokens: TokenResponse | undefined;
+      // Get a valid access token for this user
+      const accessToken = await this.microsoftAuthService.getUserAccessTokenByExternalUserId(externalUserId);
 
-      // Check if token is expired and needs refresh
-      if (currentRefreshToken && tokenExpiry) {
-        if (this.microsoftAuthService.isTokenExpired(new Date(tokenExpiry))) {
-          this.logger.log('Access token is expired or will expire soon. Refreshing token...');
-
-          try {
-            refreshedTokens = await this.microsoftAuthService.refreshAccessToken(
-              currentRefreshToken,
-              userId
-            );
-
-            // Update the access token
-            currentAccessToken = refreshedTokens.access_token || currentAccessToken;
-            currentRefreshToken = refreshedTokens.refresh_token || currentRefreshToken;
-            tokensRefreshed = true;
-
-            this.logger.log('Token refreshed successfully');
-          } catch (refreshError) {
-            this.logger.error('Failed to refresh token:', refreshError);
-            throw new Error('Failed to refresh token');
-          }
-        }
-      }
-
-      // Initialize Microsoft Graph client with possibly refreshed token
+      // Initialize Microsoft Graph client
       const client = Client.init({
         authProvider: (done) => {
-          done(null, currentAccessToken);
+          done(null, accessToken);
         },
       });
 
@@ -83,11 +50,9 @@ export class EmailService {
         .api('/me/sendMail')
         .post({ message }) as Message;
 
-      // Return both the message and token refresh information
+      // Return just the message
       return {
         message: sentMessage,
-        tokensRefreshed,
-        refreshedTokens,
       };
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -98,17 +63,16 @@ export class EmailService {
 
   /**
    * Create a webhook subscription to receive notifications for incoming emails
-   * @param userId - User ID
-   * @param accessToken - Access token for Microsoft Graph API
-   * @param refreshToken - Refresh token for Microsoft Graph API
+   * @param externalUserId - External user ID
    * @returns The created subscription data
    */
   async createWebhookSubscription(
-    userId: number,
-    accessToken: string,
-    refreshToken: string,
+    externalUserId: string,
   ): Promise<Subscription> {
     try {
+      // Get a valid access token for this user
+      const accessToken = await this.microsoftAuthService.getUserAccessTokenByExternalUserId(externalUserId);
+      
       // Set expiration date (max 3 days as per Microsoft documentation)
       const expirationDateTime = new Date();
       expirationDateTime.setHours(expirationDateTime.getHours() + 72); // 3 days from now
@@ -128,7 +92,7 @@ export class EmailService {
         lifecycleNotificationUrl: notificationUrl,
         resource: '/me/messages',
         expirationDateTime: expirationDateTime.toISOString(),
-        clientState: `user_${String(userId)}_${Math.random().toString(36).substring(2, 15)}`,
+        clientState: `user_${externalUserId}_${Math.random().toString(36).substring(2, 15)}`,
       };
 
       this.logger.debug(`Creating email webhook subscription with notificationUrl: ${notificationUrl}`);
@@ -147,24 +111,23 @@ export class EmailService {
         },
       );
 
-      this.logger.log(`Created email webhook subscription ${String(response.data.id)} for user ${String(userId)}`);
+      this.logger.log(`Created email webhook subscription ${response.data.id || 'unknown'} for user ${externalUserId}`);
+
+      // Store internal userId for webhooks (should be the numeric ID in our subscription table)
+      const internalUserId = parseInt(externalUserId, 10);
 
       // Save the subscription to the database
       await this.webhookSubscriptionRepository.saveSubscription({
         subscriptionId: response.data.id,
-        userId,
+        userId: internalUserId,
         resource: response.data.resource,
         changeType: response.data.changeType,
         clientState: response.data.clientState || '',
         notificationUrl: response.data.notificationUrl,
         expirationDateTime: response.data.expirationDateTime ? new Date(response.data.expirationDateTime) : new Date(),
-        accessToken,
-        refreshToken,
       });
 
-      this.logger.debug(
-        `Stored subscription with refresh token: ${refreshToken.substring(0, 5)}...`,
-      );
+      this.logger.debug(`Stored subscription`);
 
       return response.data;
     } catch (error: unknown) {
@@ -205,10 +168,10 @@ export class EmailService {
         return { success: false, message: 'Client state mismatch' };
       }
 
-      // Extract the user ID from the client state (should be in format "user_123_randomstring")
-      const userId = subscription.userId;
+      // Get the internal userId from our subscription
+      const internalUserId = subscription.userId;
 
-      if (!userId) {
+      if (!internalUserId) {
         this.logger.warn('Could not determine user ID from client state');
         return { success: false, message: 'Invalid client state format' };
       }
@@ -234,15 +197,18 @@ export class EmailService {
       // Get additional email data if it's a new email
       let emailData: Record<string, unknown> = {};
       
-      if (changeType === 'created' && resource && subscription.accessToken) {
+      if (changeType === 'created' && resource) {
         try {
           // Extract the message ID from the resource path (format: /me/messages/{id})
           const messageId = resource.split('/').pop();
           if (messageId) {
+            // Get a valid access token - use internalUserId as userId for token retrieval
+            const accessToken = await this.microsoftAuthService.getUserAccessTokenByUserId(internalUserId);
+            
             // Create a Graph client to fetch the email details
             const client = Client.init({
               authProvider: (done) => {
-                done(null, subscription.accessToken);
+                done(null, accessToken);
               },
             });
             
@@ -264,7 +230,7 @@ export class EmailService {
       // Process the resource data
       const resourceData: OutlookResourceData = {
         id: '',
-        userId,
+        userId: internalUserId,
         subscriptionId,
         resource,
         changeType,

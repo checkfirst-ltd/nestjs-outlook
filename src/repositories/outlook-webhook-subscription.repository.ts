@@ -44,16 +44,11 @@ export class OutlookWebhookSubscriptionRepository {
   async updateSubscriptionExpiration(
     subscriptionId: string,
     expirationDateTime: Date,
-    accessToken?: string,
   ): Promise<void> {
     const update: Partial<OutlookWebhookSubscription> = {
       expirationDateTime,
       updatedAt: new Date(),
     };
-
-    if (accessToken) {
-      update.accessToken = accessToken;
-    }
 
     await this.repository.update({ subscriptionId, isActive: true }, update);
   }

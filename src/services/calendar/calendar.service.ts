@@ -9,7 +9,6 @@ import {
   ChangeNotification,
 } from '../../types';
 import { MicrosoftAuthService } from '../auth/microsoft-auth.service';
-import { TokenResponse } from '../../interfaces/outlook/token-response.interface';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { OutlookWebhookSubscriptionRepository } from '../../repositories/outlook-webhook-subscription.repository';
 import { OutlookResourceData } from '../../dto/outlook-webhook-notification.dto';
@@ -32,11 +31,14 @@ export class CalendarService {
 
   /**
    * Get the user's default calendar ID
-   * @param accessToken - Access token for Microsoft Graph API
+   * @param externalUserId - External user ID
    * @returns The default calendar ID
    */
-  async getDefaultCalendarId(accessToken: string): Promise<string> {
+  async getDefaultCalendarId(externalUserId: string): Promise<string> {
     try {
+      // Get a valid access token for this user
+      const accessToken = await this.microsoftAuthService.getUserAccessTokenByExternalUserId(externalUserId);
+      
       // Using axios for direct API call
       const response = await axios.get<Calendar>('https://graph.microsoft.com/v1.0/me/calendar', {
         headers: {
@@ -59,56 +61,23 @@ export class CalendarService {
   /**
    * Creates an event in the user's Outlook calendar
    * @param event - Microsoft Graph Event object with event details
-   * @param accessToken - Access token for Microsoft Graph API
-   * @param refreshToken - Refresh token for Microsoft Graph API
-   * @param tokenExpiry - Expiry date of the access token
-   * @param userId - User ID associated with the calendar
+   * @param externalUserId - External user ID associated with the calendar
    * @param calendarId - Calendar ID where the event will be created
-   * @returns The created event data and refreshed token data if tokens were refreshed
+   * @returns The created event data
    */
   async createEvent(
     event: Partial<Event>,
-    accessToken: string,
-    refreshToken: string,
-    tokenExpiry: string | undefined,
-    userId: number,
+    externalUserId: string,
     calendarId: string,
-  ): Promise<{ event: Event; tokensRefreshed: boolean; refreshedTokens?: TokenResponse }> {
+  ): Promise<{ event: Event }> {
     try {
-      let currentAccessToken = accessToken;
-      let currentRefreshToken = refreshToken;
-      let tokensRefreshed = false;
-      let refreshedTokens: TokenResponse | undefined;
-
-      // Check if token is expired and needs refresh
-      if (currentRefreshToken && tokenExpiry) {
-        if (this.microsoftAuthService.isTokenExpired(new Date(tokenExpiry))) {
-          this.logger.log('Access token is expired or will expire soon. Refreshing token...');
-
-          try {
-            refreshedTokens = await this.microsoftAuthService.refreshAccessToken(
-              currentRefreshToken,
-              userId,
-              calendarId,
-            );
-
-            // Update the access token
-            currentAccessToken = refreshedTokens.access_token || currentAccessToken;
-            currentRefreshToken = refreshedTokens.refresh_token || currentRefreshToken;
-            tokensRefreshed = true;
-
-            this.logger.log('Token refreshed successfully');
-          } catch (refreshError) {
-            this.logger.error('Failed to refresh token:', refreshError);
-            throw new Error('Failed to refresh token');
-          }
-        }
-      }
-
-      // Initialize Microsoft Graph client with possibly refreshed token
+      // Get a valid access token for this user
+      const accessToken = await this.microsoftAuthService.getUserAccessTokenByExternalUserId(externalUserId);
+      
+      // Initialize Microsoft Graph client
       const client = Client.init({
         authProvider: (done) => {
-          done(null, currentAccessToken);
+          done(null, accessToken);
         },
       });
 
@@ -117,11 +86,9 @@ export class CalendarService {
         .api(`/me/calendars/${calendarId}/events`)
         .post(event) as Event;
 
-      // Return both the event and token refresh information
+      // Return just the event
       return {
         event: createdEvent,
-        tokensRefreshed,
-        refreshedTokens,
       };
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -132,17 +99,16 @@ export class CalendarService {
 
   /**
    * Create a webhook subscription to receive notifications for calendar events
-   * @param userId - User ID
-   * @param accessToken - Access token for Microsoft Graph API
-   * @param refreshToken - Refresh token for Microsoft Graph API
+   * @param externalUserId - External user ID
    * @returns The created subscription data
    */
   async createWebhookSubscription(
-    userId: number,
-    accessToken: string,
-    refreshToken: string,
+    externalUserId: string
   ): Promise<Subscription> {
     try {
+      // Get a valid access token for this user
+      const accessToken = await this.microsoftAuthService.getUserAccessTokenByExternalUserId(externalUserId);
+      
       // Set expiration date (max 3 days as per Microsoft documentation)
       const expirationDateTime = new Date();
       expirationDateTime.setHours(expirationDateTime.getHours() + 72); // 3 days from now
@@ -162,7 +128,7 @@ export class CalendarService {
         lifecycleNotificationUrl: notificationUrl,
         resource: '/me/events',
         expirationDateTime: expirationDateTime.toISOString(),
-        clientState: `user_${String(userId)}_${Math.random().toString(36).substring(2, 15)}`,
+        clientState: `user_${externalUserId}_${Math.random().toString(36).substring(2, 15)}`,
       };
 
       this.logger.debug(`Creating webhook subscription with notificationUrl: ${notificationUrl}`);
@@ -180,44 +146,98 @@ export class CalendarService {
         },
       );
 
-      this.logger.log(`Created webhook subscription ${String(response.data.id)} for user ${String(userId)}`);
+      this.logger.log(`Created webhook subscription ${response.data.id || 'unknown'} for user ${externalUserId}`);
 
+      // Store internal userId for webhooks (should be the numeric ID in our subscription table)
+      const internalUserId = parseInt(externalUserId, 10);
+      
       // Save the subscription to the database
       await this.webhookSubscriptionRepository.saveSubscription({
         subscriptionId: response.data.id,
-        userId,
+        userId: internalUserId,
         resource: response.data.resource,
         changeType: response.data.changeType,
         clientState: response.data.clientState || '',
         notificationUrl: response.data.notificationUrl,
         expirationDateTime: response.data.expirationDateTime ? new Date(response.data.expirationDateTime) : new Date(),
-        accessToken,
-        refreshToken,
       });
 
-      this.logger.debug(
-        `Stored subscription with refresh token: ${refreshToken.substring(0, 5)}...`,
-      );
+      this.logger.debug(`Stored subscription`);
 
       return response.data;
-    } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      this.logger.error(`Failed to create webhook subscription: ${errorMessage}`);
-      throw new Error(`Failed to create webhook subscription: ${errorMessage}`);
+    } catch (error) {
+      this.logger.error('Failed to create webhook subscription:', error);
+      throw new Error('Failed to create webhook subscription');
     }
   }
 
   /**
    * Renew an existing webhook subscription
    * @param subscriptionId - ID of the subscription to renew
-   * @param accessToken - Access token for Microsoft Graph API
+   * @param externalUserId - External user ID for the subscription
    * @returns The renewed subscription data
    */
   async renewWebhookSubscription(
     subscriptionId: string,
-    accessToken: string,
+    externalUserId: string
   ): Promise<Subscription> {
     try {
+      // Get a valid access token for this user
+      const accessToken = await this.microsoftAuthService.getUserAccessTokenByExternalUserId(externalUserId);
+      
+      // Set new expiration date (max 3 days from now)
+      const expirationDateTime = new Date();
+      expirationDateTime.setHours(expirationDateTime.getHours() + 72);
+
+      // Prepare the renewal payload
+      const renewalData = {
+        expirationDateTime: expirationDateTime.toISOString(),
+      };
+
+      // Make the request to Microsoft Graph API to renew the subscription
+      const response = await axios.patch<Subscription>(
+        `https://graph.microsoft.com/v1.0/subscriptions/${subscriptionId}`,
+        renewalData,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+
+      // Update the expiration date in our database
+      if (response.data.expirationDateTime) {
+        await this.webhookSubscriptionRepository.updateSubscriptionExpiration(
+          subscriptionId,
+          new Date(response.data.expirationDateTime),
+        );
+      }
+
+      this.logger.log(`Renewed webhook subscription: ${subscriptionId}`);
+
+      return response.data;
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`Failed to renew webhook subscription: ${errorMessage}`);
+      throw new Error(`Failed to renew webhook subscription: ${errorMessage}`);
+    }
+  }
+
+  /**
+   * Renew an existing webhook subscription using internal user ID
+   * @param subscriptionId - ID of the subscription to renew
+   * @param internalUserId - Internal user ID for the subscription
+   * @returns The renewed subscription data
+   */
+  async renewWebhookSubscriptionByUserId(
+    subscriptionId: string,
+    internalUserId: number | string
+  ): Promise<Subscription> {
+    try {
+      // Get a valid access token for this user
+      const accessToken = await this.microsoftAuthService.getUserAccessTokenByUserId(internalUserId);
+      
       // Set new expiration date (max 3 days from now)
       const expirationDateTime = new Date();
       expirationDateTime.setHours(expirationDateTime.getHours() + 72);
@@ -260,11 +280,14 @@ export class CalendarService {
   /**
    * Delete a webhook subscription
    * @param subscriptionId - ID of the subscription to delete
-   * @param accessToken - Access token for Microsoft Graph API
+   * @param externalUserId - External user ID for the subscription
    * @returns True if deletion was successful
    */
-  async deleteWebhookSubscription(subscriptionId: string, accessToken: string): Promise<boolean> {
+  async deleteWebhookSubscription(subscriptionId: string, externalUserId: string): Promise<boolean> {
     try {
+      // Get a valid access token for this user
+      const accessToken = await this.microsoftAuthService.getUserAccessTokenByExternalUserId(externalUserId);
+      
       // Make the request to Microsoft Graph API to delete the subscription
       await axios.delete(
         `https://graph.microsoft.com/v1.0/subscriptions/${subscriptionId}`,
@@ -306,55 +329,25 @@ export class CalendarService {
   async renewSubscriptions(): Promise<void> {
     try {
       // Get subscriptions that expire within the next 24 hours
-      const expiringLimit = new Date();
-      expiringLimit.setHours(expiringLimit.getHours() + 24);
-
-      const subscriptions = await this.webhookSubscriptionRepository.findSubscriptionsNeedingRenewal(
+      const expiringSubscriptions = await this.webhookSubscriptionRepository.findSubscriptionsNeedingRenewal(
         24 // hours until expiration
       );
 
-      if (subscriptions.length === 0) {
+      if (expiringSubscriptions.length === 0) {
         this.logger.debug('No subscriptions need renewal');
         return;
       }
 
-      this.logger.log(`Found ${String(subscriptions.length)} subscriptions that need renewal`);
+      this.logger.log(`Found ${String(expiringSubscriptions.length)} subscriptions that need renewal`);
 
       // Renew each subscription
-      for (const subscription of subscriptions) {
+      for (const subscription of expiringSubscriptions) {
         try {
-          // Check if we need to refresh the access token first
-          let accessToken = subscription.accessToken;
-
-          if (subscription.refreshToken) {
-            try {
-              const tokenResponse = await this.microsoftAuthService.refreshAccessToken(
-                subscription.refreshToken,
-                subscription.userId,
-              );
-              accessToken = tokenResponse.access_token;
-
-              // Create expiration date (3 days from now)
-              const newExpirationDate = new Date();
-              newExpirationDate.setHours(newExpirationDate.getHours() + 72); // 3 days
-              
-              // Update the subscription in the repository with the new tokens
-              await this.webhookSubscriptionRepository.updateSubscriptionExpiration(
-                subscription.subscriptionId,
-                newExpirationDate,
-                accessToken
-              );
-            } catch (refreshError) {
-              this.logger.error(
-                `Failed to refresh token for subscription ${subscription.subscriptionId}:`,
-                refreshError,
-              );
-              continue; // Skip this subscription and try the next one
-            }
-          }
-
-          // Now renew the subscription with the (possibly refreshed) access token
-          await this.renewWebhookSubscription(subscription.subscriptionId, accessToken);
+          // Renew the subscription using the userId to get a fresh token
+          await this.renewWebhookSubscriptionByUserId(
+            subscription.subscriptionId,
+            subscription.userId
+          );
         } catch (error) {
           this.logger.error(
             `Failed to renew subscription ${subscription.subscriptionId}:`,
