@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.1.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v3.0.0...v3.1.0) (2025-05-10)
+
+
+### Features
+
+* Implement customizable permission scopes ([05a60b3](https://github.com/checkfirst-ltd/nestjs-outlook/commit/05a60b367d9bd625928e959bac42aa255e335249))
+
+
+### Bug Fixes
+
+* Make basepath mandatory ([47e4ec9](https://github.com/checkfirst-ltd/nestjs-outlook/commit/47e4ec97fba1d8ac09c88202d474bfac60a99baf))
+
 ## [3.0.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v2.0.0...v3.0.0) (2025-05-08)
 
 
