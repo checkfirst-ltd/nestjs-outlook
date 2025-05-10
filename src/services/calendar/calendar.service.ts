@@ -15,7 +15,7 @@ import { OutlookWebhookSubscriptionRepository } from '../../repositories/outlook
 import { OutlookResourceData } from '../../dto/outlook-webhook-notification.dto';
 import { MICROSOFT_CONFIG } from '../../constants';
 import { MicrosoftOutlookConfig } from '../../interfaces/config/outlook-config.interface';
-import { OutlookEventTypes } from '../../event-types.enum';
+import { OutlookEventTypes } from '../../enums/event-types.enum';
 
 @Injectable()
 export class CalendarService {

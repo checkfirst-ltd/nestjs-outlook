@@ -1,12 +1,4 @@
-import {
-  Controller,
-  Get,
-  Query,
-  Res,
-  HttpStatus,
-  BadRequestException,
-  InternalServerErrorException,
-} from '@nestjs/common';
+import { Controller, Get, Query, Logger, Res, HttpStatus } from '@nestjs/common';
 import { Response } from 'express';
 import { ApiTags, ApiResponse, ApiQuery, ApiOperation, ApiProduces } from '@nestjs/swagger';
 import { MicrosoftAuthService } from '../services/auth/microsoft-auth.service';
@@ -14,6 +6,8 @@ import { MicrosoftAuthService } from '../services/auth/microsoft-auth.service';
 @ApiTags('Microsoft Auth')
 @Controller('auth/microsoft')
 export class MicrosoftAuthController {
+  private readonly logger = new Logger(MicrosoftAuthController.name);
+
   constructor(private readonly microsoftAuthService: MicrosoftAuthService) {}
 
   /**
@@ -74,16 +68,18 @@ export class MicrosoftAuthController {
     description: 'Server error during authentication process',
   })
   @ApiProduces('text/html')
-  async callback(@Query('code') code: string, @Query('state') state: string, @Res() res: Response) {
-    if (!code) {
-      throw new BadRequestException('No code provided');
-    }
-
-    if (!state) {
-      throw new BadRequestException('No state parameter provided');
-    }
-
+  async handleOauthCallback(
+    @Query('code') code: string,
+    @Query('state') state: string,
+    @Res() res: Response,
+  ) {
     try {
+      if (!code || !state) {
+        this.logger.error('Missing required parameters for OAuth callback');
+        return res.status(HttpStatus.BAD_REQUEST).send('Missing required parameters');
+      }
+
+      // Exchange the code for tokens - no need to pass scopes as they'll be retrieved from state
       await this.microsoftAuthService.exchangeCodeForToken(code, state);
 
       // Return success message HTML
@@ -99,8 +95,10 @@ export class MicrosoftAuthController {
         </script>
       `);
     } catch (error) {
-      console.error('Authentication failed:', error);
-      throw new InternalServerErrorException('Authentication failed. Please try again.');
+      this.logger.error('Error handling OAuth callback:', error);
+      return res
+        .status(HttpStatus.INTERNAL_SERVER_ERROR)
+        .send('An error occurred during authentication');
     }
   }
 }

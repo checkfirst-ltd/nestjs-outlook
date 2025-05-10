@@ -8,12 +8,13 @@ import { EmailService } from '../email/email.service';
 import { Subscription } from '@microsoft/microsoft-graph-types';
 import { MICROSOFT_CONFIG } from '../../constants';
 import { MicrosoftOutlookConfig } from '../../interfaces/config/outlook-config.interface';
-import { OutlookEventTypes } from '../../event-types.enum';
+import { OutlookEventTypes } from '../../enums/event-types.enum';
 import * as crypto from 'crypto';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { MicrosoftCsrfTokenRepository } from '../../repositories/microsoft-csrf-token.repository';
 import { MicrosoftTokenApiResponse } from '../../interfaces/microsoft-auth/microsoft-token-api-response.interface';
 import { StateObject } from '../../interfaces/microsoft-auth/state-object.interface';
+import { PermissionScope } from '../../enums/permission-scope.enum';
 
 @Injectable()
 export class MicrosoftAuthService {
@@ -23,7 +24,15 @@ export class MicrosoftAuthService {
   private readonly tenantId = 'common';
   private readonly redirectUri: string;
   private readonly tokenEndpoint: string;
-  private readonly scope: string;
+  // Required Microsoft scopes that are always included
+  private readonly requiredScopes = ['offline_access', 'User.Read'];
+  private readonly defaultScopes: PermissionScope[] = [
+    PermissionScope.CALENDAR_READ,
+    PermissionScope.CALENDAR_WRITE,
+    PermissionScope.EMAIL_SEND,
+    PermissionScope.EMAIL_READ,
+    PermissionScope.EMAIL_WRITE,
+  ];
   // CSRF token expiration time (30 minutes)
   private readonly CSRF_TOKEN_EXPIRY = 30 * 60 * 1000;
   // Map to track subscription creation in progress for a user
@@ -51,10 +60,35 @@ export class MicrosoftAuthService {
     this.redirectUri = this.buildRedirectUri(this.microsoftConfig);
     console.log('Redirect URI:', this.redirectUri);
     this.tokenEndpoint = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
-    this.scope = ['offline_access', 'Calendars.ReadWrite', 'Calendars.Read', 'User.Read', 'Mail.Send', 'Mail.ReadWrite', 'Mail.Read'].join(' ');
 
     // Log the redirect URI to help with debugging
     this.logger.log(`Microsoft OAuth redirect URI set to: ${this.redirectUri}`);
+  }
+
+  /**
+   * Maps generic permission scopes to Microsoft-specific permission scopes
+   */
+  private mapToMicrosoftScopes(scopes: PermissionScope[]): string[] {
+    const scopeMapping: Record<PermissionScope, string[]> = {
+      [PermissionScope.CALENDAR_READ]: ['Calendars.Read'],
+      [PermissionScope.CALENDAR_WRITE]: ['Calendars.ReadWrite'],
+      [PermissionScope.EMAIL_READ]: ['Mail.Read'],
+      [PermissionScope.EMAIL_WRITE]: ['Mail.ReadWrite'],
+      [PermissionScope.EMAIL_SEND]: ['Mail.Send'],
+    };
+
+    // Flatten and deduplicate scopes
+    const microsoftScopes = new Set<string>();
+    
+    // Add required scopes
+    this.requiredScopes.forEach(scope => microsoftScopes.add(scope));
+    
+    // Add mapped scopes
+    scopes.forEach(scope => {
+      scopeMapping[scope].forEach(mappedScope => microsoftScopes.add(mappedScope));
+    });
+    
+    return Array.from(microsoftScopes);
   }
 
   /**
@@ -65,7 +99,7 @@ export class MicrosoftAuthService {
    */
   private buildRedirectUri(config: MicrosoftOutlookConfig): string {
     // If redirectPath already contains a full URL, use it directly
-    if (config.redirectPath && config.redirectPath.startsWith('http')) {
+    if (config.redirectPath.startsWith('http')) {
       this.logger.log(`Using complete redirect URI from config: ${config.redirectPath}`);
       return config.redirectPath;
     }
@@ -187,28 +221,39 @@ export class MicrosoftAuthService {
 
   /**
    * Get the Microsoft login URL
+   * @param userId User ID
+   * @param scopes Optional array of permission scopes, uses default scopes if not provided
    */
-  async getLoginUrl(userId: string): Promise<string> {
+  async getLoginUrl(
+    userId: string, 
+    scopes: PermissionScope[] = this.defaultScopes
+  ): Promise<string> {
     // Generate a secure CSRF token linked to this user
     const csrf = await this.generateCsrfToken(userId);
 
-    // Generate state with user ID and CSRF token
+    // Generate state with user ID, CSRF token, and requested scopes
     const stateObj = {
       userId,
       csrf,
       timestamp: Date.now(),
+      requestedScopes: scopes,
     };
     const stateJson = JSON.stringify(stateObj);
     const state = Buffer.from(stateJson).toString('base64').replace(/=/g, ''); // Remove padding '=' characters
 
     this.logger.log(`State object: ${JSON.stringify(stateObj)}`);
 
+    // Build scope string and encode it
+    const scopeString = this.mapToMicrosoftScopes(scopes).join(' ');
+    const encodedScope = encodeURIComponent(scopeString);
+    
     // Ensure proper URI encoding for parameters
     const encodedRedirectUri = encodeURIComponent(this.redirectUri);
-    const encodedScope = encodeURIComponent(this.scope);
 
-    this.logger.log(`Redirect URI (raw): ${this.redirectUri}`);
-    this.logger.log(`Redirect URI (encoded): ${encodedRedirectUri}`);
+    this.logger.debug(`Requested generic scopes: ${scopes.join(', ')}`);
+    this.logger.debug(`Mapped to Microsoft scopes: ${scopeString}`);
+    this.logger.debug(`Redirect URI (raw): ${this.redirectUri}`);
+    this.logger.debug(`Redirect URI (encoded): ${encodedRedirectUri}`);
 
     const authorizeUrl =
       `https://login.microsoftonline.com/${this.tenantId}/oauth2/v2.0/authorize` +
@@ -229,11 +274,14 @@ export class MicrosoftAuthService {
    * @param code Authorization code
    * @param state Base64 encoded state string
    */
-  async exchangeCodeForToken(code: string, state: string): Promise<TokenResponse> {
+  async exchangeCodeForToken(
+    code: string, 
+    state: string
+  ): Promise<TokenResponse> {
     // Parse the state
     const stateData = this.parseState(state);
 
-    if (!stateData || !stateData.userId) {
+    if (!stateData?.userId) {
       throw new Error('Invalid state parameter - missing user ID');
     }
 
@@ -247,10 +295,17 @@ export class MicrosoftAuthService {
 
     try {
       this.logger.log(`Exchanging code for token with redirect URI: ${this.redirectUri}`);
+      
+      // Use scopes from state if available, otherwise use defaults
+      const scopesToUse = stateData.requestedScopes || this.defaultScopes;
+      this.logger.log(`Using scopes for token exchange: ${scopesToUse.join(', ')}`);
+      
+      // Build scope string
+      const scopeString = this.mapToMicrosoftScopes(scopesToUse).join(' ');
 
       const postData = new URLSearchParams({
         client_id: this.clientId,
-        scope: this.scope,
+        scope: scopeString,
         code: code,
         redirect_uri: this.redirectUri,
         grant_type: 'authorization_code',
@@ -286,7 +341,7 @@ export class MicrosoftAuthService {
       const refreshToken = tokenData.refresh_token;
 
       // Setup subscriptions (both calendar and email)
-      await this.setupSubscriptions(userId, accessToken, refreshToken);
+      await this.setupSubscriptions(userId, accessToken, refreshToken, scopesToUse);
 
       return tokenData;
     } catch (error) {
@@ -296,15 +351,17 @@ export class MicrosoftAuthService {
   }
 
   /**
-   * Setup webhook subscriptions for a user
+   * Setup webhook subscriptions for a user based on requested scopes
    * @param userId User ID
    * @param accessToken Access token
    * @param refreshToken Refresh token
+   * @param scopes Requested permission scopes
    */
   private async setupSubscriptions(
     userId: number, 
     accessToken: string, 
-    refreshToken: string
+    refreshToken: string,
+    scopes: PermissionScope[] = this.defaultScopes
   ): Promise<void> {
     // Check if subscription setup is already in progress for this user
     if (this.subscriptionInProgress.get(userId)) {
@@ -316,34 +373,40 @@ export class MicrosoftAuthService {
       // Mark subscription setup as in progress
       this.subscriptionInProgress.set(userId, true);
 
-      // Create webhook subscription for the user's calendar
-      try {
-        await this.calendarService.createWebhookSubscription(
-          userId,
-          accessToken,
-          refreshToken,
-        );
-        this.logger.log(`Successfully created calendar webhook subscription for user ${String(userId)}`);
-      } catch (calendarError) {
-        // Don't fail authentication if webhook creation fails
-        this.logger.error(
-          `Failed to create calendar webhook subscription: ${calendarError instanceof Error ? calendarError.message : 'Unknown error'}`,
-        );
+      // Check if calendar permissions were requested
+      if (this.hasCalendarPermission(scopes)) {
+        // Create webhook subscription for the user's calendar
+        try {
+          await this.calendarService.createWebhookSubscription(
+            userId,
+            accessToken,
+            refreshToken,
+          );
+          this.logger.log(`Successfully created calendar webhook subscription for user ${String(userId)}`);
+        } catch (calendarError) {
+          // Don't fail authentication if webhook creation fails
+          this.logger.error(
+            `Failed to create calendar webhook subscription: ${calendarError instanceof Error ? calendarError.message : 'Unknown error'}`,
+          );
+        }
       }
 
-      // Create webhook subscription for the user's email
-      try {
-        await this.emailService.createWebhookSubscription(
-          userId,
-          accessToken,
-          refreshToken,
-        );
-        this.logger.log(`Successfully created email webhook subscription for user ${String(userId)}`);
-      } catch (emailError) {
-        // Don't fail authentication if webhook creation fails
-        this.logger.error(
-          `Failed to create email webhook subscription: ${emailError instanceof Error ? emailError.message : 'Unknown error'}`,
-        );
+      // Check if email permissions were requested
+      if (this.hasEmailPermission(scopes)) {
+        // Create webhook subscription for the user's email
+        try {
+          await this.emailService.createWebhookSubscription(
+            userId,
+            accessToken,
+            refreshToken,
+          );
+          this.logger.log(`Successfully created email webhook subscription for user ${String(userId)}`);
+        } catch (emailError) {
+          // Don't fail authentication if webhook creation fails
+          this.logger.error(
+            `Failed to create email webhook subscription: ${emailError instanceof Error ? emailError.message : 'Unknown error'}`,
+          );
+        }
       }
     } catch (error) {
       this.logger.error(`Error setting up subscriptions: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -359,20 +422,24 @@ export class MicrosoftAuthService {
    * @param refreshToken - The refresh token to use
    * @param userId - User ID associated with the token
    * @param calendarId - Calendar ID associated with the token
+   * @param scopes - Permission scopes to request in the refresh
    * @returns New token response with refreshed access token and refresh token
    */
   async refreshAccessToken(
     refreshToken: string,
     userId?: number,
     calendarId?: string,
+    scopes: PermissionScope[] = this.defaultScopes
   ): Promise<TokenResponse> {
     try {
+      const scopeString = this.mapToMicrosoftScopes(scopes).join(' ');
+      
       const payload = {
         client_id: this.clientId,
         client_secret: this.clientSecret,
         refresh_token: refreshToken,
         grant_type: 'refresh_token',
-        scope: this.scope,
+        scope: scopeString,
       };
 
       const response = await axios.post<MicrosoftTokenApiResponse>(
@@ -427,6 +494,7 @@ export class MicrosoftAuthService {
     subscriptionId: string,
     accessToken: string,
     refreshToken: string,
+    scopes: PermissionScope[] = this.defaultScopes
   ): Promise<Subscription> {
     try {
       // Try to renew with current token
@@ -436,7 +504,7 @@ export class MicrosoftAuthService {
         this.logger.log('Access token expired during webhook renewal, refreshing token...');
         
         // Refresh the token
-        const tokenResponse = await this.refreshAccessToken(refreshToken);
+        const tokenResponse = await this.refreshAccessToken(refreshToken, undefined, undefined, scopes);
         
         // Retry with the new token
         return await this.calendarService.renewWebhookSubscription(
@@ -447,6 +515,27 @@ export class MicrosoftAuthService {
       
       throw error;
     }
+  }
+
+  /**
+   * Helper method to determine if calendar permissions were requested
+   */
+  private hasCalendarPermission(scopes: PermissionScope[]): boolean {
+    return scopes.some(scope => 
+      scope === PermissionScope.CALENDAR_READ || 
+      scope === PermissionScope.CALENDAR_WRITE
+    );
+  }
+
+  /**
+   * Helper method to determine if email permissions were requested
+   */  
+  private hasEmailPermission(scopes: PermissionScope[]): boolean {
+    return scopes.some(scope => 
+      scope === PermissionScope.EMAIL_READ || 
+      scope === PermissionScope.EMAIL_WRITE || 
+      scope === PermissionScope.EMAIL_SEND
+    );
   }
 
   /**

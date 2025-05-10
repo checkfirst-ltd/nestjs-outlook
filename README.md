@@ -142,7 +142,7 @@ The library provides a MicrosoftAuthController for handling authentication, but 
 
 ```typescript
 import { Controller, Get, Req } from '@nestjs/common';
-import { MicrosoftAuthService } from '@checkfirst/nestjs-outlook';
+import { MicrosoftAuthService, PermissionScope } from '@checkfirst/nestjs-outlook';
 
 @Controller('auth')
 export class AuthController {
@@ -155,11 +155,46 @@ export class AuthController {
     // In a real application, get the user ID from your authentication system
     const userId = req.user?.id.toString() || '1';
         
-    // Get the login URL from the Microsoft auth service
-    return await this.microsoftAuthService.getLoginUrl(userId);
+    // Get the login URL with specific permission scopes
+    return await this.microsoftAuthService.getLoginUrl(userId, [
+      PermissionScope.CALENDAR_READ,
+      PermissionScope.EMAIL_READ,
+      PermissionScope.EMAIL_SEND
+    ]);
   }
 }
 ```
+
+## Permission Scopes
+
+The library provides a flexible permission system that allows you to request only the specific permissions your application needs:
+
+```typescript
+import { PermissionScope } from '@checkfirst/nestjs-outlook';
+
+// Available permission scopes:
+PermissionScope.CALENDAR_READ      // Read-only access to calendars
+PermissionScope.CALENDAR_WRITE     // Read-write access to calendars
+PermissionScope.EMAIL_READ         // Read-only access to emails
+PermissionScope.EMAIL_WRITE        // Read-write access to emails
+PermissionScope.EMAIL_SEND         // Permission to send emails
+```
+
+When requesting login URLs, you can specify exactly which permissions you need:
+
+```typescript
+// For a calendar-only app
+const loginUrl = await microsoftAuthService.getLoginUrl(userId, [
+  PermissionScope.CALENDAR_READ
+]);
+
+// For an email-only app
+const loginUrl = await microsoftAuthService.getLoginUrl(userId, [
+  PermissionScope.EMAIL_SEND
+]);
+```
+
+The system will automatically include the necessary base permissions (`offline_access` and `User.Read`) and map your requested permissions to the appropriate Microsoft Graph API scopes.
 
 ## Available Services and Controllers
 

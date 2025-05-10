@@ -1,5 +1,8 @@
+import { PermissionScope } from '../../enums/permission-scope.enum';
+
 export interface StateObject {
-  userId: string | number;
+  userId: string;
   csrf: string;
-  timestamp?: number;
+  timestamp: number;
+  requestedScopes?: PermissionScope[];
 }

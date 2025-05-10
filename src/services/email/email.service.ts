@@ -9,7 +9,7 @@ import { TokenResponse } from '../../interfaces/outlook/token-response.interface
 import { Message, ChangeNotification, Subscription } from '@microsoft/microsoft-graph-types';
 import { OutlookWebhookSubscriptionRepository } from '../../repositories/outlook-webhook-subscription.repository';
 import { OutlookResourceData } from '../../dto/outlook-webhook-notification.dto';
-import { OutlookEventTypes } from '../../event-types.enum';
+import { OutlookEventTypes } from '../../enums/event-types.enum';
 
 @Injectable()
 export class EmailService {
