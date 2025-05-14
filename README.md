@@ -14,6 +14,43 @@
 
 An opinionated NestJS module for Microsoft Outlook integration that provides easy access to Microsoft Graph API for emails, calendars, and more.
 
+## Why We Built This
+
+At Checkfirst, we believe that tools should be as transparent as the systems they support. This library is part of our commitment to the Testing, Inspection, Certification, and Compliance (TICC) industry, where we help transform operations through intelligent automation. While our [ScheduleAI platform](https://www.checkfirst.ai/scheduleai) helps organizations optimize inspections, audits and fieldwork, we recognize that true innovation requires open collaboration. By sharing the Microsoft integration layer that powers our authentication, calendar, and email services, we're enabling developers to build robust, enterprise-grade applications without reimplementing complex Microsoft Graph protocols. Whether you're creating scheduling systems, communication tools, or productivity enhancers, this library embodies our philosophy that trust in technology starts with transparency and accessibility.
+
+## Table of Contents
+
+- [NestJS Outlook](#nestjs-outlook)
+  - [Why We Built This](#why-we-built-this)
+  - [Table of Contents](#table-of-contents)
+  - [Features](#features)
+  - [Installation](#installation)
+  - [Setup](#setup)
+    - [1. Database Setup](#1-database-setup)
+    - [2. Microsoft App Registration](#2-microsoft-app-registration)
+    - [3. Import Required Modules](#3-import-required-modules)
+    - [4. Create an Auth Controller](#4-create-an-auth-controller)
+  - [Permission Scopes](#permission-scopes)
+  - [Available Services and Controllers](#available-services-and-controllers)
+    - [1. MicrosoftAuthService and MicrosoftAuthController](#1-microsoftauthservice-and-microsoftauthcontroller)
+    - [2. CalendarService and CalendarController](#2-calendarservice-and-calendarcontroller)
+    - [3. EmailService](#3-emailservice)
+  - [Events](#events)
+    - [Available Events](#available-events)
+    - [Listening to Events](#listening-to-events)
+  - [Example Application Architecture](#example-application-architecture)
+  - [Local Development](#local-development)
+    - [Prerequisites](#prerequisites)
+    - [Setup Steps](#setup-steps)
+    - [Running for Development](#running-for-development)
+    - [Using ngrok for Webhook Testing](#using-ngrok-for-webhook-testing)
+    - [Configuring Microsoft Entra (Azure AD) for Local Development](#configuring-microsoft-entra-azure-ad-for-local-development)
+  - [Support](#support)
+  - [Contributing](#contributing)
+  - [Code of Conduct](#code-of-conduct)
+  - [About Checkfirst](#about-checkfirst)
+  - [License](#license)
+
 ## Features
 
 - 🔗 Simple Microsoft authentication integration
@@ -318,6 +355,111 @@ src/
 
 This modular architecture keeps concerns separated and makes your application easier to maintain and test.
 
+## Local Development
+
+This section provides instructions for developers who want to run and test the library locally with the sample application.
+
+### Prerequisites
+
+1. Install [yalc](https://github.com/wclr/yalc) globally:
+   ```bash
+   npm install -g yalc
+   ```
+
+2. Node.js and npm installed on your system
+
+### Setup Steps
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/checkfirst-ltd/nestjs-outlook.git
+   cd nestjs-outlook
+   ```
+
+2. **Install dependencies in the main library:**
+   ```bash
+   npm install
+   ```
+
+3. **Install dependencies in the sample application:**
+   ```bash
+   cd samples/nestjs-outlook-example
+   npm install
+   ```
+
+4. **Link the library with the sample app using yalc:**
+   
+   In the root directory of the library:
+   ```bash
+   npm run build
+   yalc publish
+   ```
+   
+   In the sample app directory:
+   ```bash
+   yalc add @checkfirst/nestjs-outlook
+   ```
+
+### Running for Development
+
+1. **Start the library in development mode:**
+   
+   In the root directory:
+   ```bash
+   npm run dev
+   ```
+   
+   This will watch for changes in the library code and rebuild automatically.
+
+2. **Start the sample app in development mode:**
+   
+   In the sample app directory:
+   ```bash
+   npm run start:dev:yalc
+   ```
+   
+   This will start the NestJS sample application with hot-reload enabled, using the locally linked library.
+
+### Using ngrok for Webhook Testing
+
+To test Microsoft webhooks locally, you'll need to expose your local server to the internet using ngrok:
+
+1. **Install ngrok** if you haven't already (https://ngrok.com/download)
+
+2. **Start ngrok** to create a tunnel to your local server:
+   ```bash
+   ngrok http 3000
+   ```
+
+3. **Update your application configuration** with the ngrok URL:
+   - Copy the HTTPS URL provided by ngrok (e.g., `https://1234-abcd-5678.ngrok.io`)
+   - Update the `backendBaseUrl` in your `MicrosoftOutlookModule.forRoot()` configuration
+
+4. **Register your webhook** with the Microsoft Graph API using the ngrok URL
+
+This allows Microsoft to send webhook notifications to your local development environment.
+
+### Configuring Microsoft Entra (Azure AD) for Local Development
+
+For authentication to work properly with Microsoft, you need to configure your redirect URLs in Microsoft Entra (formerly Azure AD):
+
+1. **Log in to the [Microsoft Entra admin center](https://entra.microsoft.com)** (or [Azure Portal](https://portal.azure.com) > Azure Active Directory)
+
+2. **Navigate to App Registrations** and select your application
+
+3. **Go to Authentication > Add a platform > Web**
+
+4. **Add redirect URIs** for local development:
+   - For local development with ngrok: `https://[your-ngrok-url]/auth/microsoft/callback`
+   - For local development without ngrok: `http://localhost:[your-port]/auth/microsoft/callback`
+
+5. **Save your changes**
+
+> **Note:** The sample app runs on the port specified in your configuration (typically 3000). If you're using a different port, make sure to:
+> - Start ngrok with your actual port: `ngrok http [your-port]`
+> - Update your redirect URLs in Microsoft Entra accordingly
+> - Update the port in your `.env` file or configuration
+
 ## Support
 
 - [GitHub Issues](https://github.com/checkfirst-ltd/nestjs-outlook/issues)
@@ -331,7 +473,7 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 
 This project adheres to a Code of Conduct that all participants are expected to follow. Please read the [Code of Conduct](https://github.com/checkfirst-ltd/nestjs-outlook/blob/main/CONTRIBUTING.md#code-of-conduct) for details on our expectations.
 
-## About CheckFirst
+## About Checkfirst
 
 <a href="https://checkfirst.ai" target="_blank">
     <img src="https://raw.githubusercontent.com/checkfirst-ltd/nestjs-outlook/main/assets/checkfirst-logo.png" width="400" alt="CheckFirst Logo" />
