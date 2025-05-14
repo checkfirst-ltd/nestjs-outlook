@@ -1,0 +1,121 @@
+name: Update README TOC
+
+on:
+  pull_request:
+    paths:
+      - 'README.md'
+  push:
+    branches:
+      - main
+    paths:
+      - 'README.md'
+
+jobs:
+  update-toc:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Check for section changes
+        id: section-check
+        run: |
+          # Store initial README hash
+          initial_hash=$(md5sum README.md | awk '{ print $1 }')
+          
+          # Store hash of just the headers in README (excluding TOC section)
+          headers_hash=$(grep -E "^##+ " README.md | grep -v "Table of Contents" | md5sum | awk '{ print $1 }')
+          
+          # Store these values as outputs
+          echo "initial_hash=$initial_hash" >> $GITHUB_OUTPUT
+          echo "headers_hash=$headers_hash" >> $GITHUB_OUTPUT
+          
+          # Check if any headers exist in README
+          grep -q -E "^##+ " README.md && echo "has_headers=true" >> $GITHUB_OUTPUT || echo "has_headers=false" >> $GITHUB_OUTPUT
+          
+          # Check if README contains a TOC section
+          grep -q "## Table of Contents" README.md && echo "has_toc=true" >> $GITHUB_OUTPUT || echo "has_toc=false" >> $GITHUB_OUTPUT
+
+      - name: Setup Node.js
+        if: steps.section-check.outputs.has_headers == 'true'
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install markdown-toc
+        if: steps.section-check.outputs.has_headers == 'true'
+        run: npm install -g markdown-toc
+
+      - name: Update TOC
+        if: steps.section-check.outputs.has_headers == 'true'
+        run: |
+          # Extract content before TOC section (if exists, otherwise get everything before Features)
+          if grep -q "## Table of Contents" README.md; then
+            sed -n '1,/^## Table of Contents$/p' README.md > before_toc.md
+          else
+            sed -n '1,/^## Features$/p' README.md > before_toc.md
+          fi
+          
+          # Ensure "Why We Built This" is preserved and placed before TOC
+          if grep -q "## Why We Built This" README.md; then
+            if grep -q "## Table of Contents" README.md; then
+              # Extract Why We Built This section
+              sed -n '/^## Why We Built This$/,/^## Table of Contents$/p' README.md > why_we_built.md
+            else
+              # No TOC exists yet, extract until next section
+              sed -n '/^## Why We Built This$/,/^## [^W]/p' README.md > why_we_built.md
+            fi
+          else
+            # Create empty file if section doesn't exist
+            touch why_we_built.md
+          fi
+          
+          # Extract content after TOC section (if exists, otherwise after intro)
+          if grep -q "## Table of Contents" README.md; then
+            sed -n '/^## Features$/,$p' README.md > after_toc.md
+          else
+            sed -n '/^## Features$/,$p' README.md > after_toc.md
+          fi
+          
+          # Generate TOC
+          echo "## Table of Contents" > toc.md
+          echo "" >> toc.md
+          markdown-toc README.md >> toc.md
+          
+          # Remove any nested Table of Contents entries and fix formatting
+          sed -i '/Table of Contents/d' toc.md
+          
+          # Combine the files
+          cat before_toc.md why_we_built.md toc.md after_toc.md > README_new.md
+          
+          # Replace old README
+          mv README_new.md README.md
+          
+          # Clean up temporary files
+          rm -f before_toc.md why_we_built.md toc.md after_toc.md
+
+      - name: Check for changes
+        id: git-check
+        run: |
+          if [[ "${{ steps.section-check.outputs.has_headers }}" == "true" ]]; then
+            # Calculate new hash
+            new_hash=$(md5sum README.md | awk '{ print $1 }')
+            
+            # Compare with initial hash
+            if [[ "$new_hash" != "${{ steps.section-check.outputs.initial_hash }}" ]]; then
+              echo "changes=true" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Commit changes if needed
+        if: steps.git-check.outputs.changes == 'true'
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add README.md
+          git commit -m "docs: update README table of contents"
+          git push 
