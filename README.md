@@ -18,37 +18,8 @@ An opinionated NestJS module for Microsoft Outlook integration that provides eas
 
 At Checkfirst, we believe that tools should be as transparent as the systems they support. This library is part of our commitment to the Testing, Inspection, Certification, and Compliance (TICC) industry, where we help transform operations through intelligent automation. While our [ScheduleAI platform](https://www.checkfirst.ai/scheduleai) helps organizations optimize inspections, audits and fieldwork, we recognize that true innovation requires open collaboration. By sharing the Microsoft integration layer that powers our authentication, calendar, and email services, we're enabling developers to build robust, enterprise-grade applications without reimplementing complex Microsoft Graph protocols. Whether you're creating scheduling systems, communication tools, or productivity enhancers, this library embodies our philosophy that trust in technology starts with transparency and accessibility.
 
-## Table of Contents
-
-- [NestJS Outlook](#nestjs-outlook)
-  - [Why We Built This](#why-we-built-this)
-  - [Table of Contents](#table-of-contents)
-  - [Features](#features)
-  - [Installation](#installation)
-  - [Advanced Setup](#advanced-setup)
-    - [1. Database Setup](#1-database-setup)
-    - [3. Import Required Modules](#3-import-required-modules)
-    - [4. Create an Auth Controller](#4-create-an-auth-controller)
-  - [Permission Scopes](#permission-scopes)
-  - [Available Services and Controllers](#available-services-and-controllers)
-    - [1. MicrosoftAuthService and MicrosoftAuthController](#1-microsoftauthservice-and-microsoftauthcontroller)
-    - [2. CalendarService and CalendarController](#2-calendarservice-and-calendarcontroller)
-    - [3. EmailService](#3-emailservice)
-  - [Events](#events)
-    - [Available Events](#available-events)
-    - [Listening to Events](#listening-to-events)
-  - [Example Application Architecture](#example-application-architecture)
-  - [Local Development](#local-development)
-    - [Prerequisites](#prerequisites)
-    - [Setup Steps](#setup-steps)
-    - [Running for Development](#running-for-development)
-    - [Using ngrok for Webhook Testing](#using-ngrok-for-webhook-testing)
-    - [Configuring Microsoft Entra (Azure AD) for Local Development](#configuring-microsoft-entra-azure-ad-for-local-development)
-  - [Support](#support)
-  - [Contributing](#contributing)
-  - [Code of Conduct](#code-of-conduct)
-  - [About Checkfirst](#about-checkfirst)
-  - [License](#license)
+<!-- START doctoc -->
+<!-- END doctoc -->
 
 ## Features
 
@@ -92,7 +63,7 @@ export class CreateOutlookTables1697025846000 implements MigrationInterface {
 }
 ```
 
-### 2. Microsoftsfafas Registration
+### 2. Microsoft App Registration
 
 Register your application with Microsoft to get the necessary credentials:
 
