@@ -66,7 +66,7 @@ At Checkfirst, we believe that tools should be as transparent as the systems the
 npm install @checkfirst/nestjs-outlook
 ```
 
-## Advanced Setup
+## Setup
 
 ### 1. Database Setup
 
