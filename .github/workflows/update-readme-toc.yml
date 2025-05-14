@@ -29,4 +29,6 @@ jobs:
           FOLDING: false
           COMMIT_MESSAGE: "docs: update README table of contents"
           TARGET_PATHS: "README.md"
-          CREATE_PR: false 
+          CREATE_PR: false
+          COMMIT_NAME: "github-actions[bot]"
+          COMMIT_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com" 
