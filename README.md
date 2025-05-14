@@ -25,7 +25,7 @@ At Checkfirst, we believe that tools should be as transparent as the systems the
   - [Table of Contents](#table-of-contents)
   - [Features](#features)
   - [Installation](#installation)
-  - [Setup](#setup)
+  - [Advanced Setup](#advanced-setup)
     - [1. Database Setup](#1-database-setup)
     - [2. Microsoft App Registration](#2-microsoft-app-registration)
     - [3. Import Required Modules](#3-import-required-modules)
@@ -65,7 +65,7 @@ At Checkfirst, we believe that tools should be as transparent as the systems the
 npm install @checkfirst/nestjs-outlook
 ```
 
-## Setup
+## Advanced Setup
 
 ### 1. Database Setup
 
