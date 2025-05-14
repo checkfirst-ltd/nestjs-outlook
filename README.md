@@ -27,7 +27,6 @@ At Checkfirst, we believe that tools should be as transparent as the systems the
   - [Installation](#installation)
   - [Advanced Setup](#advanced-setup)
     - [1. Database Setup](#1-database-setup)
-    - [2. Microsoft App Registration](#2-microsoft-app-registration)
     - [3. Import Required Modules](#3-import-required-modules)
     - [4. Create an Auth Controller](#4-create-an-auth-controller)
   - [Permission Scopes](#permission-scopes)
@@ -93,7 +92,7 @@ export class CreateOutlookTables1697025846000 implements MigrationInterface {
 }
 ```
 
-### 2. Microsoft App Registration
+### 2. Microsoftsfafas Registration
 
 Register your application with Microsoft to get the necessary credentials:
 
@@ -483,4 +482,4 @@ This project adheres to a Code of Conduct that all participants are expected to 
 
 ## License
 
-[MIT](LICENSE) © [CheckFirst Ltd](https://checkfirst.ai) 
+[MIT](LICENSE) © [CheckFirst Ltd](https://checkfirst.ai)

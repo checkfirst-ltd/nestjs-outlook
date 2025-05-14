@@ -20,84 +20,13 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.head_ref }}
           token: ${{ secrets.GITHUB_TOKEN }}
-          
-      - name: Check for section changes
-        id: section-check
-        run: |
-          # Store initial README hash
-          initial_hash=$(md5sum README.md | awk '{ print $1 }')
-          
-          # Check if any headers exist in README
-          grep -q -E "^##+ " README.md && echo "has_headers=true" >> $GITHUB_OUTPUT || echo "has_headers=false" >> $GITHUB_OUTPUT
 
-      - name: Setup Node.js
-        if: steps.section-check.outputs.has_headers == 'true'
-        uses: actions/setup-node@v3
+      - name: Generate TOC
+        uses: technote-space/toc-generator@v4
         with:
-          node-version: '18'
-
-      - name: Install doctoc
-        if: steps.section-check.outputs.has_headers == 'true'
-        run: npm install -g doctoc
-
-      - name: Update TOC
-        if: steps.section-check.outputs.has_headers == 'true'
-        run: |
-          # Create temporary files to rebuild the README
-          touch header.md toc.md content.md
-          
-          # Extract the header part (up to Why We Built This)
-          sed -n '1,/^## Why We Built This$/p' README.md > header.md
-          
-          # Generate TOC using doctoc to a temporary file (suppress stdout)
-          echo "## Table of Contents" > toc.md
-          echo "" >> toc.md
-          
-          # Run doctoc and capture only the TOC content
-          doctoc --notitle README.md --outfile /tmp/toc-content.md 2>/dev/null
-          
-          # Process TOC content: remove diagnostics, fix formatting to use dashes
-          grep -v "Table of Contents" /tmp/toc-content.md | 
-          grep -v "^DocToc" | 
-          grep -v "^====" | 
-          grep -v "will be updated" | 
-          grep -v "is OK" | 
-          grep -v "Everything" | 
-          sed 's/^\* /- /g' | 
-          sed 's/^  \* /  - /g' | 
-          sed 's/^    \* /    - /g' >> toc.md
-          
-          # Add blank line after TOC
-          echo "" >> toc.md
-          
-          # Extract content after Why We Built This (only keep Features and beyond)
-          sed -n '/^## Features$/,$p' README.md > content.md
-          
-          # Combine files to create new README
-          cat header.md toc.md content.md > README.new
-          mv README.new README.md
-          
-          # Clean up temporary files
-          rm -f header.md toc.md content.md /tmp/toc-content.md
-
-      - name: Check for changes
-        id: git-check
-        run: |
-          if [[ "${{ steps.section-check.outputs.has_headers }}" == "true" ]]; then
-            # Calculate new hash
-            new_hash=$(md5sum README.md | awk '{ print $1 }')
-            
-            # Compare with initial hash
-            if [[ "$new_hash" != "${{ steps.section-check.outputs.initial_hash }}" ]]; then
-              echo "changes=true" >> $GITHUB_OUTPUT
-            fi
-          fi
-
-      - name: Commit changes if needed
-        if: steps.git-check.outputs.changes == 'true'
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add README.md
-          git commit -m "docs: update README table of contents"
-          git push 
+          TOC_TITLE: "## Table of Contents"
+          MAX_HEADER_LEVEL: 3
+          FOLDING: false
+          COMMIT_MESSAGE: "docs: update README table of contents"
+          TARGET_PATHS: "README.md"
+          CREATE_PR: false 
