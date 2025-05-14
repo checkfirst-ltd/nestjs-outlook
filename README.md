@@ -24,7 +24,7 @@ At Checkfirst, we believe that tools should be as transparent as the systems the
 
 - [Features](#features)
 - [Installation](#installation)
-- [Advanced Setup](#advanced-setup)
+- [Setup](#setup)
   - [1. Database Setup](#1-database-setup)
   - [2. Microsoft App Registration](#2-microsoft-app-registration)
   - [3. Import Required Modules](#3-import-required-modules)
