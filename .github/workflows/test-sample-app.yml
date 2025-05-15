@@ -35,6 +35,7 @@ jobs:
         cd samples/nestjs-outlook-example
         npm ci
         yalc add @checkfirst/nestjs-outlook
+        npm install
         
     - name: Build sample app
       run: |
