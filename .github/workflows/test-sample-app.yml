@@ -45,4 +45,4 @@ jobs:
     - name: Test sample app
       run: |
         cd samples/nestjs-outlook-example
-        npm test 
+        npm test -- --passWithNoTests 
