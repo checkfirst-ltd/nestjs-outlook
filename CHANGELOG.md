@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.0.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.0.0...v4.0.1) (2025-05-16)
+
+
+### Bug Fixes
+
+* Remove unncessary defaults ([dea21c4](https://github.com/checkfirst-ltd/nestjs-outlook/commit/dea21c4e558f12988958bfae1ee577937bdeb558))
+
 ## [4.0.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v3.1.0...v4.0.0) (2025-05-10)
 
 
