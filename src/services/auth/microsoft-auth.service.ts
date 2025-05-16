@@ -120,7 +120,7 @@ export class MicrosoftAuthService {
     }
 
     // If no backendBaseUrl is provided, use default localhost
-    const baseUrl = config.backendBaseUrl || 'http://localhost:3000';
+    const baseUrl = config.backendBaseUrl;
 
     // Remove trailing slash from baseUrl if exists
     const cleanBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
@@ -139,9 +139,6 @@ export class MicrosoftAuthService {
     if (config.redirectPath) {
       const cleanRedirectPath = config.redirectPath.replace(/^\/+/g, '');
       path += `/${cleanRedirectPath}`;
-    } else {
-      // Fallback to default redirect path if none provided
-      path += '/api/v1/auth/microsoft/callback';
     }
 
     // Ensure the path doesn't have double slashes
