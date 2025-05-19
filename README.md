@@ -296,6 +296,8 @@ The library emits events for various Microsoft activities that you can listen to
 - `EMAIL_UPDATED` - When an email is updated
 - `EMAIL_DELETED` - When an email is deleted
 
+> Note: When an email is deleted, Microsoft sends an email deletion notification followed by an email creation one. 
+
 ### Listening to Events
 
 ```typescript
