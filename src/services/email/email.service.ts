@@ -255,4 +255,22 @@ export class EmailService {
       return { success: false, message: errorMessage };
     }
   }
+  
+  async getExternalUserIdFromUserId(userId: number): Promise<string | null> {
+    try {
+      // Query the MicrosoftUser entity directly using the internal userId
+      const user = await this.microsoftUserRepository.findOne({
+        where: { id: userId }
+      });
+      
+      if (user) {
+        return user.externalUserId;
+      }
+      
+      return null;
+    } catch (error) {
+      this.logger.error(`Error getting externalUserId for userId ${String(userId)}:`, error);
+      return null;
+    }
+  }
 } 
