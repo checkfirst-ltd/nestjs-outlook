@@ -11,10 +11,14 @@ import {
 import { MicrosoftAuthService } from '../auth/microsoft-auth.service';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { OutlookWebhookSubscriptionRepository } from '../../repositories/outlook-webhook-subscription.repository';
+import { OutlookDeltaLinkRepository } from '../../repositories/outlook-delta-link.repository';
 import { OutlookResourceData } from '../../dto/outlook-webhook-notification.dto';
 import { MICROSOFT_CONFIG } from '../../constants';
 import { MicrosoftOutlookConfig } from '../../interfaces/config/outlook-config.interface';
 import { OutlookEventTypes } from '../../enums/event-types.enum';
+import { InjectRepository } from '@nestjs/typeorm';
+import { MicrosoftUser } from '../../entities/microsoft-user.entity';
+import { Repository } from 'typeorm';
 
 @Injectable()
 export class CalendarService {
@@ -27,6 +31,9 @@ export class CalendarService {
     private readonly eventEmitter: EventEmitter2,
     @Inject(MICROSOFT_CONFIG)
     private readonly microsoftConfig: MicrosoftOutlookConfig,
+    private readonly deltaLinkRepository: OutlookDeltaLinkRepository,
+    @InjectRepository(MicrosoftUser)
+    private readonly microsoftUserRepository: Repository<MicrosoftUser>,
   ) {}
 
   /**
@@ -400,44 +407,140 @@ export class CalendarService {
         return { success: false, message: 'Invalid client state format' };
       }
 
-      // Determine the type of change (created, updated, deleted)
-      let eventType: string | null;
-      switch (changeType) {
-        case 'created':
-          eventType = OutlookEventTypes.EVENT_CREATED;
-          break;
-        case 'updated':
-          eventType = OutlookEventTypes.EVENT_UPDATED;
-          break;
-        case 'deleted':
-          eventType = OutlookEventTypes.EVENT_DELETED;
-          break;
-        default:
-          eventType = null;
-          this.logger.warn(`Unknown change type received: ${String(changeType)}`);
-          return { success: false, message: `Unsupported change type: ${String(changeType)}` };
+      const externalUserId = await this.getExternalUserIdFromUserId(userId);
+    
+      if (!externalUserId) {
+        this.logger.warn(`Could not determine externalUserId for user ID ${String(userId)}`);
+        return { success: false, message: 'Could not determine external user ID' };
       }
+      
+      const sortedChanges = await this.fetchAndSortChanges(externalUserId);
 
-      // Process the resource data
+      // Process each change and emit appropriate events
+    for (const change of sortedChanges) {
+      let eventType: string | null;
+      
+      // If the change has the @removed property, it's a deletion
+      if (change as any['@removed']) {
+        eventType = OutlookEventTypes.EVENT_DELETED;
+      } else if (!change.createdDateTime || 
+                new Date(change.createdDateTime).getTime() === 
+                new Date(change.lastModifiedDateTime || change.createdDateTime).getTime()) {
+        // If createdDateTime equals lastModifiedDateTime, it's a new event
+        eventType = OutlookEventTypes.EVENT_CREATED;
+      } else {
+        // Otherwise, it's an update
+        eventType = OutlookEventTypes.EVENT_UPDATED;
+      }
+      
       const resourceData: OutlookResourceData = {
-        id: '',
+        id: change.id || '',
         userId,
         subscriptionId,
         resource,
-        changeType,
+        changeType: eventType === OutlookEventTypes.EVENT_DELETED ? 'deleted' : 
+                   eventType === OutlookEventTypes.EVENT_CREATED ? 'created' : 'updated',
+        data: change as unknown as Record<string, unknown>,
       };
-
-      // Emit an event for other parts of the application to handle
-      if (eventType) {
-        this.eventEmitter.emit(eventType, resourceData);
-        this.logger.log(`Processed webhook notification: ${eventType}`);
-      }
+      
+      // Emit the event
+      this.eventEmitter.emit(eventType, resourceData);
+      this.logger.log(`Processed calendar change: ${eventType} for event ID: ${change.id || 'unknown'}`);
+    }
 
       return { success: true, message: 'Notification processed' };
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       this.logger.error(`Error processing webhook notification: ${errorMessage}`);
       return { success: false, message: errorMessage };
+    }
+  }
+
+  /**
+   * Fetch changes from the Delta API and sort them by lastModifiedDateTime
+   * @param externalUserId - External user ID
+   * @returns Array of events sorted by lastModifiedDateTime
+   */
+  async fetchAndSortChanges(externalUserId: string): Promise<Event[]> {
+    try {
+      const accessToken = await this.microsoftAuthService.getUserAccessTokenByExternalUserId(externalUserId);
+
+      const client = Client.init({
+        authProvider: (done) => {
+          done(null, accessToken);
+        },
+      });
+
+      // Get the stored delta link for this user
+      const deltaLink = await this.deltaLinkRepository.getDeltaLink(externalUserId, 'calendar');
+
+      let requestUrl = '/me/events/delta';
+
+      // If we have a delta link, use it
+      if (deltaLink) {
+        requestUrl = deltaLink;
+      }
+
+      const allEvents: Event[] = [];
+
+      // Fetch all pages of changes
+      let response: any = { '@odata.nextLink': requestUrl };
+
+      while (response['@odata.nextLink']) {
+        const nextLink = response['@odata.nextLink'];
+
+        if (nextLink.startsWith('https://')) {
+          response = await client.api(nextLink).get();
+        } else {
+          response = await client.api(nextLink).get();
+        }
+
+        if (response.value && Array.isArray(response.value)) {
+          allEvents.push(...response.value);
+        }
+
+        // Save the delta link if present
+        if (response['@odata.deltaLink']) {
+          await this.deltaLinkRepository.saveDeltaLink(
+            externalUserId,
+            'calendar',
+            response['@odata.deltaLink']
+          );
+        }
+      }
+
+      // Sort the events by lastModifiedDateTime (or createdDateTime as fallback)
+      const sortedEvents = allEvents.sort((a, b) => {
+        const aTime = a.lastModifiedDateTime || a.createdDateTime || '';
+        const bTime = b.lastModifiedDateTime || b.createdDateTime || '';
+
+        return new Date(bTime).getTime() - new Date(aTime).getTime();
+      });
+
+      this.logger.log(`Fetched and sorted ${sortedEvents.length} calendar changes for user ${externalUserId}`);
+
+      return sortedEvents;
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`Failed to fetch calendar changes: ${errorMessage}`);
+      throw new Error(`Failed to fetch calendar changes: ${errorMessage}`);
+    }
+  }
+
+  async getExternalUserIdFromUserId(userId: number): Promise<string | null> {
+    try {
+      const user = await this.microsoftUserRepository.findOne({
+        where: { id: userId }
+      });
+
+      if (user) {
+        return user.externalUserId;
+      }
+
+      return null;
+    } catch (error) {
+      this.logger.error(`Error getting externalUserId for userId ${String(userId)}:`, error);
+      return null;
     }
   }
 }

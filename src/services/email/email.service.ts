@@ -9,6 +9,9 @@ import { Message, ChangeNotification, Subscription } from '@microsoft/microsoft-
 import { OutlookWebhookSubscriptionRepository } from '../../repositories/outlook-webhook-subscription.repository';
 import { OutlookResourceData } from '../../dto/outlook-webhook-notification.dto';
 import { OutlookEventTypes } from '../../enums/event-types.enum';
+import { MicrosoftUser } from '../../entities/microsoft-user.entity';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 
 @Injectable()
 export class EmailService {
@@ -21,6 +24,8 @@ export class EmailService {
     private readonly eventEmitter: EventEmitter2,
     @Inject(MICROSOFT_CONFIG)
     private readonly microsoftConfig: MicrosoftOutlookConfig,
+    @InjectRepository(MicrosoftUser)
+    private readonly microsoftUserRepository: Repository<MicrosoftUser>,
   ) {}
 
   /**
@@ -248,6 +253,24 @@ export class EmailService {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       this.logger.error(`Error processing email webhook notification: ${errorMessage}`);
       return { success: false, message: errorMessage };
+    }
+  }
+  
+  async getExternalUserIdFromUserId(userId: number): Promise<string | null> {
+    try {
+      // Query the MicrosoftUser entity directly using the internal userId
+      const user = await this.microsoftUserRepository.findOne({
+        where: { id: userId }
+      });
+      
+      if (user) {
+        return user.externalUserId;
+      }
+      
+      return null;
+    } catch (error) {
+      this.logger.error(`Error getting externalUserId for userId ${String(userId)}:`, error);
+      return null;
     }
   }
 } 
