@@ -40,7 +40,7 @@ export class EmailService {
         const bodyType = emailData.body?.contentType || 'Unknown';
         
         // Print email details
-        this.logger.log(`
+        this.logger.debug(`
 📧 EMAIL DETAILS:
 -----------------
 From: ${sender}
@@ -56,7 +56,7 @@ ${bodyType === 'html'
 -----------------
 `);
       } else {
-        this.logger.log('Email notification received but email content was not available');
+        this.logger.warn('Email notification received but email content was not available');
       }
     } catch (error) {
       this.logger.error(`Error processing new email: ${error instanceof Error ? error.message : 'Unknown error'}`);
