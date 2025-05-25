@@ -1,4 +1,4 @@
-name: Test Sample App with Library Changes
+name: Sample App Checks
 
 on:
   pull_request:
@@ -41,8 +41,32 @@ jobs:
       run: |
         cd samples/nestjs-outlook-example
         npm run build
-        
+    - name: Cache workspace
+      uses: actions/cache@v3
+      with:
+        path: .
+        key: workspace-${{ github.sha }}
+
     - name: Test sample app
       run: |
         cd samples/nestjs-outlook-example
-        npm test -- --passWithNoTests 
+        npm test -- --passWithNoTests
+  lint:
+    needs: test-sample-app
+    runs-on: ubuntu-latest
+    steps:
+      - name: Restore workspace
+        uses: actions/cache@v3
+        with:
+          path: .
+          key: workspace-${{ github.sha }}
+      - name: create env file
+        env:
+          DEV_ENV_FILE: ${{ secrets.DEV_ENV_FILE }}
+        run: echo "$DEV_ENV_FILE" > .env
+      - name: ESLint changed files
+        uses: tj-actions/eslint-changed-files@v25
+        with:
+          ignore_patterns: "samples/**"
+          config_path: "eslint.config.mjs"
+          extra_args: "--max-warnings=0"

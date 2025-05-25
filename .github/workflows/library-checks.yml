@@ -1,4 +1,4 @@
-name: Branch Checks
+name: Library Checks
 
 on: pull_request
 
