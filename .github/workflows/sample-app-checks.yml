@@ -67,6 +67,6 @@ jobs:
       - name: ESLint changed files
         uses: tj-actions/eslint-changed-files@v25
         with:
-          ignore_patterns: "samples/**"
+          path: "samples/nestjs-outlook-example"
           config_path: "eslint.config.mjs"
           extra_args: "--max-warnings=0"
