@@ -14,4 +14,9 @@ async function bootstrap() {
   await app.listen(3000);
   console.log(`Application is running on: ${await app.getUrl()}`);
 }
-bootstrap(); 
+
+// Handle bootstrap errors
+bootstrap().catch((error: unknown) => {
+  console.error('Failed to start application:', error);
+  process.exit(1);
+}); 
