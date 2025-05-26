@@ -34,7 +34,7 @@ export class EmailService {
    * @param data The email notification data
    */
   @OnEvent(OutlookEventTypes.EMAIL_RECEIVED)
-  async handleNewEmail(data: OutlookResourceData): Promise<void> {
+  handleNewEmail(data: OutlookResourceData): void {
     try {
       this.logger.log(`📩 New email received for user ${data.userId ?? 'unknown'}`);
 
@@ -83,7 +83,7 @@ ${bodyType === 'html'
    * @param data The email notification data
    */
   @OnEvent(OutlookEventTypes.EMAIL_UPDATED)
-  async handleEmailUpdate(data: OutlookResourceData): Promise<void> {
+  handleEmailUpdate(data: OutlookResourceData): void {
     this.logger.log(`📝 Email updated for user ${data.userId}, email ID: ${data.id || 'unknown'}`);
   }
   
@@ -92,7 +92,7 @@ ${bodyType === 'html'
    * @param data The email notification data
    */
   @OnEvent(OutlookEventTypes.EMAIL_DELETED)
-  async handleEmailDeletion(data: OutlookResourceData): Promise<void> {
+  handleEmailDeletion(data: OutlookResourceData): void {
     this.logger.log(`🗑️ Email deleted for user ${data.userId}, email ID: ${data.id || 'unknown'}`);
   }
 
