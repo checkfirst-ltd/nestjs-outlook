@@ -70,7 +70,7 @@ export class CalendarService {
   }
 
   @OnEvent(OutlookEventTypes.USER_AUTHENTICATED)
-  async handleUserAuthenticated(externalUserId: string, data: { externalUserId: string, scopes: string[] }) {
+  async handleUserAuthenticated(externalUserId: string) {
     try {
       this.logger.log(`User authenticated: ${externalUserId}`);
 

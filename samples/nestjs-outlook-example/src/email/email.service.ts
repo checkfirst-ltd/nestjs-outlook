@@ -1,8 +1,23 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { EmailService as MicrosoftEmailService, OutlookEventTypes, OutlookResourceData } from '@checkfirst/nestjs-outlook';
 import { UserCalendarRepository } from '../calendar/repositories/user-calendar.repository';
-import { Message } from '@microsoft/microsoft-graph-types';
+import { Message, EmailAddress, BodyType } from '@microsoft/microsoft-graph-types';
 import { OnEvent } from '@nestjs/event-emitter';
+
+interface EmailRecipient {
+  emailAddress: EmailAddress;
+}
+
+interface EmailData {
+  subject?: string;
+  receivedDateTime?: string;
+  from?: EmailRecipient;
+  toRecipients?: EmailRecipient[];
+  body?: {
+    content?: string;
+    contentType?: BodyType;
+  };
+}
 
 @Injectable()
 export class EmailService {
@@ -19,28 +34,28 @@ export class EmailService {
    * @param data The email notification data
    */
   @OnEvent(OutlookEventTypes.EMAIL_RECEIVED)
-  async handleNewEmail(data: OutlookResourceData): Promise<void> {
+  handleNewEmail(data: OutlookResourceData): void {
     try {
-      this.logger.log(`📩 New email received for user ${data.userId}`);
+      this.logger.log(`📩 New email received for user ${data.userId ?? 'unknown'}`);
 
       // Extract email data if available
       if (data.data) {
-        const emailData = data.data as Record<string, any>;
+        const emailData = data.data as EmailData;
         
         // Get basic email information
-        const subject = emailData.subject || 'No subject';
-        const receivedDateTime = emailData.receivedDateTime || 'Unknown time';
-        const sender = emailData.from?.emailAddress?.address || 'Unknown sender';
+        const subject = emailData.subject ?? 'No subject';
+        const receivedDateTime = emailData.receivedDateTime ?? 'Unknown time';
+        const sender = emailData.from?.emailAddress.address ?? 'Unknown sender';
         
         // Get recipients
-        const toRecipients = emailData.toRecipients?.map((r: any) => r.emailAddress?.address).join(', ') || 'No recipients';
+        const toRecipients = emailData.toRecipients?.map(r => r.emailAddress.address).join(', ') ?? 'No recipients';
         
         // Get email body (could be HTML or text)
-        const bodyContent = emailData.body?.content || 'No content';
-        const bodyType = emailData.body?.contentType || 'Unknown';
+        const bodyContent = emailData.body?.content ?? 'No content';
+        const bodyType = emailData.body?.contentType ?? 'Unknown';
         
         // Print email details
-        this.logger.log(`
+        this.logger.debug(`
 📧 EMAIL DETAILS:
 -----------------
 From: ${sender}
@@ -56,7 +71,7 @@ ${bodyType === 'html'
 -----------------
 `);
       } else {
-        this.logger.log('Email notification received but email content was not available');
+        this.logger.warn('Email notification received but email content was not available');
       }
     } catch (error) {
       this.logger.error(`Error processing new email: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -68,7 +83,7 @@ ${bodyType === 'html'
    * @param data The email notification data
    */
   @OnEvent(OutlookEventTypes.EMAIL_UPDATED)
-  async handleEmailUpdate(data: OutlookResourceData): Promise<void> {
+  handleEmailUpdate(data: OutlookResourceData): void {
     this.logger.log(`📝 Email updated for user ${data.userId}, email ID: ${data.id || 'unknown'}`);
   }
   
@@ -77,7 +92,7 @@ ${bodyType === 'html'
    * @param data The email notification data
    */
   @OnEvent(OutlookEventTypes.EMAIL_DELETED)
-  async handleEmailDeletion(data: OutlookResourceData): Promise<void> {
+  handleEmailDeletion(data: OutlookResourceData): void {
     this.logger.log(`🗑️ Email deleted for user ${data.userId}, email ID: ${data.id || 'unknown'}`);
   }
 
@@ -112,7 +127,7 @@ ${bodyType === 'html'
 
     try {
       // Send the email using the EmailService from nestjs-outlook
-      const result = await this.microsoftEmailService.sendEmail(
+      await this.microsoftEmailService.sendEmail(
         message,
         userCalendar.externalUserId
       );

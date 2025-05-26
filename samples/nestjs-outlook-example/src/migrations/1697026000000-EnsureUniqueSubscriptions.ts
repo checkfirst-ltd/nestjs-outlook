@@ -1,14 +1,18 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
+interface QueryCount {
+  count: number;
+}
+
 export class EnsureUniqueSubscriptions1697026000000 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
     // Check if the table exists
-    const tableExists = await queryRunner.query(`
+    const tableExists = (await queryRunner.query(`
       SELECT COUNT(*) as count
       FROM sqlite_master
       WHERE type='table' 
       AND name='outlook_webhook_subscriptions'
-    `);
+    `)) as QueryCount[];
 
     if (tableExists[0].count === 0) {
       // Create the table if it doesn't exist
@@ -31,13 +35,13 @@ export class EnsureUniqueSubscriptions1697026000000 implements MigrationInterfac
       `);
     } else {
       // Check if the unique constraint exists
-      const uniqueConstraintExists = await queryRunner.query(`
+      const uniqueConstraintExists = (await queryRunner.query(`
         SELECT COUNT(*) as count
         FROM sqlite_master
         WHERE type='index' 
         AND tbl_name='outlook_webhook_subscriptions' 
         AND name='UQ_outlook_webhook_subscriptions_id'
-      `);
+      `)) as QueryCount[];
 
       // If the constraint doesn't exist, add it
       if (uniqueConstraintExists[0].count === 0) {

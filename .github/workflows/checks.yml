@@ -1,0 +1,52 @@
+name: Library and Sample App Checks
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      # Library steps
+      - name: Install library dependencies
+        run: npm ci --legacy-peer-deps
+        
+      - name: Build library
+        run: npm run build
+        
+      - name: Lint library
+        run: npm run lint
+
+      # Sample app steps
+      - name: Install sample app dependencies
+        run: |
+          cd samples/nestjs-outlook-example
+          npm ci
+          
+      - name: Link library to sample app
+        run: |
+          cd samples/nestjs-outlook-example
+          npm link ../../
+          
+      - name: Build sample app
+        run: |
+          cd samples/nestjs-outlook-example
+          npm run build
+          
+      - name: Lint sample app
+        run: |
+          cd samples/nestjs-outlook-example
+          npm run lint 

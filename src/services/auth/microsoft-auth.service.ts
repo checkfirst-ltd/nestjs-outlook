@@ -145,7 +145,7 @@ export class MicrosoftAuthService {
     path = path.replace(/\/+/g, '/');
 
     const finalUri = `${cleanBaseUrl}${path}`;
-    this.logger.log(`Constructed redirect URI: ${finalUri}`);
+    this.logger.debug(`Constructed redirect URI: ${finalUri}`);
     this.logger.debug(
       `Using config: baseUrl=${baseUrl}, basePath=${config.basePath || ''}, redirectPath=${config.redirectPath || ''}`,
     );
@@ -253,7 +253,7 @@ export class MicrosoftAuthService {
     const stateJson = JSON.stringify(stateObj);
     const state = Buffer.from(stateJson).toString('base64').replace(/=/g, ''); // Remove padding '=' characters
 
-    this.logger.log(`State object: ${JSON.stringify(stateObj)}`);
+    this.logger.debug(`State object: ${JSON.stringify(stateObj)}`);
 
     // Build scope string and encode it
     const scopeString = this.mapToMicrosoftScopes(scopes).join(' ');
@@ -276,7 +276,7 @@ export class MicrosoftAuthService {
       `&scope=${encodedScope}` +
       `&state=${state}`;
 
-    this.logger.log(`FINAL MICROSOFT LOGIN URL: ${authorizeUrl}`);
+    this.logger.debug(`Final Microsoft login URL: ${authorizeUrl}`);
 
     return authorizeUrl;
   }
@@ -469,7 +469,7 @@ export class MicrosoftAuthService {
         client_secret: this.clientSecret,
       });
 
-      this.logger.log(`Token request payload: ${postData.toString()}`);
+      this.logger.debug(`Token request payload: ${postData.toString()}`);
 
       const tokenResponse = await axios.post<MicrosoftTokenApiResponse>(
         this.tokenEndpoint,

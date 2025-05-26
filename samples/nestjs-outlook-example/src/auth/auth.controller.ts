@@ -1,4 +1,4 @@
-import { Controller, Get, Req } from '@nestjs/common';
+import { Controller, Get } from '@nestjs/common';
 import { MicrosoftAuthService, PermissionScope } from '@checkfirst/nestjs-outlook';
 
 @Controller('auth')
@@ -8,7 +8,7 @@ export class AuthController {
   ) {}
 
   @Get('microsoft/login')
-  async login(@Req() req: any) {
+  async login() {
     // In a real application, you would have proper authentication
     // For this example, we're using a mock user ID
     const mockUserId = '1';
