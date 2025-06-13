@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { OutlookDeltaLink } from '../entities/delta-link.entity';
+import { ResourceType } from '../enums/resource-type.enum';
 
 @Injectable()
 export class OutlookDeltaLinkRepository {
@@ -11,19 +12,19 @@ export class OutlookDeltaLinkRepository {
   ) {}
 
   async saveDeltaLink(
-    externalUserId: string,
-    resourceType: string,
+    userId: number,
+    resourceType: ResourceType,
     deltaLink: string,
   ): Promise<OutlookDeltaLink> {
     // Try to find an existing delta link for this user and resource type
     let deltaLinkEntity = await this.repository.findOne({
-      where: { externalUserId, resourceType },
+      where: { userId, resourceType },
     });
 
     // Create a new one if it doesn't exist
     if (!deltaLinkEntity) {
       deltaLinkEntity = new OutlookDeltaLink();
-      deltaLinkEntity.externalUserId = externalUserId;
+      deltaLinkEntity.userId = userId;
       deltaLinkEntity.resourceType = resourceType;
     }
 
@@ -34,11 +35,11 @@ export class OutlookDeltaLinkRepository {
   }
 
   async getDeltaLink(
-    externalUserId: string,
-    resourceType: string,
+    userId: number,
+    resourceType: ResourceType,
   ): Promise<string | null> {
     const deltaLinkEntity = await this.repository.findOne({
-      where: { externalUserId, resourceType },
+      where: { userId, resourceType },
     });
 
     return deltaLinkEntity?.deltaLink || null;

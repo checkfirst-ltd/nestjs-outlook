@@ -1,4 +1,4 @@
-import { MigrationInterface, QueryRunner, Table, TableIndex } from "typeorm";
+import { MigrationInterface, QueryRunner, Table, TableIndex, TableForeignKey } from "typeorm";
 
 export class CreateOutlookDeltaLinksTable1747823568806 implements MigrationInterface {
     name = 'CreateOutlookDeltaLinksTable1747823568806'
@@ -16,13 +16,13 @@ export class CreateOutlookDeltaLinksTable1747823568806 implements MigrationInter
                         generationStrategy: 'increment',
                     },
                     {
-                        name: 'external_user_id',
-                        type: 'varchar',
+                        name: 'user_id',
+                        type: 'integer',
                         isNullable: false,
                     },
                     {
                         name: 'resource_type',
-                        type: 'varchar',
+                        type: 'text',
                         isNullable: false,
                     },
                     {
@@ -46,17 +46,36 @@ export class CreateOutlookDeltaLinksTable1747823568806 implements MigrationInter
             }),
             true
         );
+
+        // Create index on user_id
         await queryRunner.createIndex(
             'outlook_delta_links',
             new TableIndex({
-                name: 'IDX_045ba046da3745437f2b3f8903',
-                columnNames: ['external_user_id'],
+                name: 'IDX_outlook_delta_links_user_id',
+                columnNames: ['user_id'],
+            })
+        );
+
+        // Add foreign key constraint
+        await queryRunner.createForeignKey(
+            'outlook_delta_links',
+            new TableForeignKey({
+                name: 'FK_outlook_delta_links_user',
+                columnNames: ['user_id'],
+                referencedColumnNames: ['id'],
+                referencedTableName: 'microsoft_users',
+                onDelete: 'CASCADE',
             })
         );
     }
 
     public async down(queryRunner: QueryRunner): Promise<void> {
-        await queryRunner.dropIndex('outlook_delta_links', 'IDX_045ba046da3745437f2b3f8903');
+        const table = await queryRunner.getTable('outlook_delta_links');
+        const foreignKey = table?.foreignKeys.find(fk => fk.name === 'FK_outlook_delta_links_user');
+        if (foreignKey) {
+            await queryRunner.dropForeignKey('outlook_delta_links', foreignKey);
+        }
+        await queryRunner.dropIndex('outlook_delta_links', 'IDX_outlook_delta_links_user_id');
         await queryRunner.dropTable('outlook_delta_links');
     }
 }

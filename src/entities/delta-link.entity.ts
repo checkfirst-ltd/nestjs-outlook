@@ -5,19 +5,30 @@ import {
     CreateDateColumn,
     UpdateDateColumn,
     Index,
+    ManyToOne,
+    JoinColumn,
   } from 'typeorm';
+  import { ResourceType } from '../enums/resource-type.enum';
+  import { MicrosoftUser } from './microsoft-user.entity';
   
   @Entity('outlook_delta_links')
   export class OutlookDeltaLink {
     @PrimaryGeneratedColumn('increment')
     id!: number;
   
-    @Column({ name: 'external_user_id' })
-    @Index()
-    externalUserId: string = '';
+    @ManyToOne(() => MicrosoftUser)
+    @JoinColumn({ name: 'user_id' })
+    user!: MicrosoftUser;
   
-    @Column({ name: 'resource_type' })
-    resourceType: string = ''; // 'calendar', 'email'
+    @Column({ name: 'user_id' })
+    @Index()
+    userId!: number;
+  
+    @Column({
+      type: 'text',
+      name: 'resource_type',
+    })
+    resourceType: ResourceType = ResourceType.CALENDAR;
   
     @Column({ name: 'delta_link', type: 'text' })
     deltaLink: string = '';
