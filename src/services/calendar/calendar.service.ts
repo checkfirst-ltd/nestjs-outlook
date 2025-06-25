@@ -607,4 +607,14 @@ export class CalendarService {
       throw error;
     }
   }
+
+  async getAuthenticatedClient(externalUserId: string): Promise<Client> {
+    const accessToken = await this.microsoftAuthService.getUserAccessTokenByExternalUserId(externalUserId);
+    
+    return Client.init({
+      authProvider: (done) => {
+        done(null, accessToken);
+      },
+    });
+  }
 }
