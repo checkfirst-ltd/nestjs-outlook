@@ -11,10 +11,16 @@ import {
 import { MicrosoftAuthService } from '../auth/microsoft-auth.service';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { OutlookWebhookSubscriptionRepository } from '../../repositories/outlook-webhook-subscription.repository';
+import { OutlookDeltaLinkRepository } from '../../repositories/outlook-delta-link.repository';
 import { OutlookResourceData } from '../../dto/outlook-webhook-notification.dto';
 import { MICROSOFT_CONFIG } from '../../constants';
 import { MicrosoftOutlookConfig } from '../../interfaces/config/outlook-config.interface';
 import { OutlookEventTypes } from '../../enums/event-types.enum';
+import { InjectRepository } from '@nestjs/typeorm';
+import { MicrosoftUser } from '../../entities/microsoft-user.entity';
+import { Repository } from 'typeorm';
+import { DeltaSyncService, DeltaEvent } from '../shared/delta-sync.service';
+import { getExternalUserIdFromUserId } from '../shared/shared-user.service';
 
 @Injectable()
 export class CalendarService {
@@ -27,6 +33,10 @@ export class CalendarService {
     private readonly eventEmitter: EventEmitter2,
     @Inject(MICROSOFT_CONFIG)
     private readonly microsoftConfig: MicrosoftOutlookConfig,
+    private readonly deltaLinkRepository: OutlookDeltaLinkRepository,
+    @InjectRepository(MicrosoftUser)
+    private readonly microsoftUserRepository: Repository<MicrosoftUser>,
+    private readonly deltaSyncService: DeltaSyncService,
   ) {}
 
   /**
@@ -400,38 +410,46 @@ export class CalendarService {
         return { success: false, message: 'Invalid client state format' };
       }
 
-      // Determine the type of change (created, updated, deleted)
-      let eventType: string | null;
-      switch (changeType) {
-        case 'created':
-          eventType = OutlookEventTypes.EVENT_CREATED;
-          break;
-        case 'updated':
-          eventType = OutlookEventTypes.EVENT_UPDATED;
-          break;
-        case 'deleted':
-          eventType = OutlookEventTypes.EVENT_DELETED;
-          break;
-        default:
-          eventType = null;
-          this.logger.warn(`Unknown change type received: ${String(changeType)}`);
-          return { success: false, message: `Unsupported change type: ${String(changeType)}` };
+      const externalUserId = await getExternalUserIdFromUserId(userId, this.microsoftUserRepository, this.logger);
+    
+      if (!externalUserId) {
+        this.logger.warn(`Could not determine externalUserId for user ID ${String(userId)}`);
+        return { success: false, message: 'Could not determine external user ID' };
       }
+      
+      const sortedChanges = await this.fetchAndSortChanges(String(externalUserId));
 
-      // Process the resource data
+      // Process each change and emit appropriate events
+    for (const change of sortedChanges) {
+      let eventType: string | null;
+      
+      // If the change has the @removed property, it's a deletion
+      if ((change as { ['@removed']?: unknown })['@removed']) {
+        eventType = OutlookEventTypes.EVENT_DELETED;
+      } else if (!change.createdDateTime || 
+                new Date(change.createdDateTime).getTime() === 
+                new Date((change.lastModifiedDateTime ?? change.createdDateTime)).getTime()) {
+        // If createdDateTime equals lastModifiedDateTime, it's a new event
+        eventType = OutlookEventTypes.EVENT_CREATED;
+      } else {
+        // Otherwise, it's an update
+        eventType = OutlookEventTypes.EVENT_UPDATED;
+      }
+      
       const resourceData: OutlookResourceData = {
-        id: '',
+        id: change.id || '',
         userId,
         subscriptionId,
         resource,
-        changeType,
+        changeType: eventType === 'outlook.event.deleted' ? 'deleted' : 
+                   eventType === 'outlook.event.created' ? 'created' : 'updated',
+        data: change as unknown as Record<string, unknown>,
       };
-
-      // Emit an event for other parts of the application to handle
-      if (eventType) {
-        this.eventEmitter.emit(eventType, resourceData);
-        this.logger.log(`Processed webhook notification: ${eventType}`);
-      }
+      
+      // Emit the event
+      this.eventEmitter.emit(eventType, resourceData);
+      this.logger.log(`Processed calendar change: ${eventType} for event ID: ${change.id || 'unknown'}`);
+    }
 
       return { success: true, message: 'Notification processed' };
     } catch (error: unknown) {
@@ -439,5 +457,37 @@ export class CalendarService {
       this.logger.error(`Error processing webhook notification: ${errorMessage}`);
       return { success: false, message: errorMessage };
     }
+  }
+
+  /**
+   * Fetches and sorts calendar changes using delta API
+   * @param externalUserId External user ID
+   * @returns Array of events sorted by lastModifiedDateTime
+   */
+  async fetchAndSortChanges(externalUserId: string): Promise<Event[]> {
+    const client = await this.getAuthenticatedClient(externalUserId);
+    const requestUrl = '/me/events/delta';
+
+    try {
+      const events = await this.deltaSyncService.fetchAndSortChanges<DeltaEvent>(
+        client,
+        requestUrl
+      );
+
+      return events as Event[];
+    } catch (error) {
+      this.logger.error('Error fetching delta changes:', error);
+      throw error;
+    }
+  }
+
+  async getAuthenticatedClient(externalUserId: string): Promise<Client> {
+    const accessToken = await this.microsoftAuthService.getUserAccessTokenByExternalUserId(externalUserId);
+    
+    return Client.init({
+      authProvider: (done) => {
+        done(null, accessToken);
+      },
+    });
   }
 }
