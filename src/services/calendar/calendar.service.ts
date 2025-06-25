@@ -19,6 +19,8 @@ import { OutlookEventTypes } from '../../enums/event-types.enum';
 import { InjectRepository } from '@nestjs/typeorm';
 import { MicrosoftUser } from '../../entities/microsoft-user.entity';
 import { Repository } from 'typeorm';
+import { DeltaSyncService, DeltaEvent } from '../shared/delta-sync.service';
+import { ResourceType } from '../../enums/resource-type.enum';
 
 @Injectable()
 export class CalendarService {
@@ -34,6 +36,7 @@ export class CalendarService {
     private readonly deltaLinkRepository: OutlookDeltaLinkRepository,
     @InjectRepository(MicrosoftUser)
     private readonly microsoftUserRepository: Repository<MicrosoftUser>,
+    private readonly deltaSyncService: DeltaSyncService,
   ) {}
 
   /**
@@ -414,7 +417,7 @@ export class CalendarService {
         return { success: false, message: 'Could not determine external user ID' };
       }
       
-      const sortedChanges = await this.fetchAndSortChanges(externalUserId);
+      const sortedChanges = await this.fetchAndSortChanges(String(externalUserId));
 
       // Process each change and emit appropriate events
     for (const change of sortedChanges) {
@@ -457,73 +460,30 @@ export class CalendarService {
   }
 
   /**
-   * Fetch changes from the Delta API and sort them by lastModifiedDateTime
-   * @param externalUserId - External user ID
+   * Fetches and sorts calendar changes using delta API
+   * @param externalUserId External user ID
    * @returns Array of events sorted by lastModifiedDateTime
    */
   async fetchAndSortChanges(externalUserId: string): Promise<Event[]> {
+    const client = await this.getAuthenticatedClient(externalUserId);
+    const requestUrl = '/me/events/delta';
+
     try {
-      const accessToken = await this.microsoftAuthService.getUserAccessTokenByExternalUserId(externalUserId);
+      const events = await this.deltaSyncService.fetchAndSortChanges<DeltaEvent>(
+        client,
+        requestUrl
+      );
 
-      const client = Client.init({
-        authProvider: (done) => {
-          done(null, accessToken);
-        },
-      });
+      // Store the delta link for future use
+      const deltaLink = await this.deltaLinkRepository.getDeltaLink(
+        Number(externalUserId), 
+        ResourceType.CALENDAR
+      );
 
-      // Get the stored delta link for this user
-      const deltaLink = await this.deltaLinkRepository.getDeltaLink(externalUserId, 'calendar');
-
-      let requestUrl = '/me/events/delta';
-
-      // If we have a delta link, use it
-      if (deltaLink) {
-        requestUrl = deltaLink;
-      }
-
-      const allEvents: Event[] = [];
-
-      // Fetch all pages of changes
-      let response: any = { '@odata.nextLink': requestUrl };
-
-      while (response['@odata.nextLink']) {
-        const nextLink = response['@odata.nextLink'];
-
-        if (nextLink.startsWith('https://')) {
-          response = await client.api(nextLink).get();
-        } else {
-          response = await client.api(nextLink).get();
-        }
-
-        if (response.value && Array.isArray(response.value)) {
-          allEvents.push(...response.value);
-        }
-
-        // Save the delta link if present
-        if (response['@odata.deltaLink']) {
-          await this.deltaLinkRepository.saveDeltaLink(
-            externalUserId,
-            'calendar',
-            response['@odata.deltaLink']
-          );
-        }
-      }
-
-      // Sort the events by lastModifiedDateTime (or createdDateTime as fallback)
-      const sortedEvents = allEvents.sort((a, b) => {
-        const aTime = a.lastModifiedDateTime || a.createdDateTime || '';
-        const bTime = b.lastModifiedDateTime || b.createdDateTime || '';
-
-        return new Date(bTime).getTime() - new Date(aTime).getTime();
-      });
-
-      this.logger.log(`Fetched and sorted ${sortedEvents.length} calendar changes for user ${externalUserId}`);
-
-      return sortedEvents;
-    } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      this.logger.error(`Failed to fetch calendar changes: ${errorMessage}`);
-      throw new Error(`Failed to fetch calendar changes: ${errorMessage}`);
+      return events as Event[];
+    } catch (error) {
+      this.logger.error('Error fetching delta changes:', error);
+      throw error;
     }
   }
 
@@ -542,5 +502,15 @@ export class CalendarService {
       this.logger.error(`Error getting externalUserId for userId ${String(userId)}:`, error);
       return null;
     }
+  }
+
+  async getAuthenticatedClient(externalUserId: string): Promise<Client> {
+    const accessToken = await this.microsoftAuthService.getUserAccessTokenByExternalUserId(externalUserId);
+    
+    return Client.init({
+      authProvider: (done) => {
+        done(null, accessToken);
+      },
+    });
   }
 }

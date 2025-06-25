@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Client } from '@microsoft/microsoft-graph-client';
 import { OutlookDeltaLinkRepository } from '../../repositories/outlook-delta-link.repository';
 import { ResourceType } from '../../enums/resource-type.enum';
+import { Event, Message } from '../../types';
 
 export interface DeltaItem {
   lastModifiedDateTime?: string;
@@ -11,6 +12,9 @@ export interface DeltaItem {
     reason: 'changed' | 'deleted';
   };
 }
+
+export type DeltaEvent = Event & DeltaItem;
+export type DeltaMessage = Message & DeltaItem;
 
 export interface DeltaResponse<T> {
   '@odata.nextLink'?: string;
@@ -112,101 +116,40 @@ export class DeltaSyncService {
     return Array.from(uniqueItems.values());
   }
 
+  /**
+   * Fetches and sorts delta changes for any resource type
+   * @param client Microsoft Graph client
+   * @param requestUrl Initial request URL
+   * @returns Array of items sorted by lastModifiedDateTime
+   */
   async fetchAndSortChanges<T extends DeltaItem>(
-    userId: number,
-    resourceType: ResourceType,
-    accessToken: string,
-    initialEndpoint: string,
+    client: Client,
+    requestUrl: string
   ): Promise<T[]> {
-    try {
-      const client = Client.init({
-        authProvider: (done) => {
-          done(null, accessToken);
-        },
-      });
+    const allItems: T[] = [];
+    let response: DeltaResponse<T> = { '@odata.nextLink': requestUrl, value: [] };
 
-      // Get the stored delta link for this user
-      const deltaLink = await this.deltaLinkRepository.getDeltaLink(userId, resourceType);
-
-      let requestUrl = initialEndpoint;
-
-      // If we have a delta link, use that
-      if (deltaLink) {
-        requestUrl = deltaLink;
-      }
-
-      const allItems: T[] = [];
-
-      // Fetch all pages of changes with retry logic
-      let response: DeltaResponse<T> = { '@odata.nextLink': requestUrl, value: [] };
-
-      while (response['@odata.nextLink']) {
-        const nextLink = response['@odata.nextLink'];
-        
-        // Use retry logic for API calls
-        response = await this.retryWithBackoff(async () => {
-          try {
-            return await client.api(nextLink).get();
-          } catch (error: any) {
-            // Handle token expiration
-            if (error.statusCode === 401 || error.statusCode === 403) {
-              throw new DeltaSyncError(
-                'Token expired or invalid',
-                'TokenExpired',
-                error.statusCode
-              );
-            }
-            // Handle sync reset
-            if (error.statusCode === 410) {
-              throw new DeltaSyncError(
-                'Sync reset required',
-                'SyncReset',
-                error.statusCode
-              );
-            }
-            throw error;
-          }
-        });
-
-        if (response.value && Array.isArray(response.value)) {
-          allItems.push(...response.value);
-        }
-
-        // Handle delta response (sync reset, token expiry)
-        this.handleDeltaResponse(response, userId, resourceType);
-
-        // Save the delta link if present
-        if (response['@odata.deltaLink']) {
-          await this.deltaLinkRepository.saveDeltaLink(
-            userId,
-            resourceType,
-            response['@odata.deltaLink']
-          );
-        }
-      }
-
-      // Handle replays by deduplicating items
-      const uniqueItems = this.handleReplays(allItems);
-
-      // Sort the items by lastModifiedDateTime (or createdDateTime as fallback)
-      const sortedItems = uniqueItems.sort((a, b) => {
-        const aTime = a.lastModifiedDateTime || a.createdDateTime || '';
-        const bTime = b.lastModifiedDateTime || b.createdDateTime || '';
-
-        return new Date(bTime).getTime() - new Date(aTime).getTime();
-      });
-
-      this.logger.log(`Fetched and sorted ${sortedItems.length} ${resourceType} changes for user ${userId}`);
-
-      return sortedItems;
-    } catch (error: unknown) {
-      if (error instanceof DeltaSyncError) {
-        this.logger.error(`Delta sync error: ${error.message}`, error);
-        throw error;
-      }
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      this.logger.error(`Failed to fetch ${resourceType} changes: ${errorMessage}`);
-      throw new Error(`Failed to fetch ${resourceType} changes: ${errorMessage}`);
+    // Fetch all pages of changes
+    while (response['@odata.nextLink']) {
+      const nextLink = response['@odata.nextLink'];
+      response = await client.api(nextLink).get();
+      allItems.push(...response.value);
     }
+
+    // Sort by lastModifiedDateTime (fallback to createdDateTime)
+    return allItems.sort((a, b) => {
+      const aTime = a.lastModifiedDateTime || a.createdDateTime;
+      const bTime = b.lastModifiedDateTime || b.createdDateTime;
+      return new Date(aTime).getTime() - new Date(bTime).getTime();
+    });
+  }
+
+  /**
+   * Gets the delta link from the response
+   * @param response Delta response
+   * @returns Delta link or null
+   */
+  getDeltaLink<T>(response: DeltaResponse<T>): string | null {
+    return response['@odata.deltaLink'] || null;
   }
 } 
