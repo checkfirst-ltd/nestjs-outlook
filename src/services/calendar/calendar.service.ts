@@ -20,7 +20,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { MicrosoftUser } from '../../entities/microsoft-user.entity';
 import { Repository } from 'typeorm';
 import { DeltaSyncService, DeltaEvent } from '../shared/delta-sync.service';
-import { ResourceType } from '../../enums/resource-type.enum';
+import { getExternalUserIdFromUserId } from '../shared/shared-user.service';
 
 @Injectable()
 export class CalendarService {
@@ -410,7 +410,7 @@ export class CalendarService {
         return { success: false, message: 'Invalid client state format' };
       }
 
-      const externalUserId = await this.getExternalUserIdFromUserId(userId);
+      const externalUserId = await getExternalUserIdFromUserId(userId, this.microsoftUserRepository, this.logger);
     
       if (!externalUserId) {
         this.logger.warn(`Could not determine externalUserId for user ID ${String(userId)}`);
@@ -424,11 +424,11 @@ export class CalendarService {
       let eventType: string | null;
       
       // If the change has the @removed property, it's a deletion
-      if (change as any['@removed']) {
+      if ((change as { ['@removed']?: unknown })['@removed']) {
         eventType = OutlookEventTypes.EVENT_DELETED;
       } else if (!change.createdDateTime || 
                 new Date(change.createdDateTime).getTime() === 
-                new Date(change.lastModifiedDateTime || change.createdDateTime).getTime()) {
+                new Date((change.lastModifiedDateTime ?? change.createdDateTime)).getTime()) {
         // If createdDateTime equals lastModifiedDateTime, it's a new event
         eventType = OutlookEventTypes.EVENT_CREATED;
       } else {
@@ -441,8 +441,8 @@ export class CalendarService {
         userId,
         subscriptionId,
         resource,
-        changeType: eventType === OutlookEventTypes.EVENT_DELETED ? 'deleted' : 
-                   eventType === OutlookEventTypes.EVENT_CREATED ? 'created' : 'updated',
+        changeType: eventType === 'outlook.event.deleted' ? 'deleted' : 
+                   eventType === 'outlook.event.created' ? 'created' : 'updated',
         data: change as unknown as Record<string, unknown>,
       };
       
@@ -474,33 +474,10 @@ export class CalendarService {
         requestUrl
       );
 
-      // Store the delta link for future use
-      const deltaLink = await this.deltaLinkRepository.getDeltaLink(
-        Number(externalUserId), 
-        ResourceType.CALENDAR
-      );
-
       return events as Event[];
     } catch (error) {
       this.logger.error('Error fetching delta changes:', error);
       throw error;
-    }
-  }
-
-  async getExternalUserIdFromUserId(userId: number): Promise<string | null> {
-    try {
-      const user = await this.microsoftUserRepository.findOne({
-        where: { id: userId }
-      });
-
-      if (user) {
-        return user.externalUserId;
-      }
-
-      return null;
-    } catch (error) {
-      this.logger.error(`Error getting externalUserId for userId ${String(userId)}:`, error);
-      return null;
     }
   }
 

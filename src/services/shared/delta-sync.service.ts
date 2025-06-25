@@ -74,7 +74,7 @@ export class DeltaSyncService {
     if (response['@odata.deltaLink']?.includes('$deltatoken=')) {
       this.logger.log(`Sync reset detected for user ${userId}, resource ${resourceType}`);
       // Clear the delta link to force a full sync
-      this.deltaLinkRepository.saveDeltaLink(userId, resourceType, '');
+      void this.deltaLinkRepository.saveDeltaLink(userId, resourceType, '');
     }
 
     // Handle token expiration
@@ -87,7 +87,7 @@ export class DeltaSyncService {
   private calculateTokenExpiry(resourceType: ResourceType): Date {
     const now = new Date();
     // Directory objects and education objects have 7-day expiry
-    if (resourceType === ResourceType.CALENDAR || resourceType === ResourceType.EMAIL) {
+    if (resourceType === ResourceType.CALENDAR) {
       // For Outlook entities, we'll use a conservative 6-day expiry
       // since the actual limit depends on internal cache size
       return new Date(now.getTime() + 6 * 24 * 60 * 60 * 1000);
@@ -132,7 +132,7 @@ export class DeltaSyncService {
     // Fetch all pages of changes
     while (response['@odata.nextLink']) {
       const nextLink = response['@odata.nextLink'];
-      response = await client.api(nextLink).get();
+      response = await client.api(nextLink).get() as DeltaResponse<T>;
       allItems.push(...response.value);
     }
 
