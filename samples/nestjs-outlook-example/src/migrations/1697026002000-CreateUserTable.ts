@@ -1,21 +1,25 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
+interface QueryCount {
+  count: number;
+}
+
 export class CreateUserTable1697026002000 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
     // Check if the table exists
-    const tableExists = await queryRunner.query(`
+    const tableExists = (await queryRunner.query(`
       SELECT COUNT(*) as count
       FROM sqlite_master
       WHERE type='table' 
       AND name='users'
-    `);
+    `)) as QueryCount[];
 
     if (tableExists[0].count === 0) {
       // Create the users table
       await queryRunner.query(`
         CREATE TABLE users (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
-          email VARCHAR(255) NOT NULL,
+          email VARCHAR(255) NOT NULL UNIQUE,
           name VARCHAR(255),
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL

@@ -1,14 +1,18 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
+interface QueryCount {
+  count: number;
+}
+
 export class CreateUserCalendarTable1697026003000 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
     // Check if the table exists
-    const tableExists = await queryRunner.query(`
+    const tableExists = (await queryRunner.query(`
       SELECT COUNT(*) as count
       FROM sqlite_master
       WHERE type='table' 
       AND name='user_calendars'
-    `);
+    `)) as QueryCount[];
 
     if (tableExists[0].count === 0) {
       // Create the user_calendars table
