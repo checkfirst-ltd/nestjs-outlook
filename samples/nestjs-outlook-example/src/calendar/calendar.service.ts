@@ -1,14 +1,14 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
-import { 
-  OutlookEventTypes, 
+import { Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { OnEvent } from "@nestjs/event-emitter";
+import {
+  OutlookEventTypes,
   OutlookResourceData,
-  CalendarService as MicrosoftCalendarService 
-} from '@checkfirst/nestjs-outlook';
-import { UserCalendarRepository } from './repositories/user-calendar.repository';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { User } from '../users/entities/user.entity';
+  CalendarService as MicrosoftCalendarService,
+} from "@checkfirst/nestjs-outlook";
+import { UserCalendarRepository } from "./repositories/user-calendar.repository";
+import { InjectRepository } from "@nestjs/typeorm";
+import { Repository } from "typeorm";
+import { User } from "../users/entities/user.entity";
 
 @Injectable()
 export class CalendarService {
@@ -18,7 +18,7 @@ export class CalendarService {
     private readonly userCalendarRepository: UserCalendarRepository,
     private readonly microsoftCalendarService: MicrosoftCalendarService,
     @InjectRepository(User)
-    private readonly userRepository: Repository<User>,
+    private readonly userRepository: Repository<User>
   ) {}
 
   async createCalendarEvent(
@@ -27,13 +27,16 @@ export class CalendarService {
       name: string;
       startDateTime: string;
       endDateTime: string;
-    },
+    }
   ) {
     // Get the user's calendar data from database
-    const userCalendar = await this.userCalendarRepository.findActiveByUserId(userId);
-    
+    const userCalendar =
+      await this.userCalendarRepository.findActiveByUserId(userId);
+
     if (!userCalendar) {
-      throw new NotFoundException('No active Outlook calendar found for this user. Please connect to Outlook first.');
+      throw new NotFoundException(
+        "No active Outlook calendar found for this user. Please connect to Outlook first."
+      );
     }
 
     // Create the event object in Microsoft Graph format
@@ -41,11 +44,11 @@ export class CalendarService {
       subject: eventData.name,
       start: {
         dateTime: eventData.startDateTime,
-        timeZone: 'UTC',
+        timeZone: "UTC",
       },
       end: {
         dateTime: eventData.endDateTime,
-        timeZone: 'UTC',
+        timeZone: "UTC",
       },
     };
 
@@ -62,8 +65,8 @@ export class CalendarService {
     } catch (error) {
       this.logger.error(
         `Failed to create calendar event for user ${userId}: ${
-          error instanceof Error ? error.message : 'Unknown error'
-        }`,
+          error instanceof Error ? error.message : "Unknown error"
+        }`
       );
       throw error;
     }
@@ -76,13 +79,15 @@ export class CalendarService {
 
       // First ensure the user exists
       const userIdNum = Number(externalUserId);
-      let user = await this.userRepository.findOne({ where: { id: userIdNum } });
-      
+      let user = await this.userRepository.findOne({
+        where: { id: userIdNum },
+      });
+
       if (!user) {
         // Create a basic user if it doesn't exist
         user = await this.userRepository.save({
           id: userIdNum,
-          email: 'placeholder@email.com', // You might want to get this from Microsoft Graph API
+          email: "placeholder@email.com", // You might want to get this from Microsoft Graph API
           createdAt: new Date(),
           updatedAt: new Date(),
         });
@@ -90,11 +95,17 @@ export class CalendarService {
       }
 
       // Get the default calendar ID
-      const calendarId = await this.microsoftCalendarService.getDefaultCalendarId(externalUserId);
-      this.logger.log(`Retrieved default calendar ID: ${calendarId} for user ${externalUserId}`);
+      const calendarId =
+        await this.microsoftCalendarService.getDefaultCalendarId(
+          externalUserId
+        );
+      this.logger.log(
+        `Retrieved default calendar ID: ${calendarId} for user ${externalUserId}`
+      );
 
       // Get the existing calendar for this user if any
-      const existingCalendar = await this.userCalendarRepository.findActiveByUserId(userIdNum);
+      const existingCalendar =
+        await this.userCalendarRepository.findActiveByUserId(userIdNum);
 
       if (existingCalendar) {
         // Update existing calendar
@@ -109,20 +120,27 @@ export class CalendarService {
           externalUserId,
           calendarId
         );
-        this.logger.log(`Created new calendar entry for user ${externalUserId} with calendar ID: ${calendarId}`);
+        this.logger.log(
+          `Created new calendar entry for user ${externalUserId} with calendar ID: ${calendarId}`
+        );
       }
     } catch (error) {
       this.logger.error(
         `Failed to handle user authentication for user ${externalUserId}: ${
-          error instanceof Error ? error.message : 'Unknown error'
-        }`,
+          error instanceof Error ? error.message : "Unknown error"
+        }`
       );
     }
   }
 
   @OnEvent(OutlookEventTypes.EVENT_CREATED)
-  handleOutlookEventCreated(data: OutlookResourceData) {
+  async handleOutlookEventCreated(data: OutlookResourceData) {
     this.logger.log(`New Outlook event created with ID: ${data.id}`);
+    const fullEvent = await this.microsoftCalendarService.getEventDetails(
+      data.resource ?? "",
+      (data.userId as number).toString()
+    );
+    this.logger.log(`Event details: ${JSON.stringify(fullEvent)}`);
   }
 
   @OnEvent(OutlookEventTypes.EVENT_DELETED)
@@ -134,4 +152,4 @@ export class CalendarService {
   handleOutlookEventUpdated(data: OutlookResourceData) {
     this.logger.log(`Outlook event updated with ID: ${data.id}`);
   }
-} 
+}
