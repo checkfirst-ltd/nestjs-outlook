@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.0.1...v4.1.0) (2025-08-06)
+
+
+### Features
+
+* added sorting and delta sync ([#23](https://github.com/checkfirst-ltd/nestjs-outlook/issues/23)) ([2eac017](https://github.com/checkfirst-ltd/nestjs-outlook/commit/2eac0176a14784b162fabccbe1462bbac38e9b0f))
+
 ## [4.0.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.0.0...v4.0.1) (2025-05-16)
 
 
