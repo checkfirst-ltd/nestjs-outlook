@@ -9,6 +9,9 @@ import { Message, ChangeNotification, Subscription } from '@microsoft/microsoft-
 import { OutlookWebhookSubscriptionRepository } from '../../repositories/outlook-webhook-subscription.repository';
 import { OutlookResourceData } from '../../dto/outlook-webhook-notification.dto';
 import { OutlookEventTypes } from '../../enums/event-types.enum';
+import { MicrosoftUser } from '../../entities/microsoft-user.entity';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 
 @Injectable()
 export class EmailService {
@@ -21,6 +24,8 @@ export class EmailService {
     private readonly eventEmitter: EventEmitter2,
     @Inject(MICROSOFT_CONFIG)
     private readonly microsoftConfig: MicrosoftOutlookConfig,
+    @InjectRepository(MicrosoftUser)
+    private readonly microsoftUserRepository: Repository<MicrosoftUser>,
   ) {}
 
   /**

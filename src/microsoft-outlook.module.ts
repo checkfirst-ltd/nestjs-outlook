@@ -15,6 +15,8 @@ import { MicrosoftCsrfTokenRepository } from './repositories/microsoft-csrf-toke
 import { CalendarService } from './services/calendar/calendar.service';
 import { EmailService } from './services/email/email.service';
 import { MicrosoftUser } from './entities/microsoft-user.entity';
+import { OutlookDeltaLink } from './entities/delta-link.entity';
+import { OutlookDeltaLinkRepository } from './repositories/outlook-delta-link.repository';
 
 export const { ConfigurableModuleClass, MODULE_OPTIONS_TOKEN } =
   new ConfigurableModuleBuilder<MicrosoftOutlookConfig>().setClassMethodName('forRoot').build();
@@ -30,6 +32,7 @@ export const { ConfigurableModuleClass, MODULE_OPTIONS_TOKEN } =
       OutlookWebhookSubscription, 
       MicrosoftCsrfToken,
       MicrosoftUser,
+      OutlookDeltaLink,
     ]),
     EventEmitterModule.forRoot(),
   ],
@@ -45,7 +48,8 @@ export const { ConfigurableModuleClass, MODULE_OPTIONS_TOKEN } =
     CalendarService,
     EmailService,
     MicrosoftAuthService,
+    OutlookDeltaLinkRepository,
   ],
-  exports: [CalendarService, EmailService, MicrosoftAuthService],
+  exports: [CalendarService, EmailService, MicrosoftAuthService, OutlookDeltaLinkRepository],
 })
 export class MicrosoftOutlookModule extends ConfigurableModuleClass {}
