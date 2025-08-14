@@ -98,8 +98,8 @@ export class CreateOutlookTables1697025846000 implements MigrationInterface {
 
 Register your application with Microsoft to get the necessary credentials:
 
-1. Go to the [Azure Portal](https://portal.azure.com/)
-2. Navigate to Azure Active Directory > App registrations
+1. Go to the [Microsoft Entra](https://entra.microsoft.com/)
+2. Navigate to App registrations
 3. Create a new registration
 4. Configure redirects to include your callback URL (e.g., `https://your-api.example.com/auth/microsoft/callback`)
 5. Add Microsoft Graph API permissions based on what features you need:
