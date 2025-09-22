@@ -481,6 +481,9 @@ export class MicrosoftAuthService {
         },
       );
 
+      // Get Microsoft user ID using the access token
+      const microsoftUserId = await this.getMicrosoftUserId(tokenResponse.data.access_token);
+
       // Convert the API response to our internal TokenResponse format
       const tokenData: TokenResponse = {
         access_token: tokenResponse.data.access_token,
@@ -500,7 +503,7 @@ export class MicrosoftAuthService {
       // Emit event that the user has been authenticated
       await Promise.resolve(
         this.eventEmitter.emit(OutlookEventTypes.USER_AUTHENTICATED, stateData.userId, {
-          externalUserId: stateData.userId,
+          externalUserId: microsoftUserId,
           scopes: scopesToUse
         }),
       );
@@ -686,5 +689,29 @@ export class MicrosoftAuthService {
     // Add buffer time to current time to prevent using tokens that will expire very soon
     const currentTimeWithBuffer = new Date(Date.now() + bufferMinutes * 60 * 1000);
     return tokenExpiry < currentTimeWithBuffer;
+  }
+
+  /**
+   * Get Microsoft user ID from Microsoft Graph API using access token
+   * @param accessToken - Valid Microsoft access token
+   * @returns Microsoft user ID or null if failed
+   */
+  private async getMicrosoftUserId(accessToken: string): Promise<string | null> {
+    try {
+      const userResponse = await axios.get('https://graph.microsoft.com/v1.0/me', {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      
+      const microsoftUserId = userResponse.data.id;
+      this.logger.log(`Retrieved Microsoft user ID: ${microsoftUserId}`);
+      return microsoftUserId;
+    } catch (error) {
+      this.logger.error('Failed to get Microsoft user ID from Graph API:', error);
+      // Return null instead of throwing - this is not critical for the authentication flow
+      return null;
+    }
   }
 } 
