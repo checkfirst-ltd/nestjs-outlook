@@ -1,15 +1,15 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { Client } from '@microsoft/microsoft-graph-client';
-import { OutlookDeltaLinkRepository } from '../../repositories/outlook-delta-link.repository';
-import { ResourceType } from '../../enums/resource-type.enum';
-import { Event, Message } from '../../types';
+import { Injectable, Logger } from "@nestjs/common";
+import { Client } from "@microsoft/microsoft-graph-client";
+import { OutlookDeltaLinkRepository } from "../../repositories/outlook-delta-link.repository";
+import { ResourceType } from "../../enums/resource-type.enum";
+import { Event, Message } from "../../types";
 
 export interface DeltaItem {
   lastModifiedDateTime?: string;
-  createdDateTime: string;
+  createdDateTime?: string;
   id?: string;
-  '@removed'?: {
-    reason: 'changed' | 'deleted';
+  "@removed"?: {
+    reason: "changed" | "deleted";
   };
 }
 
@@ -17,8 +17,8 @@ export type DeltaEvent = Event & DeltaItem;
 export type DeltaMessage = Message & DeltaItem;
 
 export interface DeltaResponse<T> {
-  '@odata.nextLink'?: string;
-  '@odata.deltaLink'?: string;
+  "@odata.nextLink"?: string;
+  "@odata.deltaLink"?: string;
   value: T[];
 }
 
@@ -26,10 +26,10 @@ export class DeltaSyncError extends Error {
   constructor(
     message: string,
     public readonly code: string,
-    public readonly statusCode: number,
+    public readonly statusCode: number
   ) {
     super(message);
-    this.name = 'DeltaSyncError';
+    this.name = "DeltaSyncError";
   }
 }
 
@@ -40,16 +40,16 @@ export class DeltaSyncService {
   private readonly RETRY_DELAY_MS = 1000; // 1 second
 
   constructor(
-    private readonly deltaLinkRepository: OutlookDeltaLinkRepository,
+    private readonly deltaLinkRepository: OutlookDeltaLinkRepository
   ) {}
 
   private async delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private async retryWithBackoff<T>(
     operation: () => Promise<T>,
-    retryCount = 0,
+    retryCount = 0
   ): Promise<T> {
     try {
       return await operation();
@@ -68,19 +68,27 @@ export class DeltaSyncService {
   private handleDeltaResponse<T extends DeltaItem>(
     response: DeltaResponse<T>,
     userId: number,
-    resourceType: ResourceType,
+    resourceType: ResourceType
   ): void {
     // Handle sync reset (410 Gone)
-    if (response['@odata.deltaLink']?.includes('$deltatoken=')) {
-      this.logger.log(`Sync reset detected for user ${userId}, resource ${resourceType}`);
+    if (response["@odata.deltaLink"]?.includes("$deltatoken=")) {
+      this.logger.log(
+        `Sync reset detected for user ${userId}, resource ${resourceType}`
+      );
       // Clear the delta link to force a full sync
-      void this.deltaLinkRepository.saveDeltaLink(userId, resourceType, '');
+      void this.deltaLinkRepository.saveDeltaLink(
+        userId,
+        resourceType,
+        this.getDeltaLink(response) ?? ""
+      );
     }
 
     // Handle token expiration
-    if (response['@odata.deltaLink']) {
+    if (response["@odata.deltaLink"]) {
       const tokenExpiry = this.calculateTokenExpiry(resourceType);
-      this.logger.log(`Delta token will expire at ${tokenExpiry.toISOString()}`);
+      this.logger.log(
+        `Delta token will expire at ${tokenExpiry.toISOString()}`
+      );
     }
   }
 
@@ -99,15 +107,18 @@ export class DeltaSyncService {
   private handleReplays<T extends DeltaItem>(items: T[]): T[] {
     // Use a Map to deduplicate items by ID
     const uniqueItems = new Map<string, T>();
-    
+
     for (const item of items) {
       if (item.id) {
         // If item exists and has @removed, keep the removal
-        if (item['@removed']) {
+        if (item["@removed"]) {
           uniqueItems.set(item.id, item);
-        } 
+        }
         // If item exists and is not removed, update it
-        else if (!uniqueItems.has(item.id) || !uniqueItems.get(item.id)?.['@removed']) {
+        else if (
+          !uniqueItems.has(item.id) ||
+          !uniqueItems.get(item.id)?.["@removed"]
+        ) {
           uniqueItems.set(item.id, item);
         }
       }
@@ -124,22 +135,39 @@ export class DeltaSyncService {
    */
   async fetchAndSortChanges<T extends DeltaItem>(
     client: Client,
-    requestUrl: string
+    requestUrl: string,
+    userId: string
   ): Promise<T[]> {
     const allItems: T[] = [];
-    let response: DeltaResponse<T> = { '@odata.nextLink': requestUrl, value: [] };
+    let response: DeltaResponse<T> = {
+      "@odata.nextLink":
+        (await this.deltaLinkRepository.getDeltaLink(
+          Number(userId),
+          ResourceType.CALENDAR
+        )) ?? requestUrl,
+      value: [],
+    };
 
     // Fetch all pages of changes
-    while (response['@odata.nextLink']) {
-      const nextLink = response['@odata.nextLink'];
-      response = await client.api(nextLink).get() as DeltaResponse<T>;
-      allItems.push(...response.value);
+    while (response["@odata.nextLink"]) {
+      const nextLink = response["@odata.nextLink"];
+      response = (await client.api(nextLink).get()) as DeltaResponse<T>;
+      this.handleDeltaResponse(response, Number(userId), ResourceType.CALENDAR);
+      const eventDetails = await Promise.all(
+        response.value.map((item) =>
+          item["@removed"]
+            ? Promise.resolve(item)
+            : (client.api(`/me/events/${item.id}`).get() as Promise<T>)
+        )
+      );
+      allItems.push(...eventDetails);
+      await this.delay(200); // Slight delay to avoid hitting rate limits
     }
 
     // Sort by lastModifiedDateTime (fallback to createdDateTime)
     return allItems.sort((a, b) => {
-      const aTime = a.lastModifiedDateTime || a.createdDateTime;
-      const bTime = b.lastModifiedDateTime || b.createdDateTime;
+      const aTime = a.lastModifiedDateTime ?? a.createdDateTime ?? "";
+      const bTime = b.lastModifiedDateTime ?? b.createdDateTime ?? "";
       return new Date(aTime).getTime() - new Date(bTime).getTime();
     });
   }
@@ -150,6 +178,6 @@ export class DeltaSyncService {
    * @returns Delta link or null
    */
   getDeltaLink<T>(response: DeltaResponse<T>): string | null {
-    return response['@odata.deltaLink'] || null;
+    return response["@odata.deltaLink"] || null;
   }
-} 
+}
