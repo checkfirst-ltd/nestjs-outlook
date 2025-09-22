@@ -1,6 +1,6 @@
 import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import axios from 'axios';
+import axios, { AxiosResponse } from 'axios';
 import { TokenResponse } from '../../interfaces/outlook/token-response.interface';
 import { CalendarService } from '../calendar/calendar.service';
 import { EmailService } from '../email/email.service';
@@ -698,7 +698,7 @@ export class MicrosoftAuthService {
    */
   private async getMicrosoftUserId(accessToken: string): Promise<string | null> {
     try {
-      const userResponse = await axios.get('https://graph.microsoft.com/v1.0/me', {
+      const userResponse: AxiosResponse<{ id: string }> = await axios.get('https://graph.microsoft.com/v1.0/me', {
         headers: {
           'Authorization': `Bearer ${accessToken}`,
           'Content-Type': 'application/json',
