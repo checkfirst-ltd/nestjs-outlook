@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.1.0...v4.1.1) (2025-09-23)
+
+
+### Bug Fixes
+
+* Fix webhooks sync ([#28](https://github.com/checkfirst-ltd/nestjs-outlook/issues/28)) ([c769ebd](https://github.com/checkfirst-ltd/nestjs-outlook/commit/c769ebd29e629f4b738a48344547745ff203312b))
+
 ## [4.1.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.0.1...v4.1.0) (2025-08-06)
 
 
