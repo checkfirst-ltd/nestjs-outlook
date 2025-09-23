@@ -116,6 +116,41 @@ export class CalendarService {
     }
   }
 
+  async deleteEvent(
+    event: Partial<Event>,
+    externalUserId: string,
+    calendarId: string
+  ): Promise<void> {
+    try {
+      // Get a valid access token for this user
+      const accessToken =
+        await this.microsoftAuthService.getUserAccessTokenByExternalUserId(
+          externalUserId
+        );
+
+      // Initialize Microsoft Graph client
+      const client = Client.init({
+        authProvider: (done) => {
+          done(null, accessToken);
+        },
+      });
+      this.logger.log(`Deleting event ${event.id} from calendar ${calendarId} for user ${externalUserId}`);
+      // Delete the event
+      (await client
+        .api(`/me/calendars/${calendarId}/events/${event.id}`)
+        .delete()) as Event;
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
+      this.logger.error(
+        `Failed to delete Outlook calendar event: ${errorMessage}`
+      );
+      throw new Error(
+        `Failed to delete Outlook calendar event: ${errorMessage}`
+      );
+    }
+  }
+
   /**
    * Create a webhook subscription to receive notifications for calendar events
    * @param externalUserId - External user ID
