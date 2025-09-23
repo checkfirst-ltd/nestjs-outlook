@@ -534,18 +534,23 @@ export class CalendarService {
         // If the change has the @removed property, it's a deletion
         if ((change as { ["@removed"]?: unknown })["@removed"]) {
           eventType = OutlookEventTypes.EVENT_DELETED;
-        } else if (
-          !change.createdDateTime ||
-          new Date(change.createdDateTime).getTime() ===
+        } else {
+          console.log(
+            change.createdDateTime,
+            change.lastModifiedDateTime,
+            change.subject
+          );
+          eventType =
+            !change.createdDateTime ||
             new Date(
               change.lastModifiedDateTime ?? change.createdDateTime
-            ).getTime()
-        ) {
-          // If createdDateTime equals lastModifiedDateTime, it's a new event
-          eventType = OutlookEventTypes.EVENT_CREATED;
-        } else {
-          // Otherwise, it's an update
-          eventType = OutlookEventTypes.EVENT_UPDATED;
+            ).getTime() -
+              new Date(change.createdDateTime).getTime() <=
+              1000
+              ? // If lastModifiedDateTime - createdDateTime is less than a second, it's a new even
+                OutlookEventTypes.EVENT_CREATED
+              : // Otherwise, it's an update
+                OutlookEventTypes.EVENT_UPDATED;
         }
 
         const resourceData: OutlookResourceData = {
@@ -593,7 +598,8 @@ export class CalendarService {
       const events =
         await this.deltaSyncService.fetchAndSortChanges<DeltaEvent>(
           client,
-          requestUrl
+          requestUrl,
+          externalUserId
         );
 
       return events as Event[];
