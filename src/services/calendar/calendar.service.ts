@@ -134,7 +134,7 @@ export class CalendarService {
           done(null, accessToken);
         },
       });
-
+      this.logger.log(`Deleting event ${event.id} from calendar ${calendarId} for user ${externalUserId}`);
       // Delete the event
       (await client
         .api(`/me/calendars/${calendarId}/events/${event.id}`)
