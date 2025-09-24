@@ -115,6 +115,41 @@ export class CalendarService {
     }
   }
 
+  async deleteEvent(
+    event: Partial<Event>,
+    externalUserId: string,
+    calendarId: string
+  ): Promise<void> {
+    try {
+      // Get a valid access token for this user
+      const accessToken =
+        await this.microsoftAuthService.getUserAccessTokenByExternalUserId(
+          externalUserId
+        );
+
+      // Initialize Microsoft Graph client
+      const client = Client.init({
+        authProvider: (done) => {
+          done(null, accessToken);
+        },
+      });
+      this.logger.log(`Deleting event ${event.id} from calendar ${calendarId} for user ${externalUserId}`);
+      // Delete the event
+      (await client
+        .api(`/me/calendars/${calendarId}/events/${event.id}`)
+        .delete()) as Event;
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
+      this.logger.error(
+        `Failed to delete Outlook calendar event: ${errorMessage}`
+      );
+      throw new Error(
+        `Failed to delete Outlook calendar event: ${errorMessage}`
+      );
+    }
+  }
+
   /**
    * Create a webhook subscription to receive notifications for calendar events
    * @param externalUserId - External user ID
@@ -484,18 +519,23 @@ export class CalendarService {
         // If the change has the @removed property, it's a deletion
         if ((change as { ["@removed"]?: unknown })["@removed"]) {
           eventType = OutlookEventTypes.EVENT_DELETED;
-        } else if (
-          !change.createdDateTime ||
-          new Date(change.createdDateTime).getTime() ===
+        } else {
+          console.log(
+            change.createdDateTime,
+            change.lastModifiedDateTime,
+            change.subject
+          );
+          eventType =
+            !change.createdDateTime ||
             new Date(
               change.lastModifiedDateTime ?? change.createdDateTime
-            ).getTime()
-        ) {
-          // If createdDateTime equals lastModifiedDateTime, it's a new event
-          eventType = OutlookEventTypes.EVENT_CREATED;
-        } else {
-          // Otherwise, it's an update
-          eventType = OutlookEventTypes.EVENT_UPDATED;
+            ).getTime() -
+              new Date(change.createdDateTime).getTime() <=
+              1000
+              ? // If lastModifiedDateTime - createdDateTime is less than a second, it's a new even
+                OutlookEventTypes.EVENT_CREATED
+              : // Otherwise, it's an update
+                OutlookEventTypes.EVENT_UPDATED;
         }
 
         const resourceData: OutlookResourceData = {
@@ -543,7 +583,8 @@ export class CalendarService {
       const events =
         await this.deltaSyncService.fetchAndSortChanges<DeltaEvent>(
           client,
-          requestUrl
+          requestUrl,
+          externalUserId
         );
 
       return events as Event[];

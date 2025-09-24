@@ -134,13 +134,8 @@ export class CalendarService {
   }
 
   @OnEvent(OutlookEventTypes.EVENT_CREATED)
-  async handleOutlookEventCreated(data: OutlookResourceData) {
+  handleOutlookEventCreated(data: OutlookResourceData) {
     this.logger.log(`New Outlook event created with ID: ${data.id}`);
-    const fullEvent = await this.microsoftCalendarService.getEventDetails(
-      data.resource ?? "",
-      (data.userId as number).toString()
-    );
-    this.logger.log(`Event details: ${JSON.stringify(fullEvent)}`);
   }
 
   @OnEvent(OutlookEventTypes.EVENT_DELETED)
