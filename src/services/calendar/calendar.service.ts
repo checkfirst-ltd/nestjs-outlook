@@ -15,7 +15,6 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { MicrosoftUser } from "../../entities/microsoft-user.entity";
 import { Repository } from "typeorm";
 import { DeltaSyncService, DeltaEvent } from "../shared/delta-sync.service";
-import { getExternalUserIdFromUserId } from "../shared/shared-user.service";
 
 @Injectable()
 export class CalendarService {
@@ -499,28 +498,14 @@ export class CalendarService {
         return { success: false, message: "Client state mismatch" };
       }
 
-      // Extract the user ID from the client state (should be in format "user_123_randomstring")
-      const userId = subscription.userId;
-
-      if (!userId) {
-        this.logger.warn("Could not determine user ID from client state");
-        return { success: false, message: "Invalid client state format" };
-      }
-
-      const externalUserId = await getExternalUserIdFromUserId(
-        userId,
-        this.microsoftUserRepository,
-        this.logger
-      );
+      // External user Id is the client application userId
+      const externalUserId = subscription.userId;
 
       if (!externalUserId) {
         this.logger.warn(
-          `Could not determine externalUserId for user ID ${String(userId)}`
+          "Could not determine external user ID from client state"
         );
-        return {
-          success: false,
-          message: "Could not determine external user ID",
-        };
+        return { success: false, message: "Invalid client state format" };
       }
 
       const sortedChanges = await this.fetchAndSortChanges(
@@ -555,7 +540,7 @@ export class CalendarService {
 
         const resourceData: OutlookResourceData = {
           id: change.id || "",
-          userId,
+          userId: externalUserId,
           subscriptionId,
           resource,
           changeType:
