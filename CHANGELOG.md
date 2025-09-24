@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.2.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.2.0...v4.2.1) (2025-09-24)
+
+
+### Bug Fixes
+
+* external-user-id ([#33](https://github.com/checkfirst-ltd/nestjs-outlook/issues/33)) ([2914f3a](https://github.com/checkfirst-ltd/nestjs-outlook/commit/2914f3a4d4cb29fbcb2d0ca1fc49b8933a076efc))
+
 ## [4.2.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.1.1...v4.2.0) (2025-09-23)
 
 
