@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.2.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.2.1...v4.2.2) (2025-10-10)
+
+
+### Bug Fixes
+
+* **disconnect:** set isActive = false after deleting subscription ([#36](https://github.com/checkfirst-ltd/nestjs-outlook/issues/36)) ([05dfba3](https://github.com/checkfirst-ltd/nestjs-outlook/commit/05dfba33cd0d0bf3075f21ebc78b6928ce8176f1))
+
 ## [4.2.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.2.0...v4.2.1) (2025-09-24)
 
 
