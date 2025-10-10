@@ -387,6 +387,10 @@ export class CalendarService {
         subscriptionId
       );
 
+      await this.microsoftUserRepository.update({ externalUserId }, {
+        isActive: false
+      });
+
       this.logger.log(`Deleted webhook subscription: ${subscriptionId}`);
 
       return true;
