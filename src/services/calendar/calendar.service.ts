@@ -15,6 +15,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { MicrosoftUser } from "../../entities/microsoft-user.entity";
 import { Repository } from "typeorm";
 import { DeltaSyncService, DeltaEvent } from "../shared/delta-sync.service";
+import { delay, retryWithBackoff } from "../../utils/retry.util";
 
 @Injectable()
 export class CalendarService {
@@ -636,5 +637,126 @@ export class CalendarService {
       this.logger.error("Error fetching event details:", error);
       throw error;
     }
+  }
+
+  /**
+   * Stream calendar events in chunks for memory efficiency
+   * @param externalUserId - External user ID
+   * @param options - Optional configuration
+   * @param options.startDate - Optional start date filter (defaults to 5 years ago)
+   * @param options.endDate - Optional end date filter (defaults to 5 years from now)
+   * @param options.batchSize - Number of events to yield per chunk (default 100)
+   * @yields Chunks of events
+   */
+  async *importEventsStream(
+    externalUserId: string,
+    options?: {
+      startDate?: Date;
+      endDate?: Date;
+      batchSize?: number;
+    }
+  ): AsyncGenerator<Event[], void, unknown> {
+    const batchSize = options?.batchSize ?? 100;
+
+    try {
+      this.logger.log(
+        `Starting event stream for user ${externalUserId} (batchSize: ${batchSize})`
+      );
+
+      const client = await this.getAuthenticatedClient(externalUserId);
+
+      // Build request URL
+      const requestUrl = this.buildRequestUrl(options, batchSize);
+
+      let nextLink: string | undefined = requestUrl;
+      const buffer: Event[] = [];
+      let totalFetched = 0;
+
+      // Fetch pages and yield chunks
+      while (nextLink) {
+        this.logger.debug(`Fetching page: ${nextLink}`);
+
+        // Fetch with retry logic
+        const response = (await retryWithBackoff(() =>
+          client.api(nextLink as string).get()
+        )) as { value: Event[]; "@odata.nextLink"?: string };
+
+        const items: Event[] = response.value;
+        buffer.push(...items);
+        totalFetched += items.length;
+
+        // Yield when buffer reaches batch size
+        while (buffer.length >= batchSize) {
+          const chunk = buffer.splice(0, batchSize);
+          this.logger.debug(
+            `Yielding chunk of ${chunk.length} items (total fetched: ${totalFetched})`
+          );
+          yield chunk;
+        }
+
+        nextLink = response["@odata.nextLink"];
+
+        // Small delay between pages for rate limiting
+        if (nextLink) {
+          await delay(200);
+        }
+      }
+
+      // Yield remaining items in buffer
+      if (buffer.length > 0) {
+        this.logger.debug(`Yielding final chunk of ${buffer.length} items`);
+        yield buffer;
+      }
+
+      this.logger.log(
+        `Completed streaming ${totalFetched} events for user ${externalUserId}`
+      );
+
+      // Emit completion event with metadata
+      this.eventEmitter.emit(OutlookEventTypes.IMPORT_COMPLETED, {
+        userId: externalUserId,
+        totalEvents: totalFetched,
+      });
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
+      this.logger.error(
+        `Error streaming events for user ${externalUserId}: ${errorMessage}`
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Build request URL for event import
+   * @param options - Import options
+   * @param batchSize - Batch size for pagination
+   * @returns Request URL
+   */
+  private buildRequestUrl(
+    options?: {
+      startDate?: Date;
+      endDate?: Date;
+    },
+    batchSize?: number
+  ): string {
+    // Build the request URL for full import with date range
+    // Use calendarView for proper date range queries and recurring event handling
+    const dateinterval = 5 * 365 * 24 * 60 * 60 * 1000; // 5 years
+    const defaultStartDate = new Date(Date.now() - dateinterval);
+    const defaultEndDate = new Date(Date.now() + dateinterval);
+    const startDate = options?.startDate ?? defaultStartDate;
+    const endDate = options?.endDate ?? defaultEndDate;
+
+    const startDateStr = startDate.toISOString();
+    const endDateStr = endDate.toISOString();
+
+    // Build base URL with required parameters
+    let url = `/me/calendarView?startDateTime=${startDateStr}&endDateTime=${endDateStr}`;
+
+    // Add ordering and pagination
+    url += `&$orderby=start/dateTime&$top=${batchSize ?? 100}`;
+
+    return url;
   }
 }
