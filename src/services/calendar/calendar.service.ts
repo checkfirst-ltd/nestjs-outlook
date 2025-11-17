@@ -641,12 +641,69 @@ export class CalendarService {
 
   /**
    * Stream calendar events in chunks for memory efficiency
+   *
+   * This method uses an async generator pattern to stream events in configurable batch sizes,
+   * minimizing memory usage for large calendars. Events are fetched from Microsoft Graph API
+   * using the calendarView endpoint with pagination and automatic retry logic.
+   *
    * @param externalUserId - External user ID
    * @param options - Optional configuration
    * @param options.startDate - Optional start date filter (defaults to 5 years ago)
    * @param options.endDate - Optional end date filter (defaults to 5 years from now)
    * @param options.batchSize - Number of events to yield per chunk (default 100)
-   * @yields Chunks of events
+   * @yields Chunks of events (Event[])
+   * @throws Error if authentication fails or API requests fail after retries
+   *
+   * @example
+   * // Basic usage - stream all events with default settings
+   * for await (const events of calendarService.importEventsStream('user-123')) {
+   *   console.log(`Processing ${events.length} events`);
+   *   // Process events in batches of 100
+   * }
+   *
+   * @example
+   * // Stream events with custom date range
+   * const startDate = new Date('2024-01-01');
+   * const endDate = new Date('2024-12-31');
+   *
+   * for await (const events of calendarService.importEventsStream('user-123', {
+   *   startDate,
+   *   endDate,
+   *   batchSize: 50
+   * })) {
+   *   // Process 2024 events in batches of 50
+   *   await saveEventsToDatabase(events);
+   * }
+   *
+   * @example
+   * // Collect all events (memory-intensive for large calendars)
+   * const allEvents: Event[] = [];
+   * for await (const chunk of calendarService.importEventsStream('user-123')) {
+   *   allEvents.push(...chunk);
+   * }
+   * console.log(`Total events: ${allEvents.length}`);
+   *
+   * @example
+   * // Stream with progress tracking
+   * let totalProcessed = 0;
+   * const stream = calendarService.importEventsStream('user-123', { batchSize: 200 });
+   *
+   * for await (const events of stream) {
+   *   totalProcessed += events.length;
+   *   console.log(`Progress: ${totalProcessed} events processed`);
+   *
+   *   // Process events with custom logic
+   *   for (const event of events) {
+   *     await processEvent(event);
+   *   }
+   * }
+   *
+   * @remarks
+   * - Memory footprint: ~1MB constant vs 10-30MB for loading all events
+   * - Automatic exponential backoff retry (3 attempts) on API failures
+   * - 200ms delay between API pages to respect rate limits
+   * - Emits IMPORT_COMPLETED event when streaming finishes
+   * - Uses calendarView endpoint which automatically expands recurring events
    */
   async *importEventsStream(
     externalUserId: string,
