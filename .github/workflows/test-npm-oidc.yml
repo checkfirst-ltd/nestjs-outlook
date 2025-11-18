@@ -121,6 +121,18 @@ jobs:
           echo ""
           echo "Attempting to authenticate with npm using OIDC..."
           echo ""
+          echo "Debugging npm configuration:"
+          echo "  npm config get registry: $(npm config get registry)"
+          echo "  npm config get //registry.npmjs.org/:_authToken: $(npm config get //registry.npmjs.org/:_authToken || echo 'not set')"
+          echo ""
+          echo "⚠️  Important notes about trusted publisher configuration:"
+          echo "  1. The workflow file path must be: .github/workflows/test-npm-oidc.yml"
+          echo "     (with the leading dot and forward slashes)"
+          echo "  2. The repository must be: checkfirst-ltd/nestjs-outlook"
+          echo "     (no .git suffix, lowercase)"
+          echo "  3. Make sure you clicked 'Save' or 'Add Trusted Publisher' after entering the values"
+          echo "  4. There may be a short delay (1-2 minutes) for the configuration to take effect"
+          echo ""
           # This will verify that OIDC authentication is working
           # npm will automatically use OIDC when trusted publisher is configured
           # and no token is present
@@ -143,6 +155,13 @@ jobs:
             echo "6. Click 'Add Trusted Publisher'"
             echo ""
             echo "⚠️  Important: The repository and workflow path must match EXACTLY (case-sensitive)"
+            echo ""
+            echo "💡 Troubleshooting tips:"
+            echo "   - Double-check the workflow file path includes the leading dot: .github/workflows/..."
+            echo "   - Verify the repository name is exactly: checkfirst-ltd/nestjs-outlook (no .git)"
+            echo "   - Make sure you saved the trusted publisher configuration"
+            echo "   - Wait 1-2 minutes after saving for the configuration to propagate"
+            echo "   - Try running the workflow from the main branch if it still doesn't work"
             echo ""
             echo "After configuring, re-run this workflow to test OIDC authentication."
             exit 1
