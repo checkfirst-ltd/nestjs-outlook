@@ -25,10 +25,14 @@ jobs:
         with:
           fetch-depth: 0
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: '18.x'
           registry-url: 'https://registry.npmjs.org'
+      - name: Install npm 11.5.1+ (required for OIDC)
+        run: npm install -g npm@latest
+      - name: Verify npm version
+        run: npm --version
       - name: Install dependencies
         run: npm ci
       - name: Build
@@ -36,9 +40,47 @@ jobs:
       - name: Verify OIDC authentication
         run: |
           echo "Testing OIDC authentication with npm..."
+          echo ""
+          echo "Checking environment variables:"
+          if [ -n "$NODE_AUTH_TOKEN" ]; then
+            echo "⚠️  WARNING: NODE_AUTH_TOKEN is set. This might interfere with OIDC."
+            echo "   If you have NPM_TOKEN secret, remove it from repository secrets for OIDC to work."
+          else
+            echo "✅ NODE_AUTH_TOKEN is not set (correct for OIDC)"
+          fi
+          echo ""
+          echo "Checking .npmrc configuration:"
+          if [ -f "$HOME/.npmrc" ]; then
+            echo "Contents of $HOME/.npmrc:"
+            # Mask any tokens in the output
+            sed 's/\(//registry.npmjs.org/:_authToken=\).*/\1[REDACTED]/' "$HOME/.npmrc" || cat "$HOME/.npmrc"
+          else
+            echo "No .npmrc file found in $HOME"
+          fi
+          if [ -f "$NPM_CONFIG_USERCONFIG" ]; then
+            echo "Contents of $NPM_CONFIG_USERCONFIG:"
+            sed 's/\(//registry.npmjs.org/:_authToken=\).*/\1[REDACTED]/' "$NPM_CONFIG_USERCONFIG" || cat "$NPM_CONFIG_USERCONFIG"
+          fi
+          echo ""
+          echo "Attempting to authenticate with npm using OIDC..."
+          echo "⚠️  NOTE: If this fails, ensure you've configured the trusted publisher on npmjs.com:"
+          echo "   1. Go to https://www.npmjs.com/package/@checkfirst/nestjs-outlook/settings"
+          echo "   2. Navigate to 'Trusted Publishers'"
+          echo "   3. Add trusted publisher for:"
+          echo "      - Repository: checkfirst-ltd/nestjs-outlook"
+          echo "      - Workflow: .github/workflows/test-npm-oidc.yml"
+          echo ""
           # This will verify that OIDC authentication is working
           # If it fails, it means the trusted publisher is not configured correctly
-          npm whoami --registry=https://registry.npmjs.org
+          npm whoami --registry=https://registry.npmjs.org || {
+            echo ""
+            echo "❌ Authentication failed!"
+            echo "This usually means:"
+            echo "  1. Trusted publisher is not configured on npmjs.com (most likely)"
+            echo "  2. Repository/workflow path doesn't match the trusted publisher configuration"
+            echo "  3. npm version is too old (need 11.5.1+)"
+            exit 1
+          }
           echo "✅ Successfully authenticated with npm using OIDC!"
       - name: Test publish (dry-run)
         run: |
