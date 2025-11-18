@@ -648,7 +648,7 @@ export class CalendarService {
    *
    * @param externalUserId - External user ID
    * @param options - Optional configuration
-   * @param options.startDate - Optional start date filter (defaults to 5 years ago)
+   * @param options.startDate - Optional start date filter (defaults to today)
    * @param options.endDate - Optional end date filter (defaults to 5 years from now)
    * @param options.batchSize - Number of events to yield per chunk (default 100)
    * @yields Chunks of events (Event[])
@@ -799,9 +799,10 @@ export class CalendarService {
   ): string {
     // Build the request URL for full import with date range
     // Use calendarView for proper date range queries and recurring event handling
+    // Microsoft Graph API limits calendarView to max 1825 days (5 years) total range
     const dateinterval = 5 * 365 * 24 * 60 * 60 * 1000; // 5 years
-    const defaultStartDate = new Date(Date.now() - dateinterval);
-    const defaultEndDate = new Date(Date.now() + dateinterval);
+    const defaultStartDate = new Date(); // Today
+    const defaultEndDate = new Date(Date.now() + dateinterval); // 5 years from now
     const startDate = options?.startDate ?? defaultStartDate;
     const endDate = options?.endDate ?? defaultEndDate;
 
