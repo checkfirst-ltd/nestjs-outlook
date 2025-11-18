@@ -30,19 +30,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20.x'
-          # Don't set registry-url here to avoid token-based auth
-          # OIDC will be handled directly by npm
-      - name: Configure npm registry for OIDC
-        run: |
-          # Remove any token-based .npmrc that setup-node might have created
-          if [ -f "$NPM_CONFIG_USERCONFIG" ]; then
-            rm -f "$NPM_CONFIG_USERCONFIG"
-          fi
-          # Unset NODE_AUTH_TOKEN to prevent token-based auth
-          unset NODE_AUTH_TOKEN
-          # Set registry without auth token (OIDC will handle auth)
-          npm config set registry https://registry.npmjs.org/
-          npm config delete //registry.npmjs.org/:_authToken || true
+          registry-url: 'https://registry.npmjs.org'
+          # OIDC will be used automatically if no NODE_AUTH_TOKEN is set
       - name: Check if tag was created in the trigger workflow
         id: check-tag-in-workflow
         run: |

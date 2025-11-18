@@ -28,21 +28,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20.x'
-          # Don't set registry-url here to avoid token-based auth
-          # OIDC will be handled directly by npm
-      - name: Configure npm registry for OIDC
-        run: |
-          # Remove any token-based .npmrc that setup-node might have created
-          if [ -f "$NPM_CONFIG_USERCONFIG" ]; then
-            echo "Removing token-based .npmrc to use OIDC instead..."
-            rm -f "$NPM_CONFIG_USERCONFIG"
-          fi
-          # Unset NODE_AUTH_TOKEN to prevent token-based auth
-          unset NODE_AUTH_TOKEN
-          # Set registry without auth token (OIDC will handle auth)
-          npm config set registry https://registry.npmjs.org/
-          npm config delete //registry.npmjs.org/:_authToken || true
-          echo "✅ Configured npm to use OIDC authentication"
+          registry-url: 'https://registry.npmjs.org'
+          # OIDC will be used automatically if no NODE_AUTH_TOKEN is set
       - name: Verify Node.js and npm versions
         run: |
           echo "Node.js version: $(node --version)"
@@ -66,11 +53,9 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ""
         run: npm run build
-      - name: Verify OIDC authentication
-        env:
-          NODE_AUTH_TOKEN: ""
+      - name: Verify OIDC prerequisites
         run: |
-          echo "Testing OIDC authentication with npm..."
+          echo "Verifying OIDC prerequisites..."
           echo ""
           echo "Checking environment variables:"
           if [ -n "$NODE_AUTH_TOKEN" ]; then
@@ -78,19 +63,6 @@ jobs:
             echo "   If you have NPM_TOKEN secret, remove it from repository secrets for OIDC to work."
           else
             echo "✅ NODE_AUTH_TOKEN is not set (correct for OIDC)"
-          fi
-          echo ""
-          echo "Checking .npmrc configuration:"
-          if [ -f "$HOME/.npmrc" ]; then
-            echo "Contents of $HOME/.npmrc:"
-            # Mask any tokens in the output
-            sed 's/\(//registry.npmjs.org/:_authToken=\).*/\1[REDACTED]/' "$HOME/.npmrc" || cat "$HOME/.npmrc"
-          else
-            echo "No .npmrc file found in $HOME"
-          fi
-          if [ -f "$NPM_CONFIG_USERCONFIG" ]; then
-            echo "Contents of $NPM_CONFIG_USERCONFIG:"
-            sed 's/\(//registry.npmjs.org/:_authToken=\).*/\1[REDACTED]/' "$NPM_CONFIG_USERCONFIG" || cat "$NPM_CONFIG_USERCONFIG"
           fi
           echo ""
           echo "Checking GitHub Actions OIDC environment variables:"
@@ -109,38 +81,34 @@ jobs:
           echo "  Repository: ${{ github.repository }}"
           echo "  Workflow: ${{ github.workflow }}"
           echo "  Workflow file path: .github/workflows/test-npm-oidc.yml"
-          echo "  Ref: ${{ github.ref }}"
-          echo "  SHA: ${{ github.sha }}"
           echo ""
           echo "✅ All prerequisites for OIDC are met:"
-          echo "   - npm version supports OIDC (11.6.2)"
+          echo "   - npm version supports OIDC (11.6.2+)"
           echo "   - OIDC environment variables are available"
           echo "   - No token-based authentication is interfering"
           echo "   - Repository: checkfirst-ltd/nestjs-outlook"
           echo "   - Workflow: .github/workflows/test-npm-oidc.yml"
           echo ""
-          echo "Attempting to authenticate with npm using OIDC..."
+          echo "ℹ️  Note: According to npm docs, OIDC authentication only works during 'npm publish'"
+          echo "   The 'npm whoami' command will NOT work with OIDC."
+      - name: Test OIDC authentication with dry-run publish
+        env:
+          NODE_AUTH_TOKEN: ""
+        run: |
+          echo "Testing OIDC authentication with npm publish --dry-run..."
           echo ""
-          echo "Debugging npm configuration:"
-          echo "  npm config get registry: $(npm config get registry)"
-          echo "  npm config get //registry.npmjs.org/:_authToken: $(npm config get //registry.npmjs.org/:_authToken || echo 'not set')"
+          echo "According to npm documentation:"
+          echo "  - OIDC authentication only occurs during 'npm publish' operations"
+          echo "  - 'npm whoami' will NOT reflect OIDC authentication status"
+          echo "  - We'll test with 'npm publish --dry-run' to verify OIDC works"
           echo ""
-          echo "⚠️  Important notes about trusted publisher configuration:"
-          echo "  1. The workflow file path must be: .github/workflows/test-npm-oidc.yml"
-          echo "     (with the leading dot and forward slashes)"
-          echo "  2. The repository must be: checkfirst-ltd/nestjs-outlook"
-          echo "     (no .git suffix, lowercase)"
-          echo "  3. Make sure you clicked 'Save' or 'Add Trusted Publisher' after entering the values"
-          echo "  4. There may be a short delay (1-2 minutes) for the configuration to take effect"
-          echo ""
-          # This will verify that OIDC authentication is working
-          # npm will automatically use OIDC when trusted publisher is configured
-          # and no token is present
-          npm whoami || {
+          # Test OIDC authentication with dry-run publish
+          # This is the only way to verify OIDC is working, as per npm docs
+          npm publish --dry-run --access public || {
             echo ""
-            echo "❌ Authentication failed with ENEEDAUTH error"
+            echo "❌ Authentication failed!"
             echo ""
-            echo "This means the trusted publisher is NOT configured on npmjs.com yet."
+            echo "This usually means the trusted publisher is NOT configured correctly on npmjs.com."
             echo ""
             echo "📋 To fix this, configure the trusted publisher:"
             echo ""
@@ -148,31 +116,24 @@ jobs:
             echo "2. Click on 'Trusted Publishers' in the left sidebar"
             echo "3. Click 'Add Trusted Publisher'"
             echo "4. Select 'GitHub Actions'"
-            echo "5. Enter the following EXACT values:"
+            echo "5. Enter the following EXACT values (case-sensitive):"
             echo "   - Repository: checkfirst-ltd/nestjs-outlook"
             echo "   - Workflow file: .github/workflows/test-npm-oidc.yml"
+            echo "     (must include the .yml extension and match exactly)"
             echo "   - Environment: (leave blank for default)"
             echo "6. Click 'Add Trusted Publisher'"
             echo ""
-            echo "⚠️  Important: The repository and workflow path must match EXACTLY (case-sensitive)"
+            echo "⚠️  Important: npm does NOT verify your configuration when you save it."
+            echo "   Double-check that the repository and workflow filename match EXACTLY."
             echo ""
-            echo "💡 Troubleshooting tips:"
-            echo "   - Double-check the workflow file path includes the leading dot: .github/workflows/..."
-            echo "   - Verify the repository name is exactly: checkfirst-ltd/nestjs-outlook (no .git)"
-            echo "   - Make sure you saved the trusted publisher configuration"
+            echo "💡 Troubleshooting:"
+            echo "   - The workflow filename must match exactly, including .yml extension"
+            echo "   - The repository name must be exactly: checkfirst-ltd/nestjs-outlook"
             echo "   - Wait 1-2 minutes after saving for the configuration to propagate"
-            echo "   - Try running the workflow from the main branch if it still doesn't work"
             echo ""
-            echo "After configuring, re-run this workflow to test OIDC authentication."
             exit 1
           }
-          echo "✅ Successfully authenticated with npm using OIDC!"
-      - name: Test publish (dry-run)
-        env:
-          NODE_AUTH_TOKEN: ""
-        run: |
-          echo "Running dry-run publish test..."
-          # This will test the full publish flow without actually publishing
-          npm publish --dry-run --access public
-          echo "✅ OIDC authentication test passed! The workflow can authenticate with npm."
+          echo ""
+          echo "✅ OIDC authentication test passed!"
+          echo "   The dry-run publish succeeded, which means OIDC is working correctly."
 
