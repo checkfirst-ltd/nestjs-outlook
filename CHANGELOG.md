@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.3.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.2.2...v4.3.0) (2025-11-18)
+
+
+### Features
+
+* **Calendar:** import calendar events in streamable chunks ([#39](https://github.com/checkfirst-ltd/nestjs-outlook/issues/39)) ([6c3d865](https://github.com/checkfirst-ltd/nestjs-outlook/commit/6c3d865df0590c7a9c434048dc45ce1aec82848d))
+
 ## [4.2.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.2.1...v4.2.2) (2025-10-10)
 
 
