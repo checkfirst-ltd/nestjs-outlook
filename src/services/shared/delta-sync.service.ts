@@ -3,6 +3,7 @@ import { Client } from "@microsoft/microsoft-graph-client";
 import { OutlookDeltaLinkRepository } from "../../repositories/outlook-delta-link.repository";
 import { ResourceType } from "../../enums/resource-type.enum";
 import { Event, Message } from "../../types";
+import { delay, retryWithBackoff } from "../../utils/retry.util";
 
 export interface DeltaItem {
   lastModifiedDateTime?: string;
@@ -42,28 +43,6 @@ export class DeltaSyncService {
   constructor(
     private readonly deltaLinkRepository: OutlookDeltaLinkRepository
   ) {}
-
-  private async delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  private async retryWithBackoff<T>(
-    operation: () => Promise<T>,
-    retryCount = 0
-  ): Promise<T> {
-    try {
-      return await operation();
-    } catch (error) {
-      if (retryCount >= this.MAX_RETRIES) {
-        throw error;
-      }
-
-      // Calculate exponential backoff delay
-      const delayMs = this.RETRY_DELAY_MS * Math.pow(2, retryCount);
-      await this.delay(delayMs);
-      return this.retryWithBackoff(operation, retryCount + 1);
-    }
-  }
 
   private handleDeltaResponse<T extends DeltaItem>(
     response: DeltaResponse<T>,
@@ -151,7 +130,13 @@ export class DeltaSyncService {
     // Fetch all pages of changes
     while (response["@odata.nextLink"]) {
       const nextLink = response["@odata.nextLink"];
-      response = (await client.api(nextLink).get()) as DeltaResponse<T>;
+      response = (await retryWithBackoff(
+        () => client.api(nextLink).get(), 
+        {
+          maxRetries: this.MAX_RETRIES,
+          retryDelayMs: this.RETRY_DELAY_MS,
+        }
+      )) as DeltaResponse<T>;
       this.handleDeltaResponse(response, Number(userId), ResourceType.CALENDAR);
       const eventDetails = await Promise.all(
         response.value.map((item) =>
@@ -161,7 +146,7 @@ export class DeltaSyncService {
         )
       );
       allItems.push(...eventDetails);
-      await this.delay(200); // Slight delay to avoid hitting rate limits
+      await delay(200); // Slight delay to avoid hitting rate limits
     }
 
     // Sort by lastModifiedDateTime (fallback to createdDateTime)

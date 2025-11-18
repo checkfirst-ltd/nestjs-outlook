@@ -9,6 +9,9 @@ export enum OutlookEventTypes {
   EVENT_DELETED = 'outlook.event.deleted',
   EVENT_CREATED = 'outlook.event.created',
   EVENT_UPDATED = 'outlook.event.updated',
+
+  // Calendar import events
+  IMPORT_COMPLETED = 'outlook.calendar.import.completed',
   
   // Email events
   EMAIL_RECEIVED = 'outlook.email.received',
