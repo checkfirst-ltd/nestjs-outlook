@@ -28,7 +28,21 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20.x'
-          registry-url: 'https://registry.npmjs.org'
+          # Don't set registry-url here to avoid token-based auth
+          # OIDC will be handled directly by npm
+      - name: Configure npm registry for OIDC
+        run: |
+          # Remove any token-based .npmrc that setup-node might have created
+          if [ -f "$NPM_CONFIG_USERCONFIG" ]; then
+            echo "Removing token-based .npmrc to use OIDC instead..."
+            rm -f "$NPM_CONFIG_USERCONFIG"
+          fi
+          # Unset NODE_AUTH_TOKEN to prevent token-based auth
+          unset NODE_AUTH_TOKEN
+          # Set registry without auth token (OIDC will handle auth)
+          npm config set registry https://registry.npmjs.org/
+          npm config delete //registry.npmjs.org/:_authToken || true
+          echo "✅ Configured npm to use OIDC authentication"
       - name: Verify Node.js and npm versions
         run: |
           echo "Node.js version: $(node --version)"
@@ -45,10 +59,16 @@ jobs:
             echo "✅ npm version $NPM_VERSION supports OIDC"
           fi
       - name: Install dependencies
+        env:
+          NODE_AUTH_TOKEN: ""
         run: npm ci
       - name: Build
+        env:
+          NODE_AUTH_TOKEN: ""
         run: npm run build
       - name: Verify OIDC authentication
+        env:
+          NODE_AUTH_TOKEN: ""
         run: |
           echo "Testing OIDC authentication with npm..."
           echo ""
@@ -81,9 +101,12 @@ jobs:
           echo "      - Repository: checkfirst-ltd/nestjs-outlook"
           echo "      - Workflow: .github/workflows/test-npm-oidc.yml"
           echo ""
+          echo "Also ensure NPM_TOKEN secret is removed from repository secrets."
+          echo ""
           # This will verify that OIDC authentication is working
-          # If it fails, it means the trusted publisher is not configured correctly
-          npm whoami --registry=https://registry.npmjs.org || {
+          # npm will automatically use OIDC when trusted publisher is configured
+          # and no token is present
+          npm whoami || {
             echo ""
             echo "❌ Authentication failed!"
             echo "This usually means:"
@@ -94,6 +117,8 @@ jobs:
           }
           echo "✅ Successfully authenticated with npm using OIDC!"
       - name: Test publish (dry-run)
+        env:
+          NODE_AUTH_TOKEN: ""
         run: |
           echo "Running dry-run publish test..."
           # This will test the full publish flow without actually publishing
