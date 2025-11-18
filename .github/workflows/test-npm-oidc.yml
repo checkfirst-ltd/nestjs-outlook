@@ -1,6 +1,12 @@
 name: Test npm OIDC Authentication
 
 on:
+  push:
+    branches:
+      - '41-migrate-npm-publish-workflow-to-oidc-authentication'
+  pull_request:
+    branches:
+      - '41-migrate-npm-publish-workflow-to-oidc-authentication'
   workflow_dispatch:
     inputs:
       test_version:
