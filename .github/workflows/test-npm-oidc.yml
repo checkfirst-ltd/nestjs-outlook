@@ -27,12 +27,23 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18.x'
+          node-version: '20.x'
           registry-url: 'https://registry.npmjs.org'
-      - name: Install npm 11.5.1+ (required for OIDC)
-        run: npm install -g npm@latest
-      - name: Verify npm version
-        run: npm --version
+      - name: Verify Node.js and npm versions
+        run: |
+          echo "Node.js version: $(node --version)"
+          echo "npm version: $(npm --version)"
+          # Verify npm version supports OIDC (11.5.1+)
+          NPM_VERSION=$(npm --version | cut -d. -f1,2)
+          REQUIRED_VERSION="11.5"
+          if [ "$(printf '%s\n' "$REQUIRED_VERSION" "$NPM_VERSION" | sort -V | head -n1)" != "$REQUIRED_VERSION" ]; then
+            echo "⚠️  npm version $NPM_VERSION is below required $REQUIRED_VERSION for OIDC"
+            echo "Installing latest npm..."
+            npm install -g npm@latest
+            echo "New npm version: $(npm --version)"
+          else
+            echo "✅ npm version $NPM_VERSION supports OIDC"
+          fi
       - name: Install dependencies
         run: npm ci
       - name: Build
