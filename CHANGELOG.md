@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.4.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.3.0...v4.4.0) (2025-11-19)
+
+
+### Features
+
+* Migrate publishing to NPM to use OIDC ([e77198d](https://github.com/checkfirst-ltd/nestjs-outlook/commit/e77198d9aec3ca0530cfb154263bcbfc8d94fd99))
+
 ## [4.3.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.2.2...v4.3.0) (2025-11-18)
 
 
