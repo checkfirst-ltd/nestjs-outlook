@@ -32,6 +32,19 @@ jobs:
           node-version: '20.x'
           registry-url: 'https://registry.npmjs.org'
           # OIDC will be used automatically if no NODE_AUTH_TOKEN is set
+      - name: Check if tag was created in the trigger workflow
+        id: check-tag-in-workflow
+        run: |
+          TRIGGER_SHA="${{ github.event.workflow_run.head_sha }}"
+          TAG_SHA=$(git rev-list -n 1 $LATEST_TAG)
+          echo "Trigger SHA: $TRIGGER_SHA, Tag SHA: $TAG_SHA"
+          if [ "$TRIGGER_SHA" = "$TAG_SHA" ]; then
+            echo "SHOULD_PUBLISH=true" >> $GITHUB_ENV
+            echo "Tag was created in the triggering workflow run"
+          else
+            echo "SHOULD_PUBLISH=false" >> $GITHUB_ENV
+            echo "Tag was not created in the triggering workflow run, skipping publish"
+          fi
       - name: Ensure npm 11.5.1+ for OIDC support
         if: env.SHOULD_PUBLISH == 'true'
         run: |
@@ -45,19 +58,6 @@ jobs:
             echo "New npm version: $(npm --version)"
           else
             echo "✅ npm version $NPM_VERSION supports OIDC"
-          fi
-      - name: Check if tag was created in the trigger workflow
-        id: check-tag-in-workflow
-        run: |
-          TRIGGER_SHA="${{ github.event.workflow_run.head_sha }}"
-          TAG_SHA=$(git rev-list -n 1 $LATEST_TAG)
-          echo "Trigger SHA: $TRIGGER_SHA, Tag SHA: $TAG_SHA"
-          if [ "$TRIGGER_SHA" = "$TAG_SHA" ]; then
-            echo "SHOULD_PUBLISH=true" >> $GITHUB_ENV
-            echo "Tag was created in the triggering workflow run"
-          else
-            echo "SHOULD_PUBLISH=false" >> $GITHUB_ENV
-            echo "Tag was not created in the triggering workflow run, skipping publish"
           fi
       - name: Install dependencies
         if: env.SHOULD_PUBLISH == 'true'
