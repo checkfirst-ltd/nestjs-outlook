@@ -12,6 +12,9 @@ jobs:
   publish-npm:
     if: ${{ github.event.workflow_run.conclusion == 'success' && contains(github.event.workflow_run.head_branch, 'main') }}
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v3
         with:
@@ -24,10 +27,11 @@ jobs:
           echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
           echo "Latest tag: $LATEST_TAG"
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: '18.x'
+          node-version: '20.x'
           registry-url: 'https://registry.npmjs.org'
+          # OIDC will be used automatically if no NODE_AUTH_TOKEN is set
       - name: Check if tag was created in the trigger workflow
         id: check-tag-in-workflow
         run: |
@@ -41,11 +45,29 @@ jobs:
             echo "SHOULD_PUBLISH=false" >> $GITHUB_ENV
             echo "Tag was not created in the triggering workflow run, skipping publish"
           fi
+      - name: Ensure npm 11.5.1+ for OIDC support
+        if: env.SHOULD_PUBLISH == 'true'
+        run: |
+          # Verify npm version supports OIDC (11.5.1+)
+          NPM_VERSION=$(npm --version | cut -d. -f1,2)
+          REQUIRED_VERSION="11.5"
+          if [ "$(printf '%s\n' "$REQUIRED_VERSION" "$NPM_VERSION" | sort -V | head -n1)" != "$REQUIRED_VERSION" ]; then
+            echo "⚠️  npm version $NPM_VERSION is below required $REQUIRED_VERSION for OIDC"
+            echo "Installing latest npm..."
+            npm install -g npm@latest
+            echo "New npm version: $(npm --version)"
+          else
+            echo "✅ npm version $NPM_VERSION supports OIDC"
+          fi
       - name: Install dependencies
         if: env.SHOULD_PUBLISH == 'true'
+        env:
+          NODE_AUTH_TOKEN: ""
         run: npm ci
       - name: Build
         if: env.SHOULD_PUBLISH == 'true'
+        env:
+          NODE_AUTH_TOKEN: ""
         run: npm run build
       - name: Check tag matches package version
         if: env.SHOULD_PUBLISH == 'true'
@@ -60,6 +82,6 @@ jobs:
           fi
       - name: Publish to npm
         if: env.SHOULD_PUBLISH == 'true'
-        run: npm publish --access public
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }} 
+          NODE_AUTH_TOKEN: ""
+        run: npm publish --access public 
