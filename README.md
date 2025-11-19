@@ -486,4 +486,4 @@ This project adheres to a Code of Conduct that all participants are expected to 
 
 ## License
 
-[MIT](LICENSE) © [CheckFirst Ltd](https://checkfirst.ai)
+[MIT](LICENSE) © [Checkfirst Ltd](https://checkfirst.ai)
