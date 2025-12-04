@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.4.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.4.0...v4.4.1) (2025-12-04)
+
+
+### Bug Fixes
+
+* create subscription only if there's a READ permission ([#46](https://github.com/checkfirst-ltd/nestjs-outlook/issues/46)) ([ad7fb76](https://github.com/checkfirst-ltd/nestjs-outlook/commit/ad7fb76b0d348381194a6ef2cab1d7a8c503f6d6))
+
 ## [4.4.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.3.0...v4.4.0) (2025-11-19)
 
 
