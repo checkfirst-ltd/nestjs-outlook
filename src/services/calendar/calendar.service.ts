@@ -530,45 +530,45 @@ export class CalendarService {
         clientState
       );
 
-      if (!success) {
-        this.logger.error('validateWebhookSubscription failed', message);
+      if (!success || !externalUserId) {
+        this.logger.error('validateWebhookSubscription failed', message || 'Unknown error');
         return { success: false, message: message || 'Unknown error' };
       }
 
-      // Fetch and sort the changes from the Microsoft Graph API
-      const sortedChanges = await this.fetchAndSortChanges(
-        String(externalUserId)
-      );
+      // Stream changes and process each batch as it arrives (memory-efficient)
+      let totalProcessed = 0;
+      let batchCount = 0;
 
-      this.logger.log(`[handleOutlookWebhook] Fetched ${sortedChanges.length} changes for user ${externalUserId}`);
+      this.logger.log(`[handleOutlookWebhook] Starting to stream changes for user ${externalUserId}`);
 
-      if (sortedChanges.length === 0) {
+      for await (const changeBatch of this.streamCalendarChanges(externalUserId)) {
+        batchCount++;
+        this.logger.log(`[handleOutlookWebhook] Processing batch ${batchCount} with ${changeBatch.length} changes for user ${externalUserId}`);
+
+        if (changeBatch.length === 0) {
+          this.logger.warn(`[handleOutlookWebhook] Received empty batch ${batchCount}`);
+          continue;
+        }
+
+        // Process each change in this batch
+        for (const change of changeBatch) {
+          this.processDeltaEventChange(
+            change,
+            String(externalUserId),
+            String(subscriptionId || ''),
+            resource || ''
+          );
+          totalProcessed++;
+        }
+
+        this.logger.log(`[handleOutlookWebhook] Batch ${batchCount} processed: ${changeBatch.length} events emitted (total so far: ${totalProcessed})`);
+      }
+
+      if (totalProcessed === 0) {
         this.logger.warn(`[handleOutlookWebhook] No changes found - webhook notification received but delta sync returned empty. This might indicate the delta link was already updated.`);
       }
 
-      // Process each change and emit appropriate events
-      for (const change of sortedChanges) {
-        const eventType = detectEventType(change);
-
-        this.logger.debug(
-          `Event ${change.id || "unknown"}: created=${change.createdDateTime}, modified=${change.lastModifiedDateTime}, type=${eventType}`
-        );
-
-        const resourceData: OutlookResourceData = {
-          id: change.id || "",
-          userId: externalUserId,
-          subscriptionId,
-          resource,
-          changeType: EVENT_TYPE_TO_CHANGE_TYPE[eventType],
-          data: change as unknown as Record<string, unknown>,
-        };
-
-        // Emit the event
-        this.eventEmitter.emit(eventType, resourceData);
-        this.logger.log(
-          `Processed calendar change: ${eventType} for event ID: ${change.id || "unknown"}`
-        );
-      }
+      this.logger.log(`[handleOutlookWebhook] Completed streaming: ${totalProcessed} total events processed across ${batchCount} batches for user ${externalUserId}`);
 
       return { success: true, message: "Notification processed" };
     } catch (error: unknown) {
@@ -608,14 +608,60 @@ export class CalendarService {
         dateRange
       );
 
-      return items as unknown as Event[];
+      return items as Event[];
     } catch (error) {
       this.logger.error("Error fetching delta changes:", error);
       throw error;
     }
   }
 
-  async getAuthenticatedClient(externalUserId: string): Promise<Client> {
+  /**
+   * Streams calendar changes using async generator (memory-efficient alternative)
+   * Yields sorted batches of events as each page is fetched from Microsoft Graph
+   *
+   * Benefits:
+   * - Memory efficient: Process one page at a time instead of loading all changes
+   * - Faster time-to-first-event: Start processing immediately after first page
+   * - Better for large syncs: Handle 1000s of changes without memory issues
+   *
+   * @param externalUserId External user ID
+   * @param forceReset Force reset delta link (used on reconnection)
+   * @param dateRange Optional date range for calendar delta queries (only used on initialization)
+   * @yields Sorted batches of events (one batch per Microsoft Graph page)
+   */
+  async *streamCalendarChanges(
+    externalUserId: number,
+    forceReset: boolean = false,
+    dateRange?: {
+      startDate: Date;
+      endDate: Date;
+    }
+  ): AsyncGenerator<Event[], void, unknown> {
+    const client = await this.getAuthenticatedClient(externalUserId);
+    const requestUrl = "/me/events/delta";
+
+    try {
+      this.logger.log(`[streamCalendarChanges] Starting stream for user ${externalUserId}`);
+
+      for await (const batch of this.deltaSyncService.streamDeltaChanges(
+        client,
+        requestUrl,
+        String(externalUserId),
+        forceReset,
+        dateRange
+      )) {
+        this.logger.debug(`[streamCalendarChanges] Yielding batch of ${batch.length} events for user ${externalUserId}`);
+        yield batch as Event[];
+      }
+
+      this.logger.log(`[streamCalendarChanges] Completed streaming for user ${externalUserId}`);
+    } catch (error) {
+      this.logger.error(`[streamCalendarChanges] Error streaming delta changes:`, error);
+      throw error;
+    }
+  }
+
+  async getAuthenticatedClient(externalUserId: number): Promise<Client> {
     const accessToken =
       await this.microsoftAuthService.getUserAccessTokenByExternalUserId(
         externalUserId
@@ -798,6 +844,42 @@ export class CalendarService {
       );
       throw error;
     }
+  }
+
+  /**
+   * Process a single delta event change and emit appropriate event
+   * @param change The delta event change to process
+   * @param externalUserId External user ID
+   * @param subscriptionId Subscription ID
+   * @param resource Resource path
+   */
+  private processDeltaEventChange(
+    change: Event,
+    externalUserId: string,
+    subscriptionId: string,
+    resource: string
+  ): void {
+    const eventType = detectEventType(change);
+
+    this.logger.debug(
+      `[processDeltaEventChange] Event ${change.id || "unknown"}: created=${change.createdDateTime}, modified=${change.lastModifiedDateTime}, type=${eventType}`
+    );
+
+    const resourceData: OutlookResourceData = {
+      id: change.id || "",
+      userId: Number(externalUserId),
+      subscriptionId,
+      resource,
+      changeType: EVENT_TYPE_TO_CHANGE_TYPE[eventType],
+      data: change as unknown as Record<string, unknown>,
+    };
+
+    // Emit the event
+    this.eventEmitter.emit(eventType, resourceData);
+
+    this.logger.log(
+      `[processDeltaEventChange] Emitted ${eventType} for event ID: ${change.id || "unknown"}`
+    );
   }
 
   /**
