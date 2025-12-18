@@ -656,6 +656,37 @@ export class MicrosoftAuthService {
   }
 
   /**
+   * Revoke Microsoft tokens using the refresh token
+   * @param refreshToken - The refresh token to use
+   * @returns void
+   */
+  async revokeRefreshToken(refreshToken: string): Promise<void> {
+    try {
+      if (!refreshToken) {
+        this.logger.warn('⚠️ No refresh token available for revocation');
+        return;
+      }
+
+      await axios.post(
+        'https://login.microsoftonline.com/common/oauth2/v2.0/logout',
+        new URLSearchParams({
+          token: refreshToken,
+          token_type_hint: 'refresh_token',
+        }),
+        {
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        },
+      );
+
+      this.logger.log('✅ Microsoft tokens revoked successfully');
+    } catch (error) {
+      this.logger.warn(
+        `⚠️ Failed to revoke Microsoft tokens: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
+    }
+  }
+
+  /**
    * Helper method to determine if calendar permissions were requested
    */
   private hasCalendarSubscriptionPermission(scopes: PermissionScope[]): boolean {
