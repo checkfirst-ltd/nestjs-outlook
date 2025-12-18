@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.5.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.4.1...v4.5.0) (2025-12-18)
+
+
+### Features
+
+* revoke Refresh Token ([#48](https://github.com/checkfirst-ltd/nestjs-outlook/issues/48)) ([4f9e2c6](https://github.com/checkfirst-ltd/nestjs-outlook/commit/4f9e2c6cdc9c5da33c2307c8e686cb1ea12442dc))
+
 ## [4.4.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.4.0...v4.4.1) (2025-12-04)
 
 
