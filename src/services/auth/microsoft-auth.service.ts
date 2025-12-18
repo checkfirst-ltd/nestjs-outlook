@@ -283,6 +283,7 @@ export class MicrosoftAuthService {
 
   /**
    * Save a Microsoft user with token information and scopes
+   * On reconnection, reuses existing inactive user record instead of creating duplicates
    */
   private async saveMicrosoftUser(
     externalUserId: string,
@@ -291,23 +292,26 @@ export class MicrosoftAuthService {
     expiresIn: number,
     scopes: string
   ): Promise<void> {
-    // Find existing user or create a new one
+    // Find existing user (including inactive ones) or create a new one
     let user = await this.microsoftUserRepository.findOne({
-      where: { externalUserId: externalUserId, isActive: true }
+      where: { externalUserId: externalUserId }
     });
-    
+
     if (!user) {
       user = new MicrosoftUser();
       user.externalUserId = externalUserId;
+      this.logger.log(`Creating new Microsoft user for external user ${externalUserId}`);
+    } else {
+      this.logger.log(`Reusing existing Microsoft user record (id: ${user.id}) for external user ${externalUserId}`);
     }
-    
+
     // Update token information
     user.accessToken = accessToken;
     user.refreshToken = refreshToken;
     user.tokenExpiry = new Date(Date.now() + expiresIn * 1000);
     user.scopes = scopes;
-    user.isActive = true;
-    
+    user.isActive = true; // Reactivate if previously inactive
+
     await this.microsoftUserRepository.save(user);
   }
 

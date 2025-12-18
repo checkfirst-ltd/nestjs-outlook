@@ -14,12 +14,55 @@ import { OutlookEventTypes } from "../../enums/event-types.enum";
 import { InjectRepository } from "@nestjs/typeorm";
 import { MicrosoftUser } from "../../entities/microsoft-user.entity";
 import { Repository } from "typeorm";
-import { DeltaSyncService, DeltaEvent } from "../shared/delta-sync.service";
+import { DeltaSyncService } from "../shared/delta-sync.service";
 import { delay, retryWithBackoff } from "../../utils/retry.util";
+
+// Event type constants
+const OUTLOOK_EVENT_CREATED = OutlookEventTypes.EVENT_CREATED;
+const OUTLOOK_EVENT_UPDATED = OutlookEventTypes.EVENT_UPDATED;
+const OUTLOOK_EVENT_DELETED = OutlookEventTypes.EVENT_DELETED;
+
+// Change type mapping
+const EVENT_TYPE_TO_CHANGE_TYPE: Record<string, "created" | "updated" | "deleted"> = {
+  [OUTLOOK_EVENT_CREATED]: "created",
+  [OUTLOOK_EVENT_UPDATED]: "updated",
+  [OUTLOOK_EVENT_DELETED]: "deleted",
+};
+
+/**
+ * Check if an event is newly created based on timestamps
+ * An event is considered new if lastModifiedDateTime - createdDateTime <= 1 second
+ */
+function isNewEvent(change: Event): boolean {
+  if (!change.createdDateTime) {
+    return true;
+  }
+
+  const lastModified = new Date(
+    change.lastModifiedDateTime ?? change.createdDateTime
+  ).getTime();
+  const created = new Date(change.createdDateTime).getTime();
+
+  return lastModified - created <= 1000;
+}
+
+/**
+ * Detect the event type based on change properties
+ */
+function detectEventType(change: Event): OutlookEventTypes {
+  // Check if the change represents a deletion
+  if ((change as { ["@removed"]?: unknown })["@removed"]) {
+    return OUTLOOK_EVENT_DELETED;
+  }
+
+  // Determine if it's a creation or update based on timestamps
+  return isNewEvent(change) ? OUTLOOK_EVENT_CREATED : OUTLOOK_EVENT_UPDATED;
+}
 
 @Injectable()
 export class CalendarService {
   private readonly logger = new Logger(CalendarService.name);
+  private readonly syncLocks = new Map<string, Promise<void>>();
 
   constructor(
     @Inject(forwardRef(() => MicrosoftAuthService))
@@ -481,79 +524,42 @@ export class CalendarService {
         `Resource: ${resource || "unknown"}, ChangeType: ${String(changeType || "unknown")}`
       );
 
-      // Find the subscription in our database to verify it's legitimate
-      const subscription =
-        await this.webhookSubscriptionRepository.findBySubscriptionId(
-          subscriptionId || ""
-        );
+      // Validate subscription and extract user ID
+      const {success, externalUserId, message} = await this.validateWebhookSubscription(
+        subscriptionId,
+        clientState
+      );
 
-      if (!subscription) {
-        this.logger.warn(
-          `Unknown subscription ID: ${subscriptionId || "unknown"}`
-        );
-        return { success: false, message: "Unknown subscription" };
+      if (!success) {
+        this.logger.error('validateWebhookSubscription failed', message);
+        return { success: false, message: message || 'Unknown error' };
       }
 
-      // Verify the client state for additional security
-      if (
-        subscription.clientState &&
-        clientState !== subscription.clientState
-      ) {
-        this.logger.warn("Client state mismatch");
-        return { success: false, message: "Client state mismatch" };
-      }
-
-      // External user Id is the client application userId
-      const externalUserId = subscription.userId;
-
-      if (!externalUserId) {
-        this.logger.warn(
-          "Could not determine external user ID from client state"
-        );
-        return { success: false, message: "Invalid client state format" };
-      }
-
+      // Fetch and sort the changes from the Microsoft Graph API
       const sortedChanges = await this.fetchAndSortChanges(
         String(externalUserId)
       );
 
+      this.logger.log(`[handleOutlookWebhook] Fetched ${sortedChanges.length} changes for user ${externalUserId}`);
+
+      if (sortedChanges.length === 0) {
+        this.logger.warn(`[handleOutlookWebhook] No changes found - webhook notification received but delta sync returned empty. This might indicate the delta link was already updated.`);
+      }
+
       // Process each change and emit appropriate events
       for (const change of sortedChanges) {
-        let eventType: string | null;
+        const eventType = detectEventType(change);
 
-        // If the change has the @removed property, it's a deletion
-        if ((change as { ["@removed"]?: unknown })["@removed"]) {
-          eventType = OutlookEventTypes.EVENT_DELETED;
-        } else {
-          console.log(
-            change.createdDateTime,
-            change.lastModifiedDateTime,
-            change.subject
-          );
-          eventType =
-            !change.createdDateTime ||
-            new Date(
-              change.lastModifiedDateTime ?? change.createdDateTime
-            ).getTime() -
-              new Date(change.createdDateTime).getTime() <=
-              1000
-              ? // If lastModifiedDateTime - createdDateTime is less than a second, it's a new even
-                OutlookEventTypes.EVENT_CREATED
-              : // Otherwise, it's an update
-                OutlookEventTypes.EVENT_UPDATED;
-        }
+        this.logger.debug(
+          `Event ${change.id || "unknown"}: created=${change.createdDateTime}, modified=${change.lastModifiedDateTime}, type=${eventType}`
+        );
 
         const resourceData: OutlookResourceData = {
           id: change.id || "",
           userId: externalUserId,
           subscriptionId,
           resource,
-          changeType:
-            eventType === "outlook.event.deleted"
-              ? "deleted"
-              : eventType === "outlook.event.created"
-                ? "created"
-                : "updated",
+          changeType: EVENT_TYPE_TO_CHANGE_TYPE[eventType],
           data: change as unknown as Record<string, unknown>,
         };
 
@@ -578,21 +584,31 @@ export class CalendarService {
   /**
    * Fetches and sorts calendar changes using delta API
    * @param externalUserId External user ID
+   * @param forceReset Force reset delta link (used on reconnection)
+   * @param dateRange Optional date range for calendar delta queries (only used on initialization)
    * @returns Array of events sorted by lastModifiedDateTime
    */
-  async fetchAndSortChanges(externalUserId: string): Promise<Event[]> {
+  async fetchAndSortChanges(
+    externalUserId: string,
+    forceReset: boolean = false,
+    dateRange?: {
+      startDate: Date;
+      endDate: Date;
+    }
+  ): Promise<Event[]> {
     const client = await this.getAuthenticatedClient(externalUserId);
     const requestUrl = "/me/events/delta";
 
     try {
-      const events =
-        await this.deltaSyncService.fetchAndSortChanges<DeltaEvent>(
-          client,
-          requestUrl,
-          externalUserId
-        );
+      const items = await this.deltaSyncService.fetchAndSortChanges(
+        client,
+        requestUrl,
+        externalUserId,
+        forceReset,
+        dateRange
+      );
 
-      return events as Event[];
+      return items as unknown as Event[];
     } catch (error) {
       this.logger.error("Error fetching delta changes:", error);
       throw error;
@@ -782,6 +798,51 @@ export class CalendarService {
       );
       throw error;
     }
+  }
+
+  /**
+   * Validate webhook subscription and extract user ID
+   * @param subscriptionId - Subscription ID from notification
+   * @param clientState - Client state from notification
+   * @returns Validation result with user ID or error
+   */
+  private async validateWebhookSubscription(
+    subscriptionId: string | undefined,
+    clientState: string | null | undefined
+  ): Promise<{ success: boolean; externalUserId?: number; message?: string }> {
+    // Find the subscription in our database to verify it's legitimate
+    const subscription =
+      await this.webhookSubscriptionRepository.findBySubscriptionId(
+        subscriptionId || ""
+      );
+
+    if (!subscription) {
+      this.logger.warn(
+        `Unknown subscription ID: ${subscriptionId || "unknown"}`
+      );
+      return { success: false, message: "Unknown subscription" };
+    }
+
+    // Verify the client state for additional security
+    if (
+      subscription.clientState &&
+      clientState !== subscription.clientState
+    ) {
+      this.logger.warn("Client state mismatch");
+      return { success: false, message: "Client state mismatch" };
+    }
+
+    // External user Id is the client application userId
+    const externalUserId = subscription.userId;
+
+    if (!externalUserId) {
+      this.logger.warn(
+        "Could not determine external user ID from client state"
+      );
+      return { success: false, message: "Invalid client state format" };
+    }
+
+    return { success: true, externalUserId };
   }
 
   /**
