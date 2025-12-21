@@ -140,7 +140,7 @@ export class DeltaSyncService {
     void,
     unknown
   > {
-    let currentUrl: string | null = startUrl;
+    let currentUrl: string = startUrl;
     let pageCount = 0;
 
     while (currentUrl) {
@@ -149,7 +149,7 @@ export class DeltaSyncService {
 
       // Fetch page with retry logic
       const response = (await retryWithBackoff(
-        () => client.api(currentUrl!).get(),
+        () => client.api(currentUrl).get(),
         {
           maxRetries: this.MAX_RETRIES,
           retryDelayMs: this.RETRY_DELAY_MS,
@@ -185,7 +185,7 @@ export class DeltaSyncService {
       };
 
       // Update URL for next iteration
-      currentUrl = response["@odata.nextLink"] || null;
+      currentUrl = response["@odata.nextLink"] || "";
 
       // Rate limiting
       if (currentUrl) {
