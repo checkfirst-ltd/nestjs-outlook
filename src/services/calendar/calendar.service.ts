@@ -507,10 +507,12 @@ export class CalendarService {
   /**
    * Handle a webhook notification from Microsoft
    * @param notificationItem - The notification data from Microsoft
+   * @param useStreaming - Whether to use streaming mode (default: false for buffering)
    * @returns Success status and message
    */
   async handleOutlookWebhook(
-    notificationItem: ChangeNotification
+    notificationItem: ChangeNotification,
+    useStreaming: boolean = false
   ): Promise<{ success: boolean; message: string }> {
     try {
       // Extract necessary information from the notification
@@ -535,42 +537,20 @@ export class CalendarService {
         return { success: false, message: message || 'Unknown error' };
       }
 
-      // Stream changes and process each batch as it arrives (memory-efficient)
-      let totalProcessed = 0;
-      let batchCount = 0;
-
-      this.logger.log(`[handleOutlookWebhook] Starting to stream changes for user ${externalUserId}`);
-
-      for await (const changeBatch of this.streamCalendarChanges(externalUserId)) {
-        batchCount++;
-        this.logger.log(`[handleOutlookWebhook] Processing batch ${batchCount} with ${changeBatch.length} changes for user ${externalUserId}`);
-
-        if (changeBatch.length === 0) {
-          this.logger.warn(`[handleOutlookWebhook] Received empty batch ${batchCount}`);
-          continue;
-        }
-
-        // Process each change in this batch
-        for (const change of changeBatch) {
-          this.processDeltaEventChange(
-            change,
+      // Process changes using appropriate strategy (passed as parameter)
+      const totalProcessed = useStreaming
+        ? await this.processChangesStreaming(
+            String(externalUserId),
+            String(subscriptionId || ''),
+            resource || ''
+          )
+        : await this.processChangesBuffering(
             String(externalUserId),
             String(subscriptionId || ''),
             resource || ''
           );
-          totalProcessed++;
-        }
 
-        this.logger.log(`[handleOutlookWebhook] Batch ${batchCount} processed: ${changeBatch.length} events emitted (total so far: ${totalProcessed})`);
-      }
-
-      if (totalProcessed === 0) {
-        this.logger.warn(`[handleOutlookWebhook] No changes found - webhook notification received but delta sync returned empty. This might indicate the delta link was already updated.`);
-      }
-
-      this.logger.log(`[handleOutlookWebhook] Completed streaming: ${totalProcessed} total events processed across ${batchCount} batches for user ${externalUserId}`);
-
-      return { success: true, message: "Notification processed" };
+      return { success: true, message: `Processed ${totalProcessed} events` };
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error";
@@ -630,7 +610,7 @@ export class CalendarService {
    * @yields Sorted batches of events (one batch per Microsoft Graph page)
    */
   async *streamCalendarChanges(
-    externalUserId: number,
+    externalUserId: string,
     forceReset: boolean = false,
     dateRange?: {
       startDate: Date;
@@ -646,7 +626,7 @@ export class CalendarService {
       for await (const batch of this.deltaSyncService.streamDeltaChanges(
         client,
         requestUrl,
-        String(externalUserId),
+        externalUserId,
         forceReset,
         dateRange
       )) {
@@ -661,7 +641,7 @@ export class CalendarService {
     }
   }
 
-  async getAuthenticatedClient(externalUserId: number): Promise<Client> {
+  async getAuthenticatedClient(externalUserId: string): Promise<Client> {
     const accessToken =
       await this.microsoftAuthService.getUserAccessTokenByExternalUserId(
         externalUserId
@@ -847,6 +827,94 @@ export class CalendarService {
   }
 
   /**
+   * Process delta changes using streaming mode (page-by-page)
+   * Lower memory footprint, processes each page immediately as it arrives
+   *
+   * @param externalUserId External user ID
+   * @param subscriptionId Subscription ID
+   * @param resource Resource path
+   * @returns Number of events processed
+   */
+  private async processChangesStreaming(
+    externalUserId: string,
+    subscriptionId: string,
+    resource: string
+  ): Promise<number> {
+    let totalProcessed = 0;
+    let batchCount = 0;
+
+    this.logger.log(`[processChangesStreaming] Using STREAMING mode for user ${externalUserId}`);
+
+    for await (const changeBatch of this.streamCalendarChanges(externalUserId)) {
+      batchCount++;
+      this.logger.log(`[processChangesStreaming] Processing batch ${batchCount} with ${changeBatch.length} changes`);
+
+      if (changeBatch.length === 0) {
+        this.logger.warn(`[processChangesStreaming] Received empty batch ${batchCount}`);
+        continue;
+      }
+
+      // Process each change in this batch
+      for (const change of changeBatch) {
+        this.processDeltaEventChange(
+          change,
+          externalUserId,
+          subscriptionId,
+          resource
+        );
+        totalProcessed++;
+      }
+
+      this.logger.log(`[processChangesStreaming] Batch ${batchCount} processed: ${changeBatch.length} events (total: ${totalProcessed})`);
+    }
+
+    this.logger.log(`[processChangesStreaming] Completed: ${totalProcessed} events across ${batchCount} batches`);
+    return totalProcessed;
+  }
+
+  /**
+   * Process delta changes using buffering mode (fetch all, then process)
+   * Higher memory usage but fewer backend calls
+   *
+   * @param externalUserId External user ID
+   * @param subscriptionId Subscription ID
+   * @param resource Resource path
+   * @returns Number of events processed
+   */
+  private async processChangesBuffering(
+    externalUserId: string,
+    subscriptionId: string,
+    resource: string
+  ): Promise<number> {
+    this.logger.log(`[processChangesBuffering] Using BUFFERING mode for user ${externalUserId}`);
+
+    const allChanges = await this.fetchAndSortChanges(externalUserId);
+
+    if (allChanges.length === 0) {
+      this.logger.warn(`[processChangesBuffering] No changes found`);
+      return 0;
+    }
+
+    this.logger.log(`[processChangesBuffering] Fetched ${allChanges.length} changes, processing batch`);
+
+    let totalProcessed = 0;
+
+    // Process all changes
+    for (const change of allChanges) {
+      this.processDeltaEventChange(
+        change,
+        externalUserId,
+        subscriptionId,
+        resource
+      );
+      totalProcessed++;
+    }
+
+    this.logger.log(`[processChangesBuffering] Completed: ${totalProcessed} events processed`);
+    return totalProcessed;
+  }
+
+  /**
    * Process a single delta event change and emit appropriate event
    * @param change The delta event change to process
    * @param externalUserId External user ID
@@ -891,7 +959,7 @@ export class CalendarService {
   private async validateWebhookSubscription(
     subscriptionId: string | undefined,
     clientState: string | null | undefined
-  ): Promise<{ success: boolean; externalUserId?: number; message?: string }> {
+  ): Promise<{ success: boolean; externalUserId?: number | string; message?: string }> {
     // Find the subscription in our database to verify it's legitimate
     const subscription =
       await this.webhookSubscriptionRepository.findBySubscriptionId(

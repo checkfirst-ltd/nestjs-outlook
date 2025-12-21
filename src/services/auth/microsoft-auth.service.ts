@@ -345,24 +345,24 @@ export class MicrosoftAuthService {
    * @param externalUserId - External user ID
    * @returns Valid access token string
    */
-  async getUserAccessTokenByExternalUserId(externalUserId: number): Promise<string> {
+  async getUserAccessTokenByExternalUserId(externalUserId: string): Promise<string> {
     try {
       // Get the user's token information from the database
       const userInfo = await this.getMicrosoftUserTokenInfo(externalUserId);
-      
+
       if (!userInfo) {
         throw new Error(`No token information found for user ${externalUserId}`);
       }
-      
+
       // Find the user to get the internal user ID
       const user = await this.microsoftUserRepository.findOne({
-        where: { externalUserId: externalUserId.toString(), isActive: true }
+        where: { externalUserId: externalUserId, isActive: true }
       });
-      
+
       if (!user) {
         throw new Error(`Could not find user record for ${externalUserId}`);
       }
-      
+
       // Process the token information using the common helper
       return await this.processTokenInfo(userInfo, user.id);
     } catch (error) {
