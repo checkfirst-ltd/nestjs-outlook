@@ -317,8 +317,9 @@ export class DeltaSyncService {
    * @param userId User ID
    * @param forceReset Force reset of delta link
    * @param dateRange Optional date range for calendar delta queries (only used on initialization)
+   * @param saveDeltaLink Whether to save the delta link to database (default: true). Set to false for one-time windowed imports.
    * @yields Sorted batches of delta items (one batch per Microsoft Graph page)
-   * @returns Final delta link (saved automatically after all pages streamed)
+   * @returns Final delta link (saved to database only if saveDeltaLink=true)
    */
   async *streamDeltaChanges(
     client: Client,
@@ -328,7 +329,8 @@ export class DeltaSyncService {
     dateRange?: {
       startDate: Date;
       endDate: Date;
-    }
+    },
+    saveDeltaLink: boolean = true
   ): AsyncGenerator<DeltaItem[], string | null, unknown> {
     let startLink = await this.deltaLinkRepository.getDeltaLink(
       Number(userId),
@@ -383,10 +385,12 @@ export class DeltaSyncService {
       }
     }
 
-    // Save delta link after streaming all pages
-    if (finalDeltaLink) {
+    // Save delta link after streaming all pages (if requested)
+    if (finalDeltaLink && saveDeltaLink) {
       await this.saveDeltaLink(Number(userId), ResourceType.CALENDAR, finalDeltaLink);
       this.logger.log(`[streamDeltaChanges] Saved delta link after streaming ${pageCount} pages for user ${userId}`);
+    } else if (finalDeltaLink && !saveDeltaLink) {
+      this.logger.log(`[streamDeltaChanges] Delta link discarded (saveDeltaLink=false) after streaming ${pageCount} pages for user ${userId}`);
     } else {
       this.logger.warn(`[streamDeltaChanges] No delta link received after streaming ${pageCount} pages for user ${userId}`);
     }

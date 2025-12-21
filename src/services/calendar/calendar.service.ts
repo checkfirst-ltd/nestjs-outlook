@@ -15,6 +15,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { MicrosoftUser } from "../../entities/microsoft-user.entity";
 import { Repository } from "typeorm";
 import { DeltaSyncService } from "../shared/delta-sync.service";
+import { ResourceType } from "../../enums/resource-type.enum";
 import { delay, retryWithBackoff } from "../../utils/retry.util";
 
 // Event type constants
@@ -607,6 +608,7 @@ export class CalendarService {
    * @param externalUserId External user ID
    * @param forceReset Force reset delta link (used on reconnection)
    * @param dateRange Optional date range for calendar delta queries (only used on initialization)
+   * @param saveDeltaLink Whether to save the delta link to database (default: true). Set to false for one-time windowed imports.
    * @yields Sorted batches of events (one batch per Microsoft Graph page)
    */
   async *streamCalendarChanges(
@@ -615,20 +617,22 @@ export class CalendarService {
     dateRange?: {
       startDate: Date;
       endDate: Date;
-    }
+    },
+    saveDeltaLink: boolean = true
   ): AsyncGenerator<Event[], void, unknown> {
     const client = await this.getAuthenticatedClient(externalUserId);
     const requestUrl = "/me/events/delta";
 
     try {
-      this.logger.log(`[streamCalendarChanges] Starting stream for user ${externalUserId}`);
+      this.logger.log(`[streamCalendarChanges] Starting stream for user ${externalUserId} (saveDeltaLink: ${saveDeltaLink})`);
 
       for await (const batch of this.deltaSyncService.streamDeltaChanges(
         client,
         requestUrl,
         externalUserId,
         forceReset,
-        dateRange
+        dateRange,
+        saveDeltaLink
       )) {
         this.logger.debug(`[streamCalendarChanges] Yielding batch of ${batch.length} events for user ${externalUserId}`);
         yield batch as Event[];
@@ -821,6 +825,48 @@ export class CalendarService {
         error instanceof Error ? error.message : "Unknown error";
       this.logger.error(
         `Error streaming events for user ${externalUserId}: ${errorMessage}`
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Initialize delta sync tracking without importing events
+   *
+   * Call this AFTER manual import to establish baseline for incremental sync.
+   * This method initializes the delta link WITHOUT fetching events, allowing
+   * you to track ALL future calendar changes regardless of date range.
+   *
+   * Use case:
+   * 1. Import events in a specific date range (e.g., next 3 months) using importEventsStream
+   * 2. Call this method to enable tracking of ALL future changes (not limited to that range)
+   *
+   * @param externalUserId - External user ID
+   *
+   * @example
+   * await calendarService.initializeDeltaSync(userId);
+   * → Enables tracking of ALL future calendar changes (not limited to a window range)
+   */
+  async initializeDeltaSync(externalUserId: string): Promise<void> {
+    this.logger.log(`Initializing delta sync tracking for user ${externalUserId}`);
+
+    try {
+      const client = await this.getAuthenticatedClient(externalUserId);
+
+      // Initialize delta link WITHOUT date range = tracks ALL events going forward
+      await this.deltaSyncService.initializeDeltaLink(
+        client,
+        "/me/events/delta",
+        Number(externalUserId),
+        ResourceType.CALENDAR
+      );
+
+      this.logger.log(`Delta tracking enabled for user ${externalUserId} (all events)`);
+    } catch (error) {
+      this.logger.error(
+        `Failed to initialize delta sync for user ${externalUserId}: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`
       );
       throw error;
     }
