@@ -140,13 +140,20 @@ export class CalendarController {
       }
       
       const resourceData = item.resourceData;
-      
+
+      // Skip notifications without resourceData
+      if (!resourceData) {
+        this.logger.warn(`Skipping notification with missing resourceData`);
+        failureCount++;
+        continue;
+      }
+
       // Skip duplicate events in the same batch
       if (resourceData.id && processedEvents.has(resourceData.id)) {
         this.logger.debug(`Skipping duplicate event: ${resourceData.id}`);
         continue;
       }
-      
+
       // Add to processed set if it has an ID
       if (resourceData.id) {
         processedEvents.add(resourceData.id);

@@ -140,13 +140,20 @@ export class EmailController {
       }
       
       const resourceData = item.resourceData;
-      
+
+      // Skip notifications without resourceData
+      if (!resourceData) {
+        this.logger.warn(`Skipping email notification with missing resourceData`);
+        failureCount++;
+        continue;
+      }
+
       // Skip duplicate messages in the same batch
       if (resourceData.id && processedMessages.has(resourceData.id)) {
         this.logger.debug(`Skipping duplicate email: ${resourceData.id}`);
         continue;
       }
-      
+
       // Add to processed set if it has an ID
       if (resourceData.id) {
         processedMessages.add(resourceData.id);
