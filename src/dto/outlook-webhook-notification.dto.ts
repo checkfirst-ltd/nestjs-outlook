@@ -116,10 +116,11 @@ export class OutlookWebhookNotificationItemDto {
   @ApiProperty({
     description: 'The data of the resource that changed',
     type: OutlookResourceData,
+    required: false,
   })
   @IsObject()
-  @IsNotEmpty()
-  resourceData: OutlookResourceData = new OutlookResourceData();
+  @IsOptional()
+  resourceData?: OutlookResourceData;
 
   @ApiProperty({
     description: 'The unique identifier for the client state',
