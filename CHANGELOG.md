@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.6.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.5.1...v4.6.0) (2025-12-22)
+
+
+### Features
+
+* use delta sync as a unified source for importing events on first and second connection attempt ([#50](https://github.com/checkfirst-ltd/nestjs-outlook/issues/50)) ([20786f6](https://github.com/checkfirst-ltd/nestjs-outlook/commit/20786f6c30420ac717aae990c69a7770649cb017))
+
 ## [4.5.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.5.0...v4.5.1) (2025-12-22)
 
 
