@@ -116,7 +116,6 @@ export class OutlookWebhookNotificationItemDto {
   @ApiProperty({
     description: 'The data of the resource that changed',
     type: OutlookResourceData,
-    required: false,
   })
   @IsObject()
   @IsOptional()
