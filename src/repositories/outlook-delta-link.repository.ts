@@ -44,4 +44,11 @@ export class OutlookDeltaLinkRepository {
 
     return deltaLinkEntity?.deltaLink || null;
   }
+
+  async deleteDeltaLink(
+    userId: number,
+    resourceType: ResourceType,
+  ): Promise<void> {
+    await this.repository.delete({ userId, resourceType });
+  }
 }

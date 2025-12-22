@@ -14,12 +14,56 @@ import { OutlookEventTypes } from "../../enums/event-types.enum";
 import { InjectRepository } from "@nestjs/typeorm";
 import { MicrosoftUser } from "../../entities/microsoft-user.entity";
 import { Repository } from "typeorm";
-import { DeltaSyncService, DeltaEvent } from "../shared/delta-sync.service";
+import { DeltaSyncService } from "../shared/delta-sync.service";
+import { ResourceType } from "../../enums/resource-type.enum";
 import { delay, retryWithBackoff } from "../../utils/retry.util";
+
+// Event type constants
+const OUTLOOK_EVENT_CREATED = OutlookEventTypes.EVENT_CREATED;
+const OUTLOOK_EVENT_UPDATED = OutlookEventTypes.EVENT_UPDATED;
+const OUTLOOK_EVENT_DELETED = OutlookEventTypes.EVENT_DELETED;
+
+// Change type mapping
+const EVENT_TYPE_TO_CHANGE_TYPE: Record<string, "created" | "updated" | "deleted"> = {
+  [OUTLOOK_EVENT_CREATED]: "created",
+  [OUTLOOK_EVENT_UPDATED]: "updated",
+  [OUTLOOK_EVENT_DELETED]: "deleted",
+};
+
+/**
+ * Check if an event is newly created based on timestamps
+ * An event is considered new if lastModifiedDateTime - createdDateTime <= 1 second
+ */
+function isNewEvent(change: Event): boolean {
+  if (!change.createdDateTime) {
+    return true;
+  }
+
+  const lastModified = new Date(
+    change.lastModifiedDateTime ?? change.createdDateTime
+  ).getTime();
+  const created = new Date(change.createdDateTime).getTime();
+
+  return lastModified - created <= 1000;
+}
+
+/**
+ * Detect the event type based on change properties
+ */
+function detectEventType(change: Event): OutlookEventTypes {
+  // Check if the change represents a deletion
+  if ((change as { ["@removed"]?: unknown })["@removed"]) {
+    return OUTLOOK_EVENT_DELETED;
+  }
+
+  // Determine if it's a creation or update based on timestamps
+  return isNewEvent(change) ? OUTLOOK_EVENT_CREATED : OUTLOOK_EVENT_UPDATED;
+}
 
 @Injectable()
 export class CalendarService {
   private readonly logger = new Logger(CalendarService.name);
+  private readonly syncLocks = new Map<string, Promise<void>>();
 
   constructor(
     @Inject(forwardRef(() => MicrosoftAuthService))
@@ -464,10 +508,12 @@ export class CalendarService {
   /**
    * Handle a webhook notification from Microsoft
    * @param notificationItem - The notification data from Microsoft
+   * @param useStreaming - Whether to use streaming mode (default: false for buffering)
    * @returns Success status and message
    */
   async handleOutlookWebhook(
-    notificationItem: ChangeNotification
+    notificationItem: ChangeNotification,
+    useStreaming: boolean = false
   ): Promise<{ success: boolean; message: string }> {
     try {
       // Extract necessary information from the notification
@@ -481,90 +527,31 @@ export class CalendarService {
         `Resource: ${resource || "unknown"}, ChangeType: ${String(changeType || "unknown")}`
       );
 
-      // Find the subscription in our database to verify it's legitimate
-      const subscription =
-        await this.webhookSubscriptionRepository.findBySubscriptionId(
-          subscriptionId || ""
-        );
-
-      if (!subscription) {
-        this.logger.warn(
-          `Unknown subscription ID: ${subscriptionId || "unknown"}`
-        );
-        return { success: false, message: "Unknown subscription" };
-      }
-
-      // Verify the client state for additional security
-      if (
-        subscription.clientState &&
-        clientState !== subscription.clientState
-      ) {
-        this.logger.warn("Client state mismatch");
-        return { success: false, message: "Client state mismatch" };
-      }
-
-      // External user Id is the client application userId
-      const externalUserId = subscription.userId;
-
-      if (!externalUserId) {
-        this.logger.warn(
-          "Could not determine external user ID from client state"
-        );
-        return { success: false, message: "Invalid client state format" };
-      }
-
-      const sortedChanges = await this.fetchAndSortChanges(
-        String(externalUserId)
+      // Validate subscription and extract user ID
+      const {success, externalUserId, message} = await this.validateWebhookSubscription(
+        subscriptionId,
+        clientState
       );
 
-      // Process each change and emit appropriate events
-      for (const change of sortedChanges) {
-        let eventType: string | null;
-
-        // If the change has the @removed property, it's a deletion
-        if ((change as { ["@removed"]?: unknown })["@removed"]) {
-          eventType = OutlookEventTypes.EVENT_DELETED;
-        } else {
-          console.log(
-            change.createdDateTime,
-            change.lastModifiedDateTime,
-            change.subject
-          );
-          eventType =
-            !change.createdDateTime ||
-            new Date(
-              change.lastModifiedDateTime ?? change.createdDateTime
-            ).getTime() -
-              new Date(change.createdDateTime).getTime() <=
-              1000
-              ? // If lastModifiedDateTime - createdDateTime is less than a second, it's a new even
-                OutlookEventTypes.EVENT_CREATED
-              : // Otherwise, it's an update
-                OutlookEventTypes.EVENT_UPDATED;
-        }
-
-        const resourceData: OutlookResourceData = {
-          id: change.id || "",
-          userId: externalUserId,
-          subscriptionId,
-          resource,
-          changeType:
-            eventType === "outlook.event.deleted"
-              ? "deleted"
-              : eventType === "outlook.event.created"
-                ? "created"
-                : "updated",
-          data: change as unknown as Record<string, unknown>,
-        };
-
-        // Emit the event
-        this.eventEmitter.emit(eventType, resourceData);
-        this.logger.log(
-          `Processed calendar change: ${eventType} for event ID: ${change.id || "unknown"}`
-        );
+      if (!success || !externalUserId) {
+        this.logger.error('validateWebhookSubscription failed', message || 'Unknown error');
+        return { success: false, message: message || 'Unknown error' };
       }
 
-      return { success: true, message: "Notification processed" };
+      // Process changes using appropriate strategy (passed as parameter)
+      const totalProcessed = useStreaming
+        ? await this.processChangesStreaming(
+            String(externalUserId),
+            String(subscriptionId || ''),
+            resource || ''
+          )
+        : await this.processChangesBuffering(
+            String(externalUserId),
+            String(subscriptionId || ''),
+            resource || ''
+          );
+
+      return { success: true, message: `Processed ${totalProcessed} events` };
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error";
@@ -578,23 +565,82 @@ export class CalendarService {
   /**
    * Fetches and sorts calendar changes using delta API
    * @param externalUserId External user ID
+   * @param forceReset Force reset delta link (used on reconnection)
+   * @param dateRange Optional date range for calendar delta queries (only used on initialization)
    * @returns Array of events sorted by lastModifiedDateTime
    */
-  async fetchAndSortChanges(externalUserId: string): Promise<Event[]> {
+  async fetchAndSortChanges(
+    externalUserId: string,
+    forceReset: boolean = false,
+    dateRange?: {
+      startDate: Date;
+      endDate: Date;
+    }
+  ): Promise<Event[]> {
     const client = await this.getAuthenticatedClient(externalUserId);
     const requestUrl = "/me/events/delta";
 
     try {
-      const events =
-        await this.deltaSyncService.fetchAndSortChanges<DeltaEvent>(
-          client,
-          requestUrl,
-          externalUserId
-        );
+      const items = await this.deltaSyncService.fetchAndSortChanges(
+        client,
+        requestUrl,
+        externalUserId,
+        forceReset,
+        dateRange
+      );
 
-      return events as Event[];
+      return items as Event[];
     } catch (error) {
       this.logger.error("Error fetching delta changes:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Streams calendar changes using async generator (memory-efficient alternative)
+   * Yields sorted batches of events as each page is fetched from Microsoft Graph
+   *
+   * Benefits:
+   * - Memory efficient: Process one page at a time instead of loading all changes
+   * - Faster time-to-first-event: Start processing immediately after first page
+   * - Better for large syncs: Handle 1000s of changes without memory issues
+   *
+   * @param externalUserId External user ID
+   * @param forceReset Force reset delta link (used on reconnection)
+   * @param dateRange Optional date range for calendar delta queries (only used on initialization)
+   * @param saveDeltaLink Whether to save the delta link to database (default: true). Set to false for one-time windowed imports.
+   * @yields Sorted batches of events (one batch per Microsoft Graph page)
+   */
+  async *streamCalendarChanges(
+    externalUserId: string,
+    forceReset: boolean = false,
+    dateRange?: {
+      startDate: Date;
+      endDate: Date;
+    },
+    saveDeltaLink: boolean = true
+  ): AsyncGenerator<Event[], void, unknown> {
+    const client = await this.getAuthenticatedClient(externalUserId);
+    const requestUrl = "/me/events/delta";
+
+    try {
+      this.logger.log(`[streamCalendarChanges] Starting stream for user ${externalUserId} (saveDeltaLink: ${saveDeltaLink})`);
+
+      for await (const batch of this.deltaSyncService.streamDeltaChanges(
+        client,
+        requestUrl,
+        externalUserId,
+        forceReset,
+        dateRange,
+        saveDeltaLink
+      )) {
+        this.logger.debug(`[streamCalendarChanges] Yielding batch of ${batch.length} events for user ${externalUserId}`);
+        yield batch as Event[];
+      }
+
+      this.logger.log(`[streamCalendarChanges] Completed streaming for user ${externalUserId}`);
+    } catch (error) {
+      this.logger.error(`[streamCalendarChanges] Error streaming delta changes:`, error);
       throw error;
     }
   }
@@ -782,6 +828,217 @@ export class CalendarService {
       );
       throw error;
     }
+  }
+
+  /**
+   * Initialize delta sync tracking without importing events
+   *
+   * Call this AFTER manual import to establish baseline for incremental sync.
+   * This method initializes the delta link WITHOUT fetching events, allowing
+   * you to track ALL future calendar changes regardless of date range.
+   *
+   * Use case:
+   * 1. Import events in a specific date range (e.g., next 3 months) using importEventsStream
+   * 2. Call this method to enable tracking of ALL future changes (not limited to that range)
+   *
+   * @param externalUserId - External user ID
+   *
+   * @example
+   * await calendarService.initializeDeltaSync(userId);
+   * → Enables tracking of ALL future calendar changes (not limited to a window range)
+   */
+  async initializeDeltaSync(externalUserId: string): Promise<void> {
+    this.logger.log(`Initializing delta sync tracking for user ${externalUserId}`);
+
+    try {
+      const client = await this.getAuthenticatedClient(externalUserId);
+
+      // Initialize delta link WITHOUT date range = tracks ALL events going forward
+      await this.deltaSyncService.initializeDeltaLink(
+        client,
+        "/me/events/delta",
+        Number(externalUserId),
+        ResourceType.CALENDAR
+      );
+
+      this.logger.log(`Delta tracking enabled for user ${externalUserId} (all events)`);
+    } catch (error) {
+      this.logger.error(
+        `Failed to initialize delta sync for user ${externalUserId}: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Process delta changes using streaming mode (page-by-page)
+   * Lower memory footprint, processes each page immediately as it arrives
+   *
+   * @param externalUserId External user ID
+   * @param subscriptionId Subscription ID
+   * @param resource Resource path
+   * @returns Number of events processed
+   */
+  private async processChangesStreaming(
+    externalUserId: string,
+    subscriptionId: string,
+    resource: string
+  ): Promise<number> {
+    let totalProcessed = 0;
+    let batchCount = 0;
+
+    this.logger.log(`[processChangesStreaming] Using STREAMING mode for user ${externalUserId}`);
+
+    for await (const changeBatch of this.streamCalendarChanges(externalUserId)) {
+      batchCount++;
+      this.logger.log(`[processChangesStreaming] Processing batch ${batchCount} with ${changeBatch.length} changes`);
+
+      if (changeBatch.length === 0) {
+        this.logger.warn(`[processChangesStreaming] Received empty batch ${batchCount}`);
+        continue;
+      }
+
+      // Process each change in this batch
+      for (const change of changeBatch) {
+        this.processDeltaEventChange(
+          change,
+          externalUserId,
+          subscriptionId,
+          resource
+        );
+        totalProcessed++;
+      }
+
+      this.logger.log(`[processChangesStreaming] Batch ${batchCount} processed: ${changeBatch.length} events (total: ${totalProcessed})`);
+    }
+
+    this.logger.log(`[processChangesStreaming] Completed: ${totalProcessed} events across ${batchCount} batches`);
+    return totalProcessed;
+  }
+
+  /**
+   * Process delta changes using buffering mode (fetch all, then process)
+   * Higher memory usage but fewer backend calls
+   *
+   * @param externalUserId External user ID
+   * @param subscriptionId Subscription ID
+   * @param resource Resource path
+   * @returns Number of events processed
+   */
+  private async processChangesBuffering(
+    externalUserId: string,
+    subscriptionId: string,
+    resource: string
+  ): Promise<number> {
+    this.logger.log(`[processChangesBuffering] Using BUFFERING mode for user ${externalUserId}`);
+
+    const allChanges = await this.fetchAndSortChanges(externalUserId);
+
+    if (allChanges.length === 0) {
+      this.logger.warn(`[processChangesBuffering] No changes found`);
+      return 0;
+    }
+
+    this.logger.log(`[processChangesBuffering] Fetched ${allChanges.length} changes, processing batch`);
+
+    let totalProcessed = 0;
+
+    // Process all changes
+    for (const change of allChanges) {
+      this.processDeltaEventChange(
+        change,
+        externalUserId,
+        subscriptionId,
+        resource
+      );
+      totalProcessed++;
+    }
+
+    this.logger.log(`[processChangesBuffering] Completed: ${totalProcessed} events processed`);
+    return totalProcessed;
+  }
+
+  /**
+   * Process a single delta event change and emit appropriate event
+   * @param change The delta event change to process
+   * @param externalUserId External user ID
+   * @param subscriptionId Subscription ID
+   * @param resource Resource path
+   */
+  private processDeltaEventChange(
+    change: Event,
+    externalUserId: string,
+    subscriptionId: string,
+    resource: string
+  ): void {
+    const eventType = detectEventType(change);
+
+    this.logger.debug(
+      `[processDeltaEventChange] Event ${change.id || "unknown"}: created=${change.createdDateTime}, modified=${change.lastModifiedDateTime}, type=${eventType}`
+    );
+
+    const resourceData: OutlookResourceData = {
+      id: change.id || "",
+      userId: Number(externalUserId),
+      subscriptionId,
+      resource,
+      changeType: EVENT_TYPE_TO_CHANGE_TYPE[eventType],
+      data: change as unknown as Record<string, unknown>,
+    };
+
+    // Emit the event
+    this.eventEmitter.emit(eventType, resourceData);
+
+    this.logger.log(
+      `[processDeltaEventChange] Emitted ${eventType} for event ID: ${change.id || "unknown"}`
+    );
+  }
+
+  /**
+   * Validate webhook subscription and extract user ID
+   * @param subscriptionId - Subscription ID from notification
+   * @param clientState - Client state from notification
+   * @returns Validation result with user ID or error
+   */
+  private async validateWebhookSubscription(
+    subscriptionId: string | undefined,
+    clientState: string | null | undefined
+  ): Promise<{ success: boolean; externalUserId?: number | string; message?: string }> {
+    // Find the subscription in our database to verify it's legitimate
+    const subscription =
+      await this.webhookSubscriptionRepository.findBySubscriptionId(
+        subscriptionId || ""
+      );
+
+    if (!subscription) {
+      this.logger.warn(
+        `Unknown subscription ID: ${subscriptionId || "unknown"}`
+      );
+      return { success: false, message: "Unknown subscription" };
+    }
+
+    // Verify the client state for additional security
+    if (
+      subscription.clientState &&
+      clientState !== subscription.clientState
+    ) {
+      this.logger.warn("Client state mismatch");
+      return { success: false, message: "Client state mismatch" };
+    }
+
+    // External user Id is the client application userId
+    const externalUserId = subscription.userId;
+
+    if (!externalUserId) {
+      this.logger.warn(
+        "Could not determine external user ID from client state"
+      );
+      return { success: false, message: "Invalid client state format" };
+    }
+
+    return { success: true, externalUserId };
   }
 
   /**

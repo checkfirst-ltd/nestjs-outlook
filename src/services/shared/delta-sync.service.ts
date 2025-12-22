@@ -52,14 +52,10 @@ export class DeltaSyncService {
     // Handle sync reset (410 Gone)
     if (response["@odata.deltaLink"]?.includes("$deltatoken=")) {
       this.logger.log(
-        `Sync reset detected for user ${userId}, resource ${resourceType}`
+        `Sync reset detected for user ${userId}, resource ${resourceType} with ${response.value.length} changes`
       );
-      // Clear the delta link to force a full sync
-      void this.deltaLinkRepository.saveDeltaLink(
-        userId,
-        resourceType,
-        this.getDeltaLink(response) ?? ""
-      );
+      // Note: Delta link will be saved after processing all changes in fetchAndSortChanges
+      // Saving it here would skip the changes in the current response
     }
 
     // Handle token expiration
@@ -107,54 +103,364 @@ export class DeltaSyncService {
   }
 
   /**
-   * Fetches and sorts delta changes for any resource type
-   * @param client Microsoft Graph client
-   * @param requestUrl Initial request URL
-   * @returns Array of items sorted by lastModifiedDateTime
+   * Sorts delta items by their modification/creation timestamp
+   * @param items Items to sort
+   * @returns Sorted items (oldest to newest)
    */
-  async fetchAndSortChanges<T extends DeltaItem>(
-    client: Client,
-    requestUrl: string,
-    userId: string
-  ): Promise<T[]> {
-    const allItems: T[] = [];
-    let response: DeltaResponse<T> = {
-      "@odata.nextLink":
-        (await this.deltaLinkRepository.getDeltaLink(
-          Number(userId),
-          ResourceType.CALENDAR
-        )) ?? requestUrl,
-      value: [],
-    };
-
-    // Fetch all pages of changes
-    while (response["@odata.nextLink"]) {
-      const nextLink = response["@odata.nextLink"];
-      response = (await retryWithBackoff(
-        () => client.api(nextLink).get(), 
-        {
-          maxRetries: this.MAX_RETRIES,
-          retryDelayMs: this.RETRY_DELAY_MS,
-        }
-      )) as DeltaResponse<T>;
-      this.handleDeltaResponse(response, Number(userId), ResourceType.CALENDAR);
-      const eventDetails = await Promise.all(
-        response.value.map((item) =>
-          item["@removed"]
-            ? Promise.resolve(item)
-            : (client.api(`/me/events/${item.id}`).get() as Promise<T>)
-        )
-      );
-      allItems.push(...eventDetails);
-      await delay(200); // Slight delay to avoid hitting rate limits
-    }
-
-    // Sort by lastModifiedDateTime (fallback to createdDateTime)
-    return allItems.sort((a, b) => {
+  private sortDeltaItems(items: DeltaItem[]): DeltaItem[] {
+    return items.sort((a, b) => {
       const aTime = a.lastModifiedDateTime ?? a.createdDateTime ?? "";
       const bTime = b.lastModifiedDateTime ?? b.createdDateTime ?? "";
       return new Date(aTime).getTime() - new Date(bTime).getTime();
     });
+  }
+
+  /**
+   * Core async generator that fetches delta pages one at a time
+   * This is the foundational logic used by both batch and streaming approaches
+   *
+   * Features:
+   * - Pagination through @odata.nextLink
+   * - Retry with exponential backoff
+   * - Fetch full event details
+   * - Rate limiting between pages
+   * - Logging
+   *
+   * @param client Microsoft Graph client
+   * @param startUrl Initial URL to start fetching from
+   * @param userId User ID for logging
+   * @yields Object with page items, delta link (if last page), and isLastPage flag
+   */
+  private async *fetchDeltaPagesCore(
+    client: Client,
+    startUrl: string,
+    userId: number
+  ): AsyncGenerator<
+    { items: DeltaItem[]; deltaLink: string | null; isLastPage: boolean },
+    void,
+    unknown
+  > {
+    let currentUrl: string = startUrl;
+    let pageCount = 0;
+
+    while (currentUrl) {
+      pageCount++;
+      this.logger.debug(`[fetchDeltaPagesCore] Fetching page ${pageCount} for user ${userId}`);
+
+      // Fetch page with retry logic
+      const response = (await retryWithBackoff(
+        () => client.api(currentUrl).get(),
+        {
+          maxRetries: this.MAX_RETRIES,
+          retryDelayMs: this.RETRY_DELAY_MS,
+        }
+      )) as DeltaResponse<DeltaItem>;
+
+      this.logger.debug(`[fetchDeltaPagesCore] Received ${response.value.length} items in page ${pageCount}`);
+
+      // Fetch full event details for each item (skip deleted items)
+      const eventDetails = await Promise.all(
+        response.value.map((item) =>
+          item["@removed"]
+            ? Promise.resolve(item)
+            : (client.api(`/me/events/${item.id}`).get() as Promise<DeltaItem>)
+        )
+      );
+
+      // Check if we got the delta link (indicates last page)
+      const deltaLink = response["@odata.deltaLink"]
+        ? this.getDeltaLink(response)
+        : null;
+      const isLastPage = deltaLink !== null;
+
+      if (isLastPage) {
+        this.logger.log(`[fetchDeltaPagesCore] Reached last page (${pageCount}) with delta link for user ${userId}`);
+      }
+
+      // Yield this page
+      yield {
+        items: eventDetails,
+        deltaLink,
+        isLastPage,
+      };
+
+      // Update URL for next iteration
+      currentUrl = response["@odata.nextLink"] || "";
+
+      // Rate limiting
+      if (currentUrl) {
+        await delay(200);
+      }
+    }
+  }
+
+  /**
+   * Fetches all pages from a delta query and returns items with the final delta link
+   * This method collects all items into memory before returning
+   * For streaming alternative, use streamDeltaChanges()
+   *
+   * Features:
+   * - Pagination
+   * - Retry with exponential backoff
+   * - Fetch full event details
+   * - Rate limiting
+   * - Logging
+   *
+   * @param client Microsoft Graph client
+   * @param startUrl Initial URL to start fetching from
+   * @param userId User ID for logging
+   * @returns Object with all items and the final delta link
+   */
+  private async fetchAllDeltaPages(
+    client: Client,
+    startUrl: string,
+    userId: number
+  ): Promise<{ items: DeltaItem[]; deltaLink: string | null }> {
+    const allItems: DeltaItem[] = [];
+    let lastDeltaLink: string | null = null;
+    let pageCount = 0;
+
+    // Consume core generator and collect all items
+    for await (const page of this.fetchDeltaPagesCore(client, startUrl, userId)) {
+      allItems.push(...page.items);
+      pageCount++;
+
+      if (page.isLastPage && page.deltaLink) {
+        lastDeltaLink = page.deltaLink;
+      }
+    }
+
+    this.logger.log(`[fetchAllDeltaPages] Collected ${allItems.length} items across ${pageCount} pages for user ${userId}`);
+
+    return { items: allItems, deltaLink: lastDeltaLink };
+  }
+
+  /**
+   * Fetches and sorts delta changes for any resource type
+   * @param client Microsoft Graph client
+   * @param requestUrl Initial request URL
+   * @param userId User ID
+   * @param forceReset Force reset of delta link
+   * @param dateRange Optional date range for calendar delta queries (only used on initialization)
+   * @returns Object containing sorted items and delta link for next sync
+   */
+  async fetchAndSortChanges(
+    client: Client,
+    requestUrl: string,
+    userId: string,
+    forceReset: boolean = false,
+    dateRange?: {
+      startDate: Date;
+      endDate: Date;
+    }
+  ): Promise<DeltaItem[]> {
+    let startLink = await this.deltaLinkRepository.getDeltaLink(
+      Number(userId),
+      ResourceType.CALENDAR
+    );
+
+    this.logger.log(`[fetchAndSortChanges] startLink: ${startLink} forceReset: ${forceReset} dateRange: ${JSON.stringify(dateRange)}`);
+
+    // Force reset if requested (e.g., on reconnection)
+    if (forceReset && startLink) {
+      this.logger.log(`[fetchAndSortChanges] Force reset requested, deleting existing delta link for user ${userId}`);
+      await this.deltaLinkRepository.deleteDeltaLink(Number(userId), ResourceType.CALENDAR);
+      startLink = null;
+    }
+
+    // If no delta link exists, initialize from "now" and return current items
+    // This fetches all current events and establishes the delta link baseline
+    if (!startLink) {
+      this.logger.log(`[fetchAndSortChanges] No delta link found for user ${userId}, initializing from current point`);
+      const result = await this.initializeDeltaLink(
+        client,
+        requestUrl,
+        Number(userId),
+        ResourceType.CALENDAR,
+        dateRange
+      );
+
+      // Sort items before returning
+      return this.sortDeltaItems(result);
+    }
+
+    // Incremental sync: fetch changes since last delta link
+    this.logger.debug(`[fetchAndSortChanges] Starting incremental sync with existing delta link for user ${userId}`);
+
+    const { items: allItems, deltaLink: lastDeltaLink } = await this.fetchAllDeltaPages(
+      client,
+      startLink,
+      Number(userId)
+    );
+
+    // Save the delta link for incremental syncs (initialization already saves it)
+    if (lastDeltaLink) {
+      await this.saveDeltaLink(Number(userId), ResourceType.CALENDAR, lastDeltaLink);
+      this.logger.log(`[fetchAndSortChanges] Saved delta link after fetching ${allItems.length} changes for user ${userId}`);
+    }
+
+    // Sort and return items
+    return this.sortDeltaItems(allItems);
+  }
+
+  /**
+   * Streams delta changes using async generator (memory-efficient alternative to fetchAndSortChanges)
+   * Yields sorted batches of items as each page is fetched from Microsoft Graph
+   *
+   * Benefits over fetchAndSortChanges:
+   * - Memory efficient: O(page_size) instead of O(total_items)
+   * - Faster time-to-first-item: Start processing after first page
+   * - Better for large syncs: Handle 1000s of changes without loading all into memory
+   *
+   * @param client Microsoft Graph client
+   * @param requestUrl Initial request URL
+   * @param userId User ID
+   * @param forceReset Force reset of delta link
+   * @param dateRange Optional date range for calendar delta queries (only used on initialization)
+   * @param saveDeltaLink Whether to save the delta link to database (default: true). Set to false for one-time windowed imports.
+   * @yields Sorted batches of delta items (one batch per Microsoft Graph page)
+   * @returns Final delta link (saved to database only if saveDeltaLink=true)
+   */
+  async *streamDeltaChanges(
+    client: Client,
+    requestUrl: string,
+    userId: string,
+    forceReset: boolean = false,
+    dateRange?: {
+      startDate: Date;
+      endDate: Date;
+    },
+    saveDeltaLink: boolean = true
+  ): AsyncGenerator<DeltaItem[], string | null, unknown> {
+    let startLink = await this.deltaLinkRepository.getDeltaLink(
+      Number(userId),
+      ResourceType.CALENDAR
+    );
+
+    this.logger.log(`[streamDeltaChanges] Starting stream for user ${userId}, startLink: ${startLink ? 'exists' : 'none'}, forceReset: ${forceReset}`);
+
+    // Force reset if requested (e.g., on reconnection)
+    if (forceReset && startLink) {
+      this.logger.log(`[streamDeltaChanges] Force reset requested, deleting existing delta link for user ${userId}`);
+      await this.deltaLinkRepository.deleteDeltaLink(Number(userId), ResourceType.CALENDAR);
+      startLink = null;
+    }
+
+    // Determine the starting URL
+    let urlToUse: string;
+    let finalDeltaLink: string | null = null;
+
+    if (!startLink) {
+      // No delta link exists - initialize from "now"
+      this.logger.log(`[streamDeltaChanges] No delta link found, initializing from current point for user ${userId}`);
+
+      // Build URL with date range if provided
+      if (dateRange) {
+        const { startDate, endDate } = dateRange;
+        urlToUse = `${requestUrl}?startDateTime=${startDate.toISOString()}&endDateTime=${endDate.toISOString()}`;
+        this.logger.log(`[streamDeltaChanges] Using date range: ${startDate.toISOString()} to ${endDate.toISOString()}`);
+      } else {
+        urlToUse = requestUrl;
+      }
+    } else {
+      // Delta link exists - incremental sync
+      this.logger.log(`[streamDeltaChanges] Using existing delta link for incremental sync for user ${userId}`);
+      urlToUse = startLink;
+    }
+
+    // Stream pages using core generator
+    let pageCount = 0;
+    for await (const page of this.fetchDeltaPagesCore(client, urlToUse, Number(userId))) {
+      pageCount++;
+
+      // Sort and yield this batch immediately
+      const sortedBatch = this.sortDeltaItems(page.items);
+      this.logger.log(`[streamDeltaChanges] Yielding page ${pageCount} with ${sortedBatch.length} sorted items for user ${userId}`);
+
+      yield sortedBatch;
+
+      // Capture final delta link
+      if (page.isLastPage && page.deltaLink) {
+        finalDeltaLink = page.deltaLink;
+      }
+    }
+
+    // Save delta link after streaming all pages (if requested)
+    if (finalDeltaLink && saveDeltaLink) {
+      await this.saveDeltaLink(Number(userId), ResourceType.CALENDAR, finalDeltaLink);
+      this.logger.log(`[streamDeltaChanges] Saved delta link after streaming ${pageCount} pages for user ${userId}`);
+    } else if (finalDeltaLink && !saveDeltaLink) {
+      this.logger.log(`[streamDeltaChanges] Delta link discarded (saveDeltaLink=false) after streaming ${pageCount} pages for user ${userId}`);
+    } else {
+      this.logger.warn(`[streamDeltaChanges] No delta link received after streaming ${pageCount} pages for user ${userId}`);
+    }
+
+    return finalDeltaLink;
+  }
+
+  /**
+   * Initialize delta link from current point in time, returning all current items.
+   * This establishes a baseline and returns items so they can be processed.
+   *
+   * @param client Microsoft Graph client
+   * @param requestUrl Initial delta request URL (e.g., "/me/events/delta")
+   * @param userId User ID
+   * @param resourceType Resource type (e.g., CALENDAR)
+   * @param dateRange Optional date range for calendar delta queries
+   * @param dateRange.startDate Start date for sync window
+   * @param dateRange.endDate End date for sync window
+   * @returns Object with items and delta link
+   */
+  async initializeDeltaLink(
+    client: Client,
+    requestUrl: string,
+    userId: number,
+    resourceType: ResourceType,
+    dateRange?: {
+      startDate: Date;
+      endDate: Date;
+    }
+  ): Promise<DeltaItem[]> {
+    this.logger.log(`[initializeDeltaLink] Initializing delta link and fetching current items for user ${userId}`);
+
+    let urlWithDateRange = requestUrl;
+
+    // Add date range parameters if provided
+    if (dateRange) {
+      const { startDate, endDate } = dateRange;
+      urlWithDateRange = `${requestUrl}?startDateTime=${startDate.toISOString()}&endDateTime=${endDate.toISOString()}`;
+      this.logger.log(`[initializeDeltaLink] Using date range: ${startDate.toISOString()} to ${endDate.toISOString()}`);
+    }
+
+    // Fetch all delta pages using shared function
+    const { items: allItems, deltaLink: lastDeltaLink } = await this.fetchAllDeltaPages(
+      client,
+      urlWithDateRange,
+      userId
+    );
+
+    if (!lastDeltaLink) {
+      throw new Error('Failed to initialize delta link - no delta link received from Microsoft Graph');
+    }
+
+    // Save the delta link for future syncs
+    await this.saveDeltaLink(userId, resourceType, lastDeltaLink);
+    this.logger.log(`[initializeDeltaLink] Delta link initialized and saved for user ${userId}, returning ${allItems.length} items to process`);
+
+    return allItems;
+  }
+
+  /**
+   * Save delta link for next sync
+   * Should be called AFTER all events from fetchAndSortChanges have been processed
+   */
+  async saveDeltaLink(
+    userId: number,
+    resourceType: ResourceType,
+    deltaLink: string
+  ): Promise<void> {
+    await this.deltaLinkRepository.saveDeltaLink(userId, resourceType, deltaLink);
+    this.logger.debug(`[saveDeltaLink] Saved delta link for user ${userId}, resource ${resourceType}`);
   }
 
   /**

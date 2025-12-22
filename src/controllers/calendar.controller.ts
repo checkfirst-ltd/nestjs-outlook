@@ -71,7 +71,7 @@ export class CalendarController {
     // Process notification
     try {
       this.logger.debug(`Received webhook notification: ${JSON.stringify(notificationBody)}`);
-      
+
       // Early response with 202 Accepted if we have multiple notifications
       // This follows Microsoft's best practice to avoid timing out on the response
       if (Array.isArray(notificationBody.value) && notificationBody.value.length > 2) {
@@ -80,7 +80,7 @@ export class CalendarController {
           success: true,
           message: 'Notifications accepted for processing',
         });
-        
+
         // Process notifications asynchronously after sending the response
         this.processCalendarNotificationBatch(notificationBody).catch((error: unknown) => {
           const errorMessage = error instanceof Error ? error.message : String(error);
@@ -88,7 +88,7 @@ export class CalendarController {
         });
         return;
       }
-      
+
       // For smaller batches, process synchronously
       if (Array.isArray(notificationBody.value) && notificationBody.value.length > 0) {
         const results = await this.processCalendarNotificationBatch(notificationBody);
@@ -178,7 +178,7 @@ export class CalendarController {
         };
 
         const result = await this.calendarService.handleOutlookWebhook(changeNotification);
-        
+
         if (result.success) {
           this.logger.log(`Successfully processed ${item.changeType} event for resource ID: ${resourceData.id || 'unknown'}`);
           successCount++;
