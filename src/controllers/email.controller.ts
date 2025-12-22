@@ -4,6 +4,7 @@ import { Response, Request } from 'express';
 import { EmailService } from '../services/email/email.service';
 import { ChangeNotification, ChangeType } from '@microsoft/microsoft-graph-types';
 import { OutlookWebhookNotificationDto } from '../dto/outlook-webhook-notification.dto';
+import { validateNotificationItem, validateChangeType, WebhookResourceType } from '../utils/webhook-notification.validator';
 
 @ApiTags('Email')
 @Controller('email')
@@ -132,21 +133,19 @@ export class EmailController {
     
     // Process each notification in the batch
     for (const item of notificationBody.value) {
-      // Skip invalid notifications
-      if (!item.subscriptionId || !item.resource) {
-        this.logger.warn(`Skipping email notification with missing required fields`);
-        failureCount++;
-        continue;
-      }
-      
-      const resourceData = item.resourceData;
+      // Validate the notification item
+      const validation = validateNotificationItem(
+        item,
+        WebhookResourceType.EMAIL,
+        this.logger
+      );
 
-      // Skip notifications without resourceData
-      if (!resourceData) {
-        this.logger.warn(`Skipping email notification with missing resourceData`);
+      if (!validation.isValid || validation.shouldSkip) {
         failureCount++;
         continue;
       }
+
+      const resourceData = item.resourceData!; // Safe to assert after validation
 
       // Skip duplicate messages in the same batch
       if (resourceData.id && processedMessages.has(resourceData.id)) {
@@ -159,10 +158,8 @@ export class EmailController {
         processedMessages.add(resourceData.id);
       }
 
-      // Only process notifications with supported change types
-      const validChangeTypes = ['created', 'updated', 'deleted'];
-      if (!validChangeTypes.includes(item.changeType)) {
-        this.logger.warn(`Skipping email notification with unsupported change type: ${item.changeType}`);
+      // Validate change type
+      if (!validateChangeType(item.changeType, this.logger, '[EMAIL_WEBHOOK]')) {
         failureCount++;
         continue;
       }
