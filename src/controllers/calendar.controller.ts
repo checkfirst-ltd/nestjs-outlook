@@ -3,7 +3,7 @@ import { ApiTags, ApiResponse, ApiBody, ApiQuery } from '@nestjs/swagger';
 import { Response, Request } from 'express';
 import { CalendarService } from '../services/calendar/calendar.service';
 import { ChangeNotification, ChangeType } from '@microsoft/microsoft-graph-types';
-import { OutlookResourceData, OutlookWebhookNotificationDto } from '../dto/outlook-webhook-notification.dto';
+import { OutlookWebhookNotificationDto } from '../dto/outlook-webhook-notification.dto';
 import { validateNotificationItem, validateChangeType, WebhookResourceType } from '../utils/webhook-notification.validator';
 
 @ApiTags('Calendar')
@@ -145,7 +145,8 @@ export class CalendarController {
         continue;
       }
 
-      const resourceData = item.resourceData as OutlookResourceData; // Safe to assert after validation
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- Validated above, guaranteed to be non-null
+      const resourceData = item.resourceData!;
 
       // Skip duplicate events in the same batch
       if (resourceData.id && processedEvents.has(resourceData.id)) {
