@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.5.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.5.0...v4.5.1) (2025-12-22)
+
+
+### Bug Fixes
+
+* outlook sends notification with empty resources ([#51](https://github.com/checkfirst-ltd/nestjs-outlook/issues/51)) ([1e2aeb4](https://github.com/checkfirst-ltd/nestjs-outlook/commit/1e2aeb43a36d803902bb77d84ee50be7cb985b0f))
+
 ## [4.5.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.4.1...v4.5.0) (2025-12-18)
 
 
