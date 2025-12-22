@@ -118,8 +118,8 @@ export class OutlookWebhookNotificationItemDto {
     type: OutlookResourceData,
   })
   @IsObject()
-  @IsNotEmpty()
-  resourceData: OutlookResourceData = new OutlookResourceData();
+  @IsOptional()
+  resourceData?: OutlookResourceData;
 
   @ApiProperty({
     description: 'The unique identifier for the client state',

@@ -4,6 +4,7 @@ import { Response, Request } from 'express';
 import { CalendarService } from '../services/calendar/calendar.service';
 import { ChangeNotification, ChangeType } from '@microsoft/microsoft-graph-types';
 import { OutlookWebhookNotificationDto } from '../dto/outlook-webhook-notification.dto';
+import { validateNotificationItem, validateChangeType, WebhookResourceType } from '../utils/webhook-notification.validator';
 
 @ApiTags('Calendar')
 @Controller('calendar')
@@ -132,30 +133,34 @@ export class CalendarController {
     
     // Process each notification in the batch
     for (const item of notificationBody.value) {
-      // Skip invalid notifications
-      if (!item.subscriptionId || !item.resource) {
-        this.logger.warn(`Skipping notification with missing required fields`);
+      // Validate the notification item
+      const validation = validateNotificationItem(
+        item,
+        WebhookResourceType.CALENDAR,
+        this.logger
+      );
+
+      if (!validation.isValid || validation.shouldSkip) {
         failureCount++;
         continue;
       }
-      
-      const resourceData = item.resourceData;
-      
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- Validated above, guaranteed to be non-null
+      const resourceData = item.resourceData!;
+
       // Skip duplicate events in the same batch
       if (resourceData.id && processedEvents.has(resourceData.id)) {
         this.logger.debug(`Skipping duplicate event: ${resourceData.id}`);
         continue;
       }
-      
+
       // Add to processed set if it has an ID
       if (resourceData.id) {
         processedEvents.add(resourceData.id);
       }
 
-      // Only process notifications with supported change types
-      const validChangeTypes = ['created', 'updated', 'deleted'];
-      if (!validChangeTypes.includes(item.changeType)) {
-        this.logger.warn(`Skipping notification with unsupported change type: ${item.changeType}`);
+      // Validate change type
+      if (!validateChangeType(item.changeType, this.logger, '[CALENDAR_WEBHOOK]')) {
         failureCount++;
         continue;
       }

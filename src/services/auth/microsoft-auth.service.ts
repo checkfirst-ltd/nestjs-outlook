@@ -539,8 +539,8 @@ export class MicrosoftAuthService {
       // Mark subscription setup as in progress
       this.subscriptionInProgress.set(userIdNum, true);
 
-      // Check if calendar permissions were requested
-      if (this.hasCalendarPermission(scopes)) {
+      // Check if calendar.read permissions were requested
+      if (this.hasCalendarSubscriptionPermission(scopes)) {
         // Create webhook subscription for the user's calendar
         try {
           await this.calendarService.createWebhookSubscription(userId);
@@ -553,8 +553,8 @@ export class MicrosoftAuthService {
         }
       }
 
-      // Check if email permissions were requested
-      if (this.hasEmailPermission(scopes)) {
+      // Check if email.read permissions were requested
+      if (this.hasEmailSubscriptionPermission(scopes)) {
         // Create webhook subscription for the user's email
         try {
           await this.emailService.createWebhookSubscription(userId);
@@ -660,23 +660,51 @@ export class MicrosoftAuthService {
   }
 
   /**
+   * Revoke Microsoft tokens using the refresh token
+   * @param refreshToken - The refresh token to use
+   * @returns void
+   */
+  async revokeRefreshToken(refreshToken: string): Promise<void> {
+    try {
+      if (!refreshToken) {
+        this.logger.warn('⚠️ No refresh token available for revocation');
+        return;
+      }
+
+      await axios.post(
+        'https://login.microsoftonline.com/common/oauth2/v2.0/logout',
+        new URLSearchParams({
+          token: refreshToken,
+          token_type_hint: 'refresh_token',
+        }),
+        {
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        },
+      );
+
+      this.logger.log('✅ Microsoft tokens revoked successfully');
+    } catch (error) {
+      this.logger.warn(
+        `⚠️ Failed to revoke Microsoft tokens: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
+    }
+  }
+
+  /**
    * Helper method to determine if calendar permissions were requested
    */
-  private hasCalendarPermission(scopes: PermissionScope[]): boolean {
+  private hasCalendarSubscriptionPermission(scopes: PermissionScope[]): boolean {
     return scopes.some(scope => 
-      scope === PermissionScope.CALENDAR_READ || 
-      scope === PermissionScope.CALENDAR_WRITE
+      scope === PermissionScope.CALENDAR_READ
     );
   }
 
   /**
    * Helper method to determine if email permissions were requested
    */  
-  private hasEmailPermission(scopes: PermissionScope[]): boolean {
+  private hasEmailSubscriptionPermission(scopes: PermissionScope[]): boolean {
     return scopes.some(scope => 
-      scope === PermissionScope.EMAIL_READ || 
-      scope === PermissionScope.EMAIL_WRITE || 
-      scope === PermissionScope.EMAIL_SEND
+      scope === PermissionScope.EMAIL_READ
     );
   }
 
