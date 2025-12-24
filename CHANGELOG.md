@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.6.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.6.0...v4.6.1) (2025-12-24)
+
+
+### Bug Fixes
+
+* minor bug in odata.type comparison ([#54](https://github.com/checkfirst-ltd/nestjs-outlook/issues/54)) ([617eba5](https://github.com/checkfirst-ltd/nestjs-outlook/commit/617eba5f8fd9cbb565be50e88072646519cdb253))
+
 ## [4.6.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.5.1...v4.6.0) (2025-12-22)
 
 
