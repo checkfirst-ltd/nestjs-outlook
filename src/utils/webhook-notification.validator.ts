@@ -29,6 +29,17 @@ const LOG_PREFIXES = {
 } as const;
 
 /**
+ * Checks if the actual OData type matches the expected OData type
+ * 
+ * @param actual - The actual OData type
+ * @param expected - The expected OData type
+ * @returns True if the OData type matches, false otherwise
+ */
+const hasODataTypeMismatch = (actual: string | undefined, expected: string): boolean => {
+  return actual?.toLowerCase() !== expected.toLowerCase();
+};
+
+/**
  * Validates a webhook notification item and provides consistent logging
  * for missing or invalid resourceData across calendar and email webhooks
  *
@@ -81,7 +92,7 @@ export function validateNotificationItem(
   }
 
   // Validate @odata.type if present
-  if (resourceData['@odata.type'] && resourceData['@odata.type'] !== expectedODataType) {
+  if (hasODataTypeMismatch(resourceData['@odata.type'], expectedODataType)) {
     logger.warn(
       `${logPrefix} Invalid resource type: ${resourceData['@odata.type']}. ` +
       `Expected: ${expectedODataType}, Resource: ${item.resource}`
