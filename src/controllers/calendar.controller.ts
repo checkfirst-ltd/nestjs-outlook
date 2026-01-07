@@ -5,14 +5,18 @@ import { CalendarService } from '../services/calendar/calendar.service';
 import { ChangeNotification, ChangeType } from '@microsoft/microsoft-graph-types';
 import { OutlookWebhookNotificationDto } from '../dto/outlook-webhook-notification.dto';
 import { validateNotificationItem, validateChangeType, WebhookResourceType } from '../utils/webhook-notification.validator';
+import { LifecycleEventHandlerService } from '../services/calendar/lifecycle-event-handler.service';
 
 @ApiTags('Calendar')
 @Controller('calendar')
 @Injectable()
 export class CalendarController {
   private readonly logger = new Logger(CalendarController.name);
-  
-  constructor(private readonly calendarService: CalendarService) {}
+
+  constructor(
+    private readonly calendarService: CalendarService,
+    private readonly lifecycleEventHandler: LifecycleEventHandlerService,
+  ) {}
 
   /**
    * Webhook endpoint for Outlook calendar notifications
@@ -127,10 +131,10 @@ export class CalendarController {
     // Track processing results
     let successCount = 0;
     let failureCount = 0;
-    
+
     // Track processed event IDs to avoid duplicates
     const processedEvents = new Set<string>();
-    
+
     // Process each notification in the batch
     for (const item of notificationBody.value) {
       // Validate the notification item
@@ -139,6 +143,25 @@ export class CalendarController {
         WebhookResourceType.CALENDAR,
         this.logger
       );
+
+      // Handle lifecycle events separately
+      if (validation.isLifecycleEvent) {
+        try {
+          const result = await this.lifecycleEventHandler.handleLifecycleEvent(item);
+          if (result.success) {
+            this.logger.log(`Successfully handled lifecycle event: ${validation.lifecycleEventType}`);
+            successCount++;
+          } else {
+            this.logger.warn(`Failed to handle lifecycle event: ${result.message}`);
+            failureCount++;
+          }
+        } catch (error: unknown) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          this.logger.error(`Error handling lifecycle event: ${errorMessage}`);
+          failureCount++;
+        }
+        continue;
+      }
 
       if (!validation.isValid || validation.shouldSkip) {
         failureCount++;
@@ -160,7 +183,7 @@ export class CalendarController {
       }
 
       // Validate change type
-      if (!validateChangeType(item.changeType, this.logger, '[CALENDAR_WEBHOOK]')) {
+      if (!validateChangeType(item.changeType || 'unknown', this.logger, '[CALENDAR_WEBHOOK]')) {
         failureCount++;
         continue;
       }

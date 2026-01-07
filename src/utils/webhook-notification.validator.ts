@@ -15,6 +15,8 @@ export enum WebhookResourceType {
 export interface WebhookValidationResult {
   isValid: boolean;
   shouldSkip: boolean;
+  isLifecycleEvent: boolean;
+  lifecycleEventType?: string;
   reason?: string;
 }
 
@@ -51,7 +53,37 @@ export function validateNotificationItem(
     return {
       isValid: false,
       shouldSkip: true,
+      isLifecycleEvent: false,
       reason: 'Missing required fields',
+    };
+  }
+
+  // Handle lifecycle events (these are special notifications that don't have changeType or resourceData)
+  if (item.lifecycleEvent) {
+    logger.log(
+      `${logPrefix} Received lifecycle event: ${item.lifecycleEvent} for subscription ${item.subscriptionId}`
+    );
+    return {
+      isValid: false,
+      shouldSkip: true,
+      isLifecycleEvent: true,
+      lifecycleEventType: item.lifecycleEvent,
+      reason: `Lifecycle event: ${item.lifecycleEvent}`,
+    };
+  }
+
+  // Ensure changeType is present for non-lifecycle notifications
+  if (!item.changeType) {
+    logger.warn(
+      `${logPrefix} Missing changeType for notification. ` +
+      `Resource: ${item.resource}, SubscriptionId: ${item.subscriptionId}. ` +
+      `This may indicate a malformed webhook payload.`
+    );
+    return {
+      isValid: false,
+      shouldSkip: true,
+      isLifecycleEvent: false,
+      reason: 'Missing changeType',
     };
   }
 
@@ -76,6 +108,7 @@ export function validateNotificationItem(
     return {
       isValid: false,
       shouldSkip: true,
+      isLifecycleEvent: false,
       reason: 'Missing resourceData',
     };
   }
@@ -89,6 +122,7 @@ export function validateNotificationItem(
     return {
       isValid: false,
       shouldSkip: true,
+      isLifecycleEvent: false,
       reason: `Invalid @odata.type: expected ${expectedODataType}`,
     };
   }
@@ -97,6 +131,7 @@ export function validateNotificationItem(
   return {
     isValid: true,
     shouldSkip: false,
+    isLifecycleEvent: false,
   };
 }
 

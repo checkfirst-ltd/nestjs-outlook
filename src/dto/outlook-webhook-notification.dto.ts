@@ -98,12 +98,22 @@ export class OutlookWebhookNotificationItemDto {
   subscriptionExpirationDateTime: string = '';
 
   @ApiProperty({
-    description: 'The type of change that occurred',
+    description: 'The type of change that occurred (created, updated, deleted). May be absent for lifecycle events.',
     example: 'deleted',
+    required: false,
   })
   @IsString()
-  @IsNotEmpty()
-  changeType: string = '';
+  @IsOptional()
+  changeType?: string;
+
+  @ApiProperty({
+    description: 'Lifecycle event type (missed, subscriptionRemoved, reauthorizationRequired)',
+    example: 'reauthorizationRequired',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  lifecycleEvent?: "missed" | "subscriptionRemoved" | "reauthorizationRequired";
 
   @ApiProperty({
     description: 'The type of resource that changed',
