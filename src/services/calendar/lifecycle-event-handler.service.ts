@@ -132,7 +132,7 @@ export class LifecycleEventHandlerService {
           subscription.userId,
         );
 
-      const expirationDate = renewedSubscription?.expirationDateTime
+      const expirationDate = renewedSubscription.expirationDateTime
         ? new Date(renewedSubscription.expirationDateTime).toISOString()
         : 'unknown';
 
@@ -279,7 +279,7 @@ export class LifecycleEventHandlerService {
         false, // Don't force reset, use existing delta link
       );
 
-      const changesCount = changes?.length ?? 0;
+      const changesCount = changes.length;
 
       this.logger.log(
         `[MISSED] Delta sync completed. Found ${changesCount} changes for subscription ${subscriptionId}`,

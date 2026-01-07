@@ -160,7 +160,7 @@ export class EmailController {
       }
 
       // Validate change type
-      if (!validateChangeType(item.changeType, this.logger, '[EMAIL_WEBHOOK]')) {
+      if (!validateChangeType(item.changeType || 'unknown', this.logger, '[EMAIL_WEBHOOK]')) {
         failureCount++;
         continue;
       }
