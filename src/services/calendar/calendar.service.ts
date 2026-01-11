@@ -17,6 +17,7 @@ import { Repository } from "typeorm";
 import { DeltaSyncService } from "../shared/delta-sync.service";
 import { ResourceType } from "../../enums/resource-type.enum";
 import { delay, retryWithBackoff } from "../../utils/retry.util";
+import { UserIdConverterService } from "../shared/user-id-converter.service";
 
 // Event type constants
 const OUTLOOK_EVENT_CREATED = OutlookEventTypes.EVENT_CREATED;
@@ -75,7 +76,8 @@ export class CalendarService {
     private readonly deltaLinkRepository: OutlookDeltaLinkRepository,
     @InjectRepository(MicrosoftUser)
     private readonly microsoftUserRepository: Repository<MicrosoftUser>,
-    private readonly deltaSyncService: DeltaSyncService
+    private readonly deltaSyncService: DeltaSyncService,
+    private readonly userIdConverter: UserIdConverterService
   ) {}
 
   /**
@@ -87,9 +89,7 @@ export class CalendarService {
     try {
       // Get a valid access token for this user
       const accessToken =
-        await this.microsoftAuthService.getUserAccessTokenByExternalUserId(
-          externalUserId
-        );
+        await this.microsoftAuthService.getUserAccessToken({externalUserId});
 
       // Using axios for direct API call
       const response = await axios.get<Calendar>(
@@ -128,9 +128,7 @@ export class CalendarService {
     try {
       // Get a valid access token for this user
       const accessToken =
-        await this.microsoftAuthService.getUserAccessTokenByExternalUserId(
-          externalUserId
-        );
+        await this.microsoftAuthService.getUserAccessToken({externalUserId});
 
       // Initialize Microsoft Graph client
       const client = Client.init({
@@ -168,9 +166,7 @@ export class CalendarService {
     try {
       // Get a valid access token for this user
       const accessToken =
-        await this.microsoftAuthService.getUserAccessTokenByExternalUserId(
-          externalUserId
-        );
+        await this.microsoftAuthService.getUserAccessToken({externalUserId});
 
       // Initialize Microsoft Graph client
       const client = Client.init({
@@ -203,12 +199,16 @@ export class CalendarService {
   async createWebhookSubscription(
     externalUserId: string
   ): Promise<Subscription> {
+    const correlationId = `webhook-${externalUserId}-${Date.now()}`;
+    this.logger.log(`[${correlationId}] Starting webhook subscription creation for user ${externalUserId}`);
+
     try {
       // Get a valid access token for this user
+      this.logger.log(`[${correlationId}] Fetching access token for user ${externalUserId}`);
       const accessToken =
-        await this.microsoftAuthService.getUserAccessTokenByExternalUserId(
-          externalUserId
-        );
+        await this.microsoftAuthService.getUserAccessToken({externalUserId});
+
+      this.logger.log(`[${correlationId}] Successfully obtained access token`);
 
       // Set expiration date (max 3 days as per Microsoft documentation)
       const expirationDateTime = new Date();
@@ -233,14 +233,15 @@ export class CalendarService {
         clientState: `user_${externalUserId}_${Math.random().toString(36).substring(2, 15)}`,
       };
 
-      this.logger.debug(
-        `Creating webhook subscription with notificationUrl: ${notificationUrl}`
+      this.logger.log(
+        `[${correlationId}] Creating webhook subscription with notificationUrl: ${notificationUrl}`
       );
 
       this.logger.debug(
-        `Subscription data: ${JSON.stringify(subscriptionData)}`
+        `[${correlationId}] Subscription data: ${JSON.stringify(subscriptionData)}`
       );
       // Create the subscription with Microsoft Graph API
+      this.logger.log(`[${correlationId}] Sending POST request to Microsoft Graph API`);
       const response = await axios.post<Subscription>(
         "https://graph.microsoft.com/v1.0/subscriptions",
         subscriptionData,
@@ -253,13 +254,15 @@ export class CalendarService {
       );
 
       this.logger.log(
-        `Created webhook subscription ${response.data.id || "unknown"} for user ${externalUserId}`
+        `[${correlationId}] Created webhook subscription ${response.data.id || "unknown"} for user ${externalUserId}`
       );
 
-      // Store internal userId for webhooks (should be the numeric ID in our subscription table)
-      const internalUserId = parseInt(externalUserId, 10);
+      // Convert external user ID to internal database ID
+      this.logger.log(`[${correlationId}] Converting external user ID to internal ID`);
+      const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
 
       // Save the subscription to the database
+      this.logger.log(`[${correlationId}] Saving subscription to database (internalUserId: ${internalUserId})`);
       await this.webhookSubscriptionRepository.saveSubscription({
         subscriptionId: response.data.id,
         userId: internalUserId,
@@ -272,12 +275,20 @@ export class CalendarService {
           : new Date(),
       });
 
-      this.logger.debug(`Stored subscription`);
+      this.logger.log(`[${correlationId}] Successfully stored subscription in database`);
+      this.logger.log(`[${correlationId}] Webhook subscription creation completed successfully`);
 
       return response.data;
     } catch (error) {
-      this.logger.error("Failed to create webhook subscription:", error);
-      throw new Error("Failed to create webhook subscription");
+      if (axios.isAxiosError(error)) {
+        this.logger.error(
+          `[${correlationId}] Microsoft Graph API error: Status ${error.response?.status}, ` +
+          `Message: ${JSON.stringify(error.response?.data)}`
+        );
+      } else {
+        this.logger.error(`[${correlationId}] Failed to create webhook subscription:`, error);
+      }
+      throw new Error(`Failed to create webhook subscription: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
@@ -294,9 +305,7 @@ export class CalendarService {
     try {
       // Get a valid access token for this user
       const accessToken =
-        await this.microsoftAuthService.getUserAccessTokenByExternalUserId(
-          externalUserId
-        );
+        await this.microsoftAuthService.getUserAccessToken({externalUserId});
 
       // Set new expiration date (max 3 days from now)
       const expirationDateTime = new Date();
@@ -343,19 +352,18 @@ export class CalendarService {
   /**
    * Renew an existing webhook subscription using internal user ID
    * @param subscriptionId - ID of the subscription to renew
-   * @param internalUserId - Internal user ID for the subscription
+   * @param internalUserId - Internal user ID for the subscription (MicrosoftUser.id)
    * @returns The renewed subscription data
+   * @private This method is for internal use only (lifecycle events)
    */
-  async renewWebhookSubscriptionByUserId(
+  private async renewWebhookSubscriptionByInternalUserId(
     subscriptionId: string,
-    internalUserId: number | string
+    internalUserId: number
   ): Promise<Subscription> {
     try {
       // Get a valid access token for this user
       const accessToken =
-        await this.microsoftAuthService.getUserAccessTokenByUserId(
-          internalUserId
-        );
+        await this.microsoftAuthService.getUserAccessToken({internalUserId});
 
       // Set new expiration date (max 3 days from now)
       const expirationDateTime = new Date();
@@ -412,9 +420,7 @@ export class CalendarService {
     try {
       // Get a valid access token for this user
       const accessToken =
-        await this.microsoftAuthService.getUserAccessTokenByExternalUserId(
-          externalUserId
-        );
+        await this.microsoftAuthService.getUserAccessToken({externalUserId});
 
       // Make the request to Microsoft Graph API to delete the subscription
       await axios.delete(
@@ -463,6 +469,26 @@ export class CalendarService {
   }
 
   /**
+   * Get active webhook subscription for a user
+   * @param externalUserId - External user ID from host application
+   * @returns Subscription ID if active subscription exists, null otherwise
+   */
+  async getActiveSubscription(externalUserId: string): Promise<string | null> {
+    try {
+      // Convert external to internal ID
+      const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
+
+      const subscription = await this.webhookSubscriptionRepository.findActiveByUserId(internalUserId);
+
+      return subscription?.subscriptionId ?? null;
+    } catch {
+      // User may not have connected Microsoft account yet - this is not an error
+      this.logger.debug(`No active subscription for user ${externalUserId}`);
+      return null;
+    }
+  }
+
+  /**
    * Scheduled job that checks for webhook subscriptions that will expire soon
    * and renews them
    */
@@ -487,8 +513,8 @@ export class CalendarService {
       // Renew each subscription
       for (const subscription of expiringSubscriptions) {
         try {
-          // Renew the subscription using the userId to get a fresh token
-          await this.renewWebhookSubscriptionByUserId(
+          // Renew the subscription using the internal userId to get a fresh token
+          await this.renewWebhookSubscriptionByInternalUserId(
             subscription.subscriptionId,
             subscription.userId
           );
@@ -647,9 +673,7 @@ export class CalendarService {
 
   async getAuthenticatedClient(externalUserId: string): Promise<Client> {
     const accessToken =
-      await this.microsoftAuthService.getUserAccessTokenByExternalUserId(
-        externalUserId
-      );
+      await this.microsoftAuthService.getUserAccessToken({externalUserId});
 
     return Client.init({
       authProvider: (done) => {
@@ -665,9 +689,7 @@ export class CalendarService {
     try {
       // Get a valid access token for this user
       const accessToken =
-        await this.microsoftAuthService.getUserAccessTokenByExternalUserId(
-          externalUserId
-        );
+        await this.microsoftAuthService.getUserAccessToken({externalUserId});
 
       const response = await axios.get(
         `https://graph.microsoft.com/v1.0/${resource}`,
@@ -853,11 +875,14 @@ export class CalendarService {
     try {
       const client = await this.getAuthenticatedClient(externalUserId);
 
+      // Convert external ID to internal ID
+      const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
+
       // Initialize delta link WITHOUT date range = tracks ALL events going forward
-      await this.deltaSyncService.initializeDeltaLink(
+      await this.deltaSyncService['initializeDeltaLink'](
         client,
         "/me/events/delta",
-        Number(externalUserId),
+        internalUserId,
         ResourceType.CALENDAR
       );
 
@@ -981,7 +1006,7 @@ export class CalendarService {
 
     const resourceData: OutlookResourceData = {
       id: change.id || "",
-      userId: Number(externalUserId),
+      userId: undefined,  // TODO: Pass internalUserId instead of externalUserId to this method
       subscriptionId,
       resource,
       changeType: EVENT_TYPE_TO_CHANGE_TYPE[eventType],
