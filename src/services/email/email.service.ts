@@ -43,7 +43,7 @@ export class EmailService {
   ): Promise<{ message: Message }> {
     try {
       // Get a valid access token for this user
-      const accessToken = await this.microsoftAuthService.getUserAccessTokenByExternalUserId(externalUserId);
+      const accessToken = await this.microsoftAuthService.getUserAccessToken({externalUserId});
 
       // Initialize Microsoft Graph client
       const client = Client.init({
@@ -78,7 +78,7 @@ export class EmailService {
   ): Promise<Subscription> {
     try {
       // Get a valid access token for this user
-      const accessToken = await this.microsoftAuthService.getUserAccessTokenByExternalUserId(externalUserId);
+      const accessToken = await this.microsoftAuthService.getUserAccessToken({externalUserId});
       
       // Set expiration date (max 3 days as per Microsoft documentation)
       const expirationDateTime = new Date();
@@ -210,7 +210,7 @@ export class EmailService {
           const messageId = resource.split('/').pop();
           if (messageId) {
             // Get a valid access token - use internalUserId to get the token
-            const accessToken = await this.microsoftAuthService['getUserAccessTokenByInternalUserId'](internalUserId);
+            const accessToken = await this.microsoftAuthService.getUserAccessToken({internalUserId});
             
             // Create a Graph client to fetch the email details
             const client = Client.init({
