@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.7.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.6.1...v4.7.0) (2026-01-11)
+
+
+### Features
+
+* handling lifecycle events ([#56](https://github.com/checkfirst-ltd/nestjs-outlook/issues/56)) ([c3c49fb](https://github.com/checkfirst-ltd/nestjs-outlook/commit/c3c49fb4d7ee40b0b1fa3a8c6a0f8ac01d91f937))
+
 ## [4.6.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.6.0...v4.6.1) (2025-12-24)
 
 
