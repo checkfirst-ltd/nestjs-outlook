@@ -420,7 +420,7 @@ export class DeltaSyncService {
    * @returns Object with items and delta link
    * @private This method is for internal use only
    */
-  private async initializeDeltaLink(
+  async initializeDeltaLink(
     client: Client,
     requestUrl: string,
     internalUserId: number,
