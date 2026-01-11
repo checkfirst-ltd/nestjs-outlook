@@ -80,4 +80,10 @@ export class OutlookWebhookSubscriptionRepository {
       },
     });
   }
+
+  async findActiveByUserId(userId: number): Promise<OutlookWebhookSubscription | null> {
+    return this.repository.findOne({
+      where: { userId, isActive: true },
+    });
+  }
 }

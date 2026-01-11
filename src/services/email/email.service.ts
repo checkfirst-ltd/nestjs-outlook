@@ -12,6 +12,7 @@ import { OutlookEventTypes } from '../../enums/event-types.enum';
 import { MicrosoftUser } from '../../entities/microsoft-user.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { UserIdConverterService } from '../shared/user-id-converter.service';
 
 @Injectable()
 export class EmailService {
@@ -26,6 +27,7 @@ export class EmailService {
     private readonly microsoftConfig: MicrosoftOutlookConfig,
     @InjectRepository(MicrosoftUser)
     private readonly microsoftUserRepository: Repository<MicrosoftUser>,
+    private readonly userIdConverter: UserIdConverterService,
   ) {}
 
   /**
@@ -41,7 +43,7 @@ export class EmailService {
   ): Promise<{ message: Message }> {
     try {
       // Get a valid access token for this user
-      const accessToken = await this.microsoftAuthService.getUserAccessTokenByExternalUserId(externalUserId);
+      const accessToken = await this.microsoftAuthService.getUserAccessToken({externalUserId});
 
       // Initialize Microsoft Graph client
       const client = Client.init({
@@ -76,7 +78,7 @@ export class EmailService {
   ): Promise<Subscription> {
     try {
       // Get a valid access token for this user
-      const accessToken = await this.microsoftAuthService.getUserAccessTokenByExternalUserId(externalUserId);
+      const accessToken = await this.microsoftAuthService.getUserAccessToken({externalUserId});
       
       // Set expiration date (max 3 days as per Microsoft documentation)
       const expirationDateTime = new Date();
@@ -118,8 +120,8 @@ export class EmailService {
 
       this.logger.log(`Created email webhook subscription ${response.data.id || 'unknown'} for user ${externalUserId}`);
 
-      // Store internal userId for webhooks (should be the numeric ID in our subscription table)
-      const internalUserId = parseInt(externalUserId, 10);
+      // Convert external user ID to internal database ID
+      const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
 
       // Save the subscription to the database
       await this.webhookSubscriptionRepository.saveSubscription({
@@ -207,8 +209,8 @@ export class EmailService {
           // Extract the message ID from the resource path (format: /me/messages/{id})
           const messageId = resource.split('/').pop();
           if (messageId) {
-            // Get a valid access token - use internalUserId as userId for token retrieval
-            const accessToken = await this.microsoftAuthService.getUserAccessTokenByUserId(internalUserId);
+            // Get a valid access token - use internalUserId to get the token
+            const accessToken = await this.microsoftAuthService.getUserAccessToken({internalUserId});
             
             // Create a Graph client to fetch the email details
             const client = Client.init({

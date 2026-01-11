@@ -14,19 +14,20 @@ import { MicrosoftTokenApiResponse } from '../../interfaces/microsoft-auth/micro
 import { StateObject } from '../../interfaces/microsoft-auth/state-object.interface';
 import { PermissionScope } from '../../enums/permission-scope.enum';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { FindOptionsWhere, Repository } from 'typeorm';
 import { MicrosoftUser } from '../../entities/microsoft-user.entity';
 
 /**
  * Important terminology:
- * 
- * - externalUserId: The ID of the user in the host application that uses this library.
+ *
+ * - externalUserId (string): The ID of the user in the host application that uses this library.
  *   This is what we store in the MicrosoftUser entity to identify which external user
  *   the Microsoft tokens belong to.
- * 
- * - userId: Sometimes used within internal webhook subscription methods to refer to 
- *   our own internal subscription record IDs. When calling token-related methods,
- *   always use externalUserId.
+ *
+ * - internalUserId (number): The auto-generated primary key (MicrosoftUser.id) used for
+ *   internal database relationships. Not exposed in public APIs.
+ *
+ * @see docs/USER_ID_TERMINOLOGY.md for detailed explanation
  */
 
 @Injectable()
@@ -48,8 +49,8 @@ export class MicrosoftAuthService {
   ];
   // CSRF token expiration time (30 minutes)
   private readonly CSRF_TOKEN_EXPIRY = 30 * 60 * 1000;
-  // Map to track subscription creation in progress for a user
-  private subscriptionInProgress = new Map<number, boolean>();
+  // Map to track subscription creation in progress for a user (keyed by external user ID)
+  private subscriptionInProgress = new Map<string, boolean>();
 
   constructor(
     private readonly eventEmitter: EventEmitter2,
@@ -171,12 +172,13 @@ export class MicrosoftAuthService {
 
   /**
    * Generate a secure CSRF token
+   * @param externalUserId - The external user ID from the host application
    */
-  private async generateCsrfToken(userId: string | number): Promise<string> {
+  private async generateCsrfToken(externalUserId: string | number): Promise<string> {
     const token = crypto.randomBytes(32).toString('hex');
 
     // Save token in the database
-    await this.csrfTokenRepository.saveToken(token, userId, this.CSRF_TOKEN_EXPIRY);
+    await this.csrfTokenRepository.saveToken(token, externalUserId, this.CSRF_TOKEN_EXPIRY);
 
     return token;
   }
@@ -233,19 +235,19 @@ export class MicrosoftAuthService {
 
   /**
    * Get the Microsoft login URL
-   * @param userId User ID
-   * @param scopes Optional array of permission scopes, uses default scopes if not provided
+   * @param externalUserId - External user ID from the host application
+   * @param scopes - Optional array of permission scopes, uses default scopes if not provided
    */
   async getLoginUrl(
-    userId: string, 
+    externalUserId: string,
     scopes: PermissionScope[] = this.defaultScopes
   ): Promise<string> {
     // Generate a secure CSRF token linked to this user
-    const csrf = await this.generateCsrfToken(userId);
+    const csrf = await this.generateCsrfToken(externalUserId);
 
     // Generate state with user ID, CSRF token, and requested scopes
     const stateObj = {
-      userId,
+      userId: externalUserId,
       csrf,
       timestamp: Date.now(),
       requestedScopes: scopes,
@@ -316,87 +318,75 @@ export class MicrosoftAuthService {
   }
 
   /**
-   * Get Microsoft user token info
+   * Get Microsoft user by internal ID or external user ID
+   *
+   * @param params - Object with either internalUserId or externalUserId
+   * @returns Microsoft user entity or null if not found
    */
-  private async getMicrosoftUserTokenInfo(externalUserId: string): Promise<{
-    accessToken: string;
-    refreshToken: string;
-    tokenExpiry: Date;
-    scopes: string;
-  } | null> {
-    const user = await this.microsoftUserRepository.findOne({
-      where: { externalUserId: externalUserId, isActive: true }
+  private async getMicrosoftUser(params: { internalUserId?: number; externalUserId?: string }): Promise<MicrosoftUser | null> {
+    const { internalUserId, externalUserId } = params;
+
+    if (!internalUserId && !externalUserId) {
+      throw new Error('Either internalUserId or externalUserId must be provided');
+    }
+
+    const whereCondition: FindOptionsWhere<MicrosoftUser> = { isActive: true };
+
+    if (internalUserId !== undefined) {
+      whereCondition.id = internalUserId;
+    }
+
+    if (externalUserId !== undefined) {
+      whereCondition.externalUserId = externalUserId;
+    }
+
+    return await this.microsoftUserRepository.findOne({
+      where: whereCondition
     });
-    
-    if (!user) {
-      return null;
-    }
-    
-    return {
-      accessToken: user.accessToken,
-      refreshToken: user.refreshToken,
-      tokenExpiry: user.tokenExpiry,
-      scopes: user.scopes,
-    };
   }
 
   /**
-   * Gets a valid access token for a user, refreshing it if necessary
-   * @param externalUserId - External user ID
+   * Gets a valid access token for a user, REFRESH it if necessary
+   *
+   * @param params - Object with either internalUserId or externalUserId
    * @returns Valid access token string
    */
-  async getUserAccessTokenByExternalUserId(externalUserId: string): Promise<string> {
+  async getUserAccessToken(params: { internalUserId?: number; externalUserId?: string }): Promise<string> {
     try {
-      // Get the user's token information from the database
-      const userInfo = await this.getMicrosoftUserTokenInfo(externalUserId);
+      const { internalUserId, externalUserId } = params;
 
-      if (!userInfo) {
-        throw new Error(`No token information found for user ${externalUserId}`);
+      // Guard clause
+      if (!internalUserId && !externalUserId) {
+        throw new Error('Either internalUserId or externalUserId must be provided');
       }
 
-      // Find the user to get the internal user ID
-      const user = await this.microsoftUserRepository.findOne({
-        where: { externalUserId: externalUserId, isActive: true }
+      // Get the Microsoft user by internal or external user ID
+      const user = await this.getMicrosoftUser({
+        internalUserId,
+        externalUserId
       });
 
+      // Guard clause
       if (!user) {
-        throw new Error(`Could not find user record for ${externalUserId}`);
+        const identifier = internalUserId ? `internal ID ${String(internalUserId)}` : `external ID ${externalUserId}`;
+        throw new Error(`No Microsoft user found with ${identifier}`);
       }
 
-      // Process the token information using the common helper
-      return await this.processTokenInfo(userInfo, user.id);
-    } catch (error) {
-      this.logger.error(`Error getting access token for user ${externalUserId}:`, error);
-      throw new Error(`Failed to get valid access token: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-
-  /**
-   * Gets a valid access token for a user using their internal user ID,
-   * refreshing it if necessary
-   * @param internalUserId - Internal user ID
-   * @returns Valid access token string
-   */
-  async getUserAccessTokenByUserId(internalUserId: number | string): Promise<string> {
-    try {
-      // Find the Microsoft user entry by the internal userId
-      const user = await this.microsoftUserRepository.findOne({
-        where: { id: typeof internalUserId === 'string' ? parseInt(internalUserId, 10) : internalUserId }
-      });
-      
-      if (!user) {
-        throw new Error(`No Microsoft user found with internal ID ${String(internalUserId)}`);
-      }
-      
-      // Process the token information directly from the user entity
+      // Extract & REFRESH the token information
       return await this.processTokenInfo({
         accessToken: user.accessToken,
         refreshToken: user.refreshToken,
         tokenExpiry: user.tokenExpiry,
         scopes: user.scopes
       }, user.id);
-    } catch (error) {
-      this.logger.error(`Error getting access token for internal user ID ${String(internalUserId)}:`, error);
+    } 
+    
+    // Error handling
+    catch (error) {
+      const identifier = params.internalUserId
+        ? `internal user ID ${String(params.internalUserId)}`
+        : `external user ID ${params.externalUserId}`;
+      this.logger.error(`Error getting access token for ${identifier}:`, error);
       throw new Error(`Failed to get valid access token: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
@@ -414,7 +404,7 @@ export class MicrosoftAuthService {
       tokenExpiry: Date;
       scopes: string;
     },
-    userId: number
+    internalUserId: number
   ): Promise<string> {
     // Check if the token is still valid
     if (!this.isTokenExpired(tokenInfo.tokenExpiry)) {
@@ -423,9 +413,9 @@ export class MicrosoftAuthService {
     }
     
     // Token is expired, refresh it
-    this.logger.log(`Access token for user ID ${String(userId)} is expired, refreshing...`);
+    this.logger.log(`Access token for user ID ${String(internalUserId)} is expired, refreshing...`);
     
-    const accessToken = await this.refreshAccessToken(tokenInfo.refreshToken, userId);
+    const accessToken = await this.refreshAccessToken(tokenInfo.refreshToken, internalUserId);
     
     return accessToken;
   }
@@ -436,7 +426,7 @@ export class MicrosoftAuthService {
    * @param state Base64 encoded state string
    */
   async exchangeCodeForToken(
-    code: string, 
+    code: string,
     state: string
   ): Promise<TokenResponse> {
     // Parse the state
@@ -446,21 +436,24 @@ export class MicrosoftAuthService {
       throw new Error('Invalid state parameter - missing user ID');
     }
 
+    const correlationId = `auth-${stateData.userId}-${Date.now()}`;
+    this.logger.log(`[${correlationId}] Starting token exchange for user ${stateData.userId}`);
+
     // Validate CSRF token (timestamp validation is now included in validateCsrfToken)
     const csrfError = await this.validateCsrfToken(stateData.csrf, stateData.timestamp);
 
     if (csrfError) {
-      this.logger.error(`CSRF validation failed for user ${String(stateData.userId)}: ${csrfError}`);
+      this.logger.error(`[${correlationId}] CSRF validation failed for user ${String(stateData.userId)}: ${csrfError}`);
       throw new Error(`CSRF validation failed: ${csrfError}`);
     }
 
     try {
-      this.logger.log(`Exchanging code for token with redirect URI: ${this.redirectUri}`);
-      
+      this.logger.log(`[${correlationId}] Exchanging code for token with redirect URI: ${this.redirectUri}`);
+
       // Use scopes from state if available, otherwise use defaults
       const scopesToUse = stateData.requestedScopes || this.defaultScopes;
-      this.logger.log(`Using scopes for token exchange: ${scopesToUse.join(', ')}`);
-      
+      this.logger.log(`[${correlationId}] Using scopes for token exchange: ${scopesToUse.join(', ')}`);
+
       // Build scope string
       const scopeString = this.mapToMicrosoftScopes(scopesToUse).join(' ');
 
@@ -473,7 +466,7 @@ export class MicrosoftAuthService {
         client_secret: this.clientSecret,
       });
 
-      this.logger.debug(`Token request payload: ${postData.toString()}`);
+      this.logger.debug(`[${correlationId}] Token request payload: ${postData.toString()}`);
 
       const tokenResponse = await axios.post<MicrosoftTokenApiResponse>(
         this.tokenEndpoint,
@@ -485,6 +478,8 @@ export class MicrosoftAuthService {
         },
       );
 
+      this.logger.log(`[${correlationId}] Successfully received token from Microsoft`);
+
       // Convert the API response to our internal TokenResponse format
       const tokenData: TokenResponse = {
         access_token: tokenResponse.data.access_token,
@@ -493,6 +488,7 @@ export class MicrosoftAuthService {
       };
 
       // Save Microsoft user with their tokens and scopes for later use
+      this.logger.log(`[${correlationId}] Saving Microsoft user to database`);
       await this.saveMicrosoftUser(
         stateData.userId,
         tokenData.access_token,
@@ -502,6 +498,7 @@ export class MicrosoftAuthService {
       );
 
       // Emit event that the user has been authenticated
+      this.logger.log(`[${correlationId}] Emitting USER_AUTHENTICATED event`);
       await Promise.resolve(
         this.eventEmitter.emit(OutlookEventTypes.USER_AUTHENTICATED, stateData.userId, {
           externalUserId: stateData.userId,
@@ -510,95 +507,179 @@ export class MicrosoftAuthService {
       );
 
       // Setup subscriptions (both calendar and email)
+      this.logger.log(`[${correlationId}] Starting subscription setup (async)`);
       await this.setupSubscriptions(stateData.userId, scopesToUse);
 
+      this.logger.log(`[${correlationId}] Token exchange completed successfully`);
       return tokenData;
     } catch (error) {
-      this.logger.error(`Error exchanging code for token:`, error);
+      this.logger.error(`[${correlationId}] Error exchanging code for token:`, error);
       throw new Error('Failed to exchange code for token');
     }
   }
   
   /**
+   * Retry a function with exponential backoff
+   * @param fn Function to retry
+   * @param maxRetries Maximum number of retry attempts
+   * @param initialDelayMs Initial delay in milliseconds
+   * @returns Result of the function
+   */
+  private async retryWithBackoff<T>(
+    fn: () => Promise<T>,
+    maxRetries: number = 3,
+    initialDelayMs: number = 1000
+  ): Promise<T> {
+    let lastError: Error | undefined;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        return await fn();
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error('Unknown error');
+
+        if (attempt < maxRetries - 1) {
+          const delayMs = initialDelayMs * Math.pow(2, attempt);
+          this.logger.warn(
+            `Attempt ${attempt + 1}/${maxRetries} failed: ${lastError.message}. Retrying in ${delayMs}ms...`
+          );
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+      }
+    }
+
+    throw lastError || new Error('Max retries exceeded');
+  }
+
+  /**
    * Setup webhook subscriptions for a user based on requested scopes
-   * @param userId - User ID
+   * @param externalUserId - External user ID from the host application
    * @param scopes - Requested permission scopes
    */
   private async setupSubscriptions(
-    userId: string, 
+    externalUserId: string,
     scopes: PermissionScope[] = this.defaultScopes
   ): Promise<void> {
     // Check if subscription setup is already in progress for this user
-    const userIdNum = parseInt(userId, 10);
-    if (this.subscriptionInProgress.get(userIdNum)) {
-      this.logger.log(`Subscription setup already in progress for user ${userId}`);
+    if (this.subscriptionInProgress.get(externalUserId)) {
+      this.logger.log(`Subscription setup already in progress for user ${externalUserId}`);
       return;
     }
 
+    const correlationId = `auth-${externalUserId}-${Date.now()}`;
+    this.logger.log(`[${correlationId}] Starting subscription setup for user ${externalUserId}`);
+
     try {
       // Mark subscription setup as in progress
-      this.subscriptionInProgress.set(userIdNum, true);
+      this.subscriptionInProgress.set(externalUserId, true);
+
+      const errors: string[] = [];
 
       // Check if calendar.read permissions were requested
       if (this.hasCalendarSubscriptionPermission(scopes)) {
-        // Create webhook subscription for the user's calendar
+        // Create webhook subscription for the user's calendar with retry
         try {
-          await this.calendarService.createWebhookSubscription(userId);
-          this.logger.log(`Successfully created calendar webhook subscription for user ${userId}`);
+          this.logger.log(`[${correlationId}] Creating calendar webhook subscription with retry logic`);
+          await this.retryWithBackoff(
+            () => this.calendarService.createWebhookSubscription(externalUserId),
+            3, // 3 retries
+            1000 // Initial delay 1 second
+          );
+          this.logger.log(`[${correlationId}] Successfully created calendar webhook subscription for user ${externalUserId}`);
         } catch (calendarError) {
           // Don't fail authentication if webhook creation fails
-          this.logger.error(
-            `Failed to create calendar webhook subscription: ${calendarError instanceof Error ? calendarError.message : 'Unknown error'}`,
-          );
+          const errorMsg = `Failed to create calendar webhook subscription after retries: ${calendarError instanceof Error ? calendarError.message : 'Unknown error'}`;
+          this.logger.error(`[${correlationId}] ${errorMsg}`);
+          errors.push(errorMsg);
         }
       }
 
       // Check if email.read permissions were requested
       if (this.hasEmailSubscriptionPermission(scopes)) {
-        // Create webhook subscription for the user's email
+        // Create webhook subscription for the user's email with retry
         try {
-          await this.emailService.createWebhookSubscription(userId);
-          this.logger.log(`Successfully created email webhook subscription for user ${userId}`);
+          this.logger.log(`[${correlationId}] Creating email webhook subscription with retry logic`);
+          await this.retryWithBackoff(
+            () => this.emailService.createWebhookSubscription(externalUserId),
+            3, // 3 retries
+            1000 // Initial delay 1 second
+          );
+          this.logger.log(`[${correlationId}] Successfully created email webhook subscription for user ${externalUserId}`);
         } catch (emailError) {
           // Don't fail authentication if webhook creation fails
-          this.logger.error(
-            `Failed to create email webhook subscription: ${emailError instanceof Error ? emailError.message : 'Unknown error'}`,
-          );
+          const errorMsg = `Failed to create email webhook subscription after retries: ${emailError instanceof Error ? emailError.message : 'Unknown error'}`;
+          this.logger.error(`[${correlationId}] ${errorMsg}`);
+          errors.push(errorMsg);
         }
       }
+
+      if (errors.length > 0) {
+        this.logger.error(
+          `[${correlationId}] Subscription setup completed with errors for user ${externalUserId}: ${errors.join('; ')}`
+        );
+      } else {
+        this.logger.log(`[${correlationId}] All subscriptions created successfully for user ${externalUserId}`);
+      }
     } catch (error) {
-      this.logger.error(`Error setting up subscriptions: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      this.logger.error(
+        `[${correlationId}] Unexpected error setting up subscriptions: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
       // Continue without failing authentication
     } finally {
       // Mark subscription setup as complete
-      this.subscriptionInProgress.set(userIdNum, false);
+      this.subscriptionInProgress.set(externalUserId, false);
+      this.logger.log(`[${correlationId}] Subscription setup process finished for user ${externalUserId}`);
     }
   }
 
   /**
    * Refresh an access token using a refresh token
-   * @param refreshToken - The refresh token to use
-   * @param userId - Internal user ID associated with the token
+   *
+   * ⚠️ **ADVANCED USAGE**: This method uses internal database IDs (MicrosoftUser.id).
+   *
+   * **Most applications should use `getUserAccessToken({ internalUserId })` instead**,
+   * which handles token refresh automatically without needing to manage tokens manually.
+   *
+   * **Only use this method if:**
+   * - You're directly accessing and managing `MicrosoftUser` entities
+   * - You need fine-grained control over the token refresh process
+   * - You already have the refresh token and internal user ID from the database
+   *
+   * **Typical usage (advanced):**
+   * ```typescript
+   * const microsoftUser = await microsoftUserRepo.findOne({...});
+   * if (isTokenExpired(microsoftUser.tokenExpiry)) {
+   *   const newToken = await authService.refreshAccessToken(
+   *     microsoftUser.refreshToken,
+   *     microsoftUser.id  // Internal database ID
+   *   );
+   * }
+   * ```
+   *
+   * @param refreshToken - The refresh token to use for obtaining a new access token
+   * @param internalUserId - Internal database user ID (MicrosoftUser.id primary key)
    * @returns New access token
+   *
+   * @see getUserAccessToken For standard usage with automatic token refresh
    */
   async refreshAccessToken(
     refreshToken: string,
-    userId: number
+    internalUserId: number
   ): Promise<string> {
     try {
       // Get the user to access its properties
-      const user = await this.microsoftUserRepository.findOne({
-        where: { id: userId }
+      const internalUser = await this.microsoftUserRepository.findOne({
+        where: { id: internalUserId }
       });
-      
-      if (!user) {
-        throw new Error(`No user found with ID ${String(userId)}`);
+
+      if (!internalUser) {
+        throw new Error(`No user found with ID ${String(internalUserId)}`);
       }
       
-      const scopeString = user.scopes;
+      const scopeString = internalUser.scopes;
       this.logger.debug(`Using saved scopes from database: ${scopeString}`);
-      
-      this.logger.debug(`Refreshing token for user ID ${String(userId)} with scopes: ${scopeString}`);
+
+      this.logger.debug(`Refreshing token for user ID ${String(internalUserId)} with scopes: ${scopeString}`);
       
       // Prepare parameters as specified in Microsoft documentation
       const payload = new URLSearchParams({
@@ -630,11 +711,11 @@ export class MicrosoftAuthService {
         const newAccessToken = response.data.access_token;
 
         // Update Microsoft user record with new tokens
-        user.accessToken = newAccessToken;
-        user.refreshToken = newRefreshToken;
-        user.tokenExpiry = new Date(Date.now() + response.data.expires_in * 1000);
+        internalUser.accessToken = newAccessToken;
+        internalUser.refreshToken = newRefreshToken;
+        internalUser.tokenExpiry = new Date(Date.now() + response.data.expires_in * 1000);
         
-        await this.microsoftUserRepository.save(user);
+        await this.microsoftUserRepository.save(internalUser);
 
         // Return just the access token
         return newAccessToken;
@@ -642,7 +723,7 @@ export class MicrosoftAuthService {
         if (axios.isAxiosError(error) && error.response) {
           // Log detailed API error information
           this.logger.error(
-            `Microsoft API error refreshing token for user ID ${String(userId)}: Status: ${String(error.response.status)}, Response: ${JSON.stringify(error.response.data)}`
+            `Microsoft API error refreshing token for user ID ${String(internalUserId)}: Status: ${String(error.response.status)}, Response: ${JSON.stringify(error.response.data)}`
           );
           
           // Check for specific error conditions from Microsoft
@@ -654,7 +735,7 @@ export class MicrosoftAuthService {
         throw error; // Re-throw for the outer catch to handle
       }
     } catch (error) {
-      this.logger.error(`Error refreshing access token for user ID ${String(userId)}:`, error);
+      this.logger.error(`Error refreshing access token for user ID ${String(internalUserId)}:`, error);
       throw new Error('Failed to refresh access token from Microsoft');
     }
   }

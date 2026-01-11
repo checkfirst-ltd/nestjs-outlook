@@ -127,7 +127,7 @@ export class LifecycleEventHandlerService {
       );
 
       const renewedSubscription =
-        await this.calendarService.renewWebhookSubscriptionByUserId(
+        await this.calendarService.renewWebhookSubscription(
           subscriptionId,
           subscription.userId,
         );

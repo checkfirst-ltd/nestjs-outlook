@@ -4,6 +4,7 @@ import { OutlookDeltaLinkRepository } from "../../repositories/outlook-delta-lin
 import { ResourceType } from "../../enums/resource-type.enum";
 import { Event, Message } from "../../types";
 import { delay, retryWithBackoff } from "../../utils/retry.util";
+import { UserIdConverterService } from "./user-id-converter.service";
 
 export interface DeltaItem {
   lastModifiedDateTime?: string;
@@ -41,7 +42,8 @@ export class DeltaSyncService {
   private readonly RETRY_DELAY_MS = 1000; // 1 second
 
   constructor(
-    private readonly deltaLinkRepository: OutlookDeltaLinkRepository
+    private readonly deltaLinkRepository: OutlookDeltaLinkRepository,
+    private readonly userIdConverter: UserIdConverterService
   ) {}
 
   private handleDeltaResponse<T extends DeltaItem>(
@@ -239,7 +241,7 @@ export class DeltaSyncService {
    * Fetches and sorts delta changes for any resource type
    * @param client Microsoft Graph client
    * @param requestUrl Initial request URL
-   * @param userId User ID
+   * @param externalUserId External user ID from the host application
    * @param forceReset Force reset of delta link
    * @param dateRange Optional date range for calendar delta queries (only used on initialization)
    * @returns Object containing sorted items and delta link for next sync
@@ -247,15 +249,18 @@ export class DeltaSyncService {
   async fetchAndSortChanges(
     client: Client,
     requestUrl: string,
-    userId: string,
+    externalUserId: string,
     forceReset: boolean = false,
     dateRange?: {
       startDate: Date;
       endDate: Date;
     }
   ): Promise<DeltaItem[]> {
+    // Convert external ID to internal ID for database operations
+    const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
+
     let startLink = await this.deltaLinkRepository.getDeltaLink(
-      Number(userId),
+      internalUserId,
       ResourceType.CALENDAR
     );
 
@@ -263,19 +268,19 @@ export class DeltaSyncService {
 
     // Force reset if requested (e.g., on reconnection)
     if (forceReset && startLink) {
-      this.logger.log(`[fetchAndSortChanges] Force reset requested, deleting existing delta link for user ${userId}`);
-      await this.deltaLinkRepository.deleteDeltaLink(Number(userId), ResourceType.CALENDAR);
+      this.logger.log(`[fetchAndSortChanges] Force reset requested, deleting existing delta link for user ${externalUserId}`);
+      await this.deltaLinkRepository.deleteDeltaLink(internalUserId, ResourceType.CALENDAR);
       startLink = null;
     }
 
     // If no delta link exists, initialize from "now" and return current items
     // This fetches all current events and establishes the delta link baseline
     if (!startLink) {
-      this.logger.log(`[fetchAndSortChanges] No delta link found for user ${userId}, initializing from current point`);
+      this.logger.log(`[fetchAndSortChanges] No delta link found for user ${externalUserId}, initializing from current point`);
       const result = await this.initializeDeltaLink(
         client,
         requestUrl,
-        Number(userId),
+        internalUserId,
         ResourceType.CALENDAR,
         dateRange
       );
@@ -285,18 +290,18 @@ export class DeltaSyncService {
     }
 
     // Incremental sync: fetch changes since last delta link
-    this.logger.debug(`[fetchAndSortChanges] Starting incremental sync with existing delta link for user ${userId}`);
+    this.logger.debug(`[fetchAndSortChanges] Starting incremental sync with existing delta link for user ${externalUserId}`);
 
     const { items: allItems, deltaLink: lastDeltaLink } = await this.fetchAllDeltaPages(
       client,
       startLink,
-      Number(userId)
+      internalUserId
     );
 
     // Save the delta link for incremental syncs (initialization already saves it)
     if (lastDeltaLink) {
-      await this.saveDeltaLink(Number(userId), ResourceType.CALENDAR, lastDeltaLink);
-      this.logger.log(`[fetchAndSortChanges] Saved delta link after fetching ${allItems.length} changes for user ${userId}`);
+      await this.saveDeltaLink(internalUserId, ResourceType.CALENDAR, lastDeltaLink);
+      this.logger.log(`[fetchAndSortChanges] Saved delta link after fetching ${allItems.length} changes for user ${externalUserId}`);
     }
 
     // Sort and return items
@@ -314,7 +319,7 @@ export class DeltaSyncService {
    *
    * @param client Microsoft Graph client
    * @param requestUrl Initial request URL
-   * @param userId User ID
+   * @param externalUserId External user ID from the host application
    * @param forceReset Force reset of delta link
    * @param dateRange Optional date range for calendar delta queries (only used on initialization)
    * @param saveDeltaLink Whether to save the delta link to database (default: true). Set to false for one-time windowed imports.
@@ -324,7 +329,7 @@ export class DeltaSyncService {
   async *streamDeltaChanges(
     client: Client,
     requestUrl: string,
-    userId: string,
+    externalUserId: string,
     forceReset: boolean = false,
     dateRange?: {
       startDate: Date;
@@ -332,17 +337,20 @@ export class DeltaSyncService {
     },
     saveDeltaLink: boolean = true
   ): AsyncGenerator<DeltaItem[], string | null, unknown> {
+    // Convert external ID to internal ID for database operations
+    const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
+
     let startLink = await this.deltaLinkRepository.getDeltaLink(
-      Number(userId),
+      internalUserId,
       ResourceType.CALENDAR
     );
 
-    this.logger.log(`[streamDeltaChanges] Starting stream for user ${userId}, startLink: ${startLink ? 'exists' : 'none'}, forceReset: ${forceReset}`);
+    this.logger.log(`[streamDeltaChanges] Starting stream for user ${externalUserId}, startLink: ${startLink ? 'exists' : 'none'}, forceReset: ${forceReset}`);
 
     // Force reset if requested (e.g., on reconnection)
     if (forceReset && startLink) {
-      this.logger.log(`[streamDeltaChanges] Force reset requested, deleting existing delta link for user ${userId}`);
-      await this.deltaLinkRepository.deleteDeltaLink(Number(userId), ResourceType.CALENDAR);
+      this.logger.log(`[streamDeltaChanges] Force reset requested, deleting existing delta link for user ${externalUserId}`);
+      await this.deltaLinkRepository.deleteDeltaLink(internalUserId, ResourceType.CALENDAR);
       startLink = null;
     }
 
@@ -352,7 +360,7 @@ export class DeltaSyncService {
 
     if (!startLink) {
       // No delta link exists - initialize from "now"
-      this.logger.log(`[streamDeltaChanges] No delta link found, initializing from current point for user ${userId}`);
+      this.logger.log(`[streamDeltaChanges] No delta link found, initializing from current point for user ${externalUserId}`);
 
       // Build URL with date range if provided
       if (dateRange) {
@@ -364,18 +372,18 @@ export class DeltaSyncService {
       }
     } else {
       // Delta link exists - incremental sync
-      this.logger.log(`[streamDeltaChanges] Using existing delta link for incremental sync for user ${userId}`);
+      this.logger.log(`[streamDeltaChanges] Using existing delta link for incremental sync for user ${externalUserId}`);
       urlToUse = startLink;
     }
 
     // Stream pages using core generator
     let pageCount = 0;
-    for await (const page of this.fetchDeltaPagesCore(client, urlToUse, Number(userId))) {
+    for await (const page of this.fetchDeltaPagesCore(client, urlToUse, internalUserId)) {
       pageCount++;
 
       // Sort and yield this batch immediately
       const sortedBatch = this.sortDeltaItems(page.items);
-      this.logger.log(`[streamDeltaChanges] Yielding page ${pageCount} with ${sortedBatch.length} sorted items for user ${userId}`);
+      this.logger.log(`[streamDeltaChanges] Yielding page ${pageCount} with ${sortedBatch.length} sorted items for user ${externalUserId}`);
 
       yield sortedBatch;
 
@@ -387,12 +395,12 @@ export class DeltaSyncService {
 
     // Save delta link after streaming all pages (if requested)
     if (finalDeltaLink && saveDeltaLink) {
-      await this.saveDeltaLink(Number(userId), ResourceType.CALENDAR, finalDeltaLink);
-      this.logger.log(`[streamDeltaChanges] Saved delta link after streaming ${pageCount} pages for user ${userId}`);
+      await this.saveDeltaLink(internalUserId, ResourceType.CALENDAR, finalDeltaLink);
+      this.logger.log(`[streamDeltaChanges] Saved delta link after streaming ${pageCount} pages for user ${externalUserId}`);
     } else if (finalDeltaLink && !saveDeltaLink) {
-      this.logger.log(`[streamDeltaChanges] Delta link discarded (saveDeltaLink=false) after streaming ${pageCount} pages for user ${userId}`);
+      this.logger.log(`[streamDeltaChanges] Delta link discarded (saveDeltaLink=false) after streaming ${pageCount} pages for user ${externalUserId}`);
     } else {
-      this.logger.warn(`[streamDeltaChanges] No delta link received after streaming ${pageCount} pages for user ${userId}`);
+      this.logger.warn(`[streamDeltaChanges] No delta link received after streaming ${pageCount} pages for user ${externalUserId}`);
     }
 
     return finalDeltaLink;
@@ -404,24 +412,25 @@ export class DeltaSyncService {
    *
    * @param client Microsoft Graph client
    * @param requestUrl Initial delta request URL (e.g., "/me/events/delta")
-   * @param userId User ID
+   * @param internalUserId Internal user ID (MicrosoftUser.id)
    * @param resourceType Resource type (e.g., CALENDAR)
    * @param dateRange Optional date range for calendar delta queries
    * @param dateRange.startDate Start date for sync window
    * @param dateRange.endDate End date for sync window
    * @returns Object with items and delta link
+   * @private This method is for internal use only
    */
   async initializeDeltaLink(
     client: Client,
     requestUrl: string,
-    userId: number,
+    internalUserId: number,
     resourceType: ResourceType,
     dateRange?: {
       startDate: Date;
       endDate: Date;
     }
   ): Promise<DeltaItem[]> {
-    this.logger.log(`[initializeDeltaLink] Initializing delta link and fetching current items for user ${userId}`);
+    this.logger.log(`[initializeDeltaLink] Initializing delta link and fetching current items for user ${internalUserId}`);
 
     let urlWithDateRange = requestUrl;
 
@@ -436,7 +445,7 @@ export class DeltaSyncService {
     const { items: allItems, deltaLink: lastDeltaLink } = await this.fetchAllDeltaPages(
       client,
       urlWithDateRange,
-      userId
+      internalUserId
     );
 
     if (!lastDeltaLink) {
@@ -444,8 +453,8 @@ export class DeltaSyncService {
     }
 
     // Save the delta link for future syncs
-    await this.saveDeltaLink(userId, resourceType, lastDeltaLink);
-    this.logger.log(`[initializeDeltaLink] Delta link initialized and saved for user ${userId}, returning ${allItems.length} items to process`);
+    await this.saveDeltaLink(internalUserId, resourceType, lastDeltaLink);
+    this.logger.log(`[initializeDeltaLink] Delta link initialized and saved for user ${internalUserId}, returning ${allItems.length} items to process`);
 
     return allItems;
   }
@@ -453,14 +462,18 @@ export class DeltaSyncService {
   /**
    * Save delta link for next sync
    * Should be called AFTER all events from fetchAndSortChanges have been processed
+   * @param internalUserId - Internal user ID (MicrosoftUser.id)
+   * @param resourceType - Resource type (e.g., CALENDAR)
+   * @param deltaLink - The delta link from Microsoft Graph
+   * @private This method is for internal use only
    */
-  async saveDeltaLink(
-    userId: number,
+  private async saveDeltaLink(
+    internalUserId: number,
     resourceType: ResourceType,
     deltaLink: string
   ): Promise<void> {
-    await this.deltaLinkRepository.saveDeltaLink(userId, resourceType, deltaLink);
-    this.logger.debug(`[saveDeltaLink] Saved delta link for user ${userId}, resource ${resourceType}`);
+    await this.deltaLinkRepository.saveDeltaLink(internalUserId, resourceType, deltaLink);
+    this.logger.debug(`[saveDeltaLink] Saved delta link for user ${internalUserId}, resource ${resourceType}`);
   }
 
   /**
