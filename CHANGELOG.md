@@ -1,5 +1,16 @@
 # Changelog
 
+## [5.0.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.7.0...v5.0.0) (2026-01-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* get active subscription by external user id ([#58](https://github.com/checkfirst-ltd/nestjs-outlook/issues/58))
+
+### Features
+
+* get active subscription by external user id ([#58](https://github.com/checkfirst-ltd/nestjs-outlook/issues/58)) ([29a7463](https://github.com/checkfirst-ltd/nestjs-outlook/commit/29a7463a57a33f69df0e1b7bf536c2b27dcefc81))
+
 ## [4.7.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v4.6.1...v4.7.0) (2026-01-11)
 
 
