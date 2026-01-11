@@ -26,6 +26,9 @@ At Checkfirst, we believe that tools should be as transparent as the systems the
 
 - [Features](#features)
 - [Installation](#installation)
+- [Important: Understanding User IDs](#important-understanding-user-ids)
+  - [External User ID (`externalUserId: string`)](#external-user-id-externaluserid-string)
+  - [Internal User ID (internal only)](#internal-user-id-internal-only)
 - [Setup](#setup)
   - [1. Database Setup](#1-database-setup)
   - [2. Microsoft App Registration](#2-microsoft-app-registration)
