@@ -4,6 +4,7 @@
 export * from './services/auth/microsoft-auth.service';
 export * from './services/calendar/calendar.service';
 export * from './services/email/email.service';
+export * from './services/shared/user-id-converter.service';
 
 // Export module
 export * from './microsoft-outlook.module';

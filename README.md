@@ -14,6 +14,8 @@
 
 An opinionated NestJS module for Microsoft Outlook integration that provides easy access to Microsoft Graph API for emails, calendars, and more.
 
+> **⚠️ BREAKING CHANGES in v5.0:** Major API changes to resolve user ID naming confusion. See [MIGRATION.md](MIGRATION.md) for upgrade guide.
+
 ## Why We Built This
 
 At Checkfirst, we believe that tools should be as transparent as the systems they support. This library is part of our commitment to the Testing, Inspection, Certification, and Compliance (TICC) industry, where we help transform operations through intelligent automation. While our [ScheduleAI platform](https://www.checkfirst.ai/scheduleai) helps organizations optimize inspections, audits and fieldwork, we recognize that true innovation requires open collaboration. By sharing the Microsoft integration layer that powers our authentication, calendar, and email services, we're enabling developers to build robust, enterprise-grade applications without reimplementing complex Microsoft Graph protocols. Whether you're creating scheduling systems, communication tools, or productivity enhancers, this library embodies our philosophy that trust in technology starts with transparency and accessibility.
@@ -65,6 +67,23 @@ At Checkfirst, we believe that tools should be as transparent as the systems the
 ```bash
 npm install @checkfirst/nestjs-outlook
 ```
+
+## Important: Understanding User IDs
+
+This library uses two distinct types of user identifiers:
+
+### External User ID (`externalUserId: string`)
+- **What it is:** YOUR application's user identifier
+- **Examples:** `"7"`, `"user-abc-123"`, `"550e8400-e29b-41d4-a716-446655440000"`
+- **When to use:** ALL API calls to this library
+
+### Internal User ID (internal only)
+- **What it is:** Auto-generated database primary key (you never see this)
+- **When to use:** Never - handled internally by the library
+
+**Rule:** Always pass YOUR application's user ID (as a string) to any method in this library.
+
+For detailed explanation, see [User ID Terminology Guide](docs/USER_ID_TERMINOLOGY.md).
 
 ## Setup
 
