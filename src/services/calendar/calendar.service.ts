@@ -300,12 +300,12 @@ export class CalendarService {
    */
   async renewWebhookSubscription(
     subscriptionId: string,
-    externalUserId: string
+    internalUserId: number
   ): Promise<Subscription> {
     try {
       // Get a valid access token for this user
       const accessToken =
-        await this.microsoftAuthService.getUserAccessToken({externalUserId});
+        await this.microsoftAuthService.getUserAccessToken({internalUserId});
 
       // Set new expiration date (max 3 days from now)
       const expirationDateTime = new Date();
