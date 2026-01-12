@@ -1,14 +1,13 @@
 import { Module } from '@nestjs/common';
-import { DeltaSyncService } from '../shared/delta-sync.service';
 import { LifecycleEventHandlerService } from './lifecycle-event-handler.service';
+import { SharedModule } from '../shared/shared.module';
 
 @Module({
+  imports: [SharedModule],
   providers: [
-    DeltaSyncService,
     LifecycleEventHandlerService,
   ],
   exports: [
-    DeltaSyncService,
     LifecycleEventHandlerService,
   ],
 })
