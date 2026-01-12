@@ -17,7 +17,7 @@ import { Repository } from "typeorm";
 import { DeltaSyncService } from "../shared/delta-sync.service";
 import { delay, retryWithBackoff } from "../../utils/retry.util";
 import { UserIdConverterService } from "../shared/user-id-converter.service";
-import { ResourceType } from "src/enums/resource-type.enum";
+import { ResourceType } from "../../enums/resource-type.enum";
 
 // Event type constants
 const OUTLOOK_EVENT_CREATED = OutlookEventTypes.EVENT_CREATED;
