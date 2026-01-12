@@ -1,5 +1,6 @@
 import tseslint from 'typescript-eslint';
 import eslintPluginComments from '@eslint-community/eslint-plugin-eslint-comments';
+import eslintPluginImport from 'eslint-plugin-import';
 
 export default tseslint.config(
   tseslint.configs.strictTypeChecked,
@@ -7,11 +8,19 @@ export default tseslint.config(
     ignores: ['*.mjs', '*.cjs', '*.js', 'dist/**'],
     plugins: {
       'eslint-comments': eslintPluginComments,
+      'import': eslintPluginImport,
     },
     languageOptions: {
       parserOptions: {
         project: './tsconfig.json',
         tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    settings: {
+      'import/resolver': {
+        typescript: {
+          project: './tsconfig.json',
+        },
       },
     },
     rules: {
@@ -54,6 +63,14 @@ export default tseslint.config(
         allowNullish: true,
         allowNumber: true,
         allowRegExp: true,
+      }],
+
+      // Enforce relative imports for local modules
+      'import/no-absolute-path': 'error',
+
+      // Prevent imports from 'src/' at the beginning (force relative imports)
+      'import/no-useless-path-segments': ['error', {
+        noUselessIndex: true,
       }],
     },
     linterOptions: {
