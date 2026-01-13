@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.1.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.0.1...v5.1.0) (2026-01-13)
+
+
+### Features
+
+* **Calendar:** expose the event status types for host app usage ([#64](https://github.com/checkfirst-ltd/nestjs-outlook/issues/64)) ([2ceacae](https://github.com/checkfirst-ltd/nestjs-outlook/commit/2ceacae7496ef14f4f04987e2ded3c8e0b6e21a7))
+
 ## [5.0.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.0.0...v5.0.1) (2026-01-12)
 
 
