@@ -16,6 +16,7 @@ export * from './interfaces/config/outlook-config.interface';
 // Export enums
 export * from './enums/permission-scope.enum';
 export * from './enums/event-types.enum';
+export * from './enums/show-as-type.enum';
 
 // Export constants
 export * from './constants';
