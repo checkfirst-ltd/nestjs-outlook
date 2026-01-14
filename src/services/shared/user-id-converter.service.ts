@@ -35,7 +35,7 @@ export class UserIdConverterService {
    */
   async externalToInternal(externalUserId: string): Promise<number> {
     const user = await this.microsoftUserRepository.findOne({
-      where: { externalUserId, isActive: true },
+      where: { externalUserId },
     });
 
     if (!user) {

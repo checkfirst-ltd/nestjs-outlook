@@ -199,14 +199,18 @@ export class CalendarService {
   async createWebhookSubscription(
     externalUserId: string
   ): Promise<Subscription> {
-    const correlationId = `webhook-${externalUserId}-${Date.now()}`;
-    this.logger.log(`[${correlationId}] Starting webhook subscription creation for user ${externalUserId}`);
+    // Convert external user ID to internal database ID
+    const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
+
+    const correlationId = `webhook-${internalUserId}-${Date.now()}`;
+    this.logger.log(`[${correlationId}] Starting webhook subscription creation for user ${internalUserId}`);
 
     try {
       // Get a valid access token for this user
-      this.logger.log(`[${correlationId}] Fetching access token for user ${externalUserId}`);
+      this.logger.log(`[${correlationId}] Fetching access token for user ${internalUserId}`);
+
       const accessToken =
-        await this.microsoftAuthService.getUserAccessToken({externalUserId});
+        await this.microsoftAuthService.getUserAccessToken({internalUserId});
 
       this.logger.log(`[${correlationId}] Successfully obtained access token`);
 
@@ -230,7 +234,7 @@ export class CalendarService {
         lifecycleNotificationUrl: notificationUrl,
         resource: "/me/events",
         expirationDateTime: expirationDateTime.toISOString(),
-        clientState: `user_${externalUserId}_${Math.random().toString(36).substring(2, 15)}`,
+        clientState: `user_${internalUserId}_${Math.random().toString(36).substring(2, 15)}`,
       };
 
       this.logger.log(
@@ -254,15 +258,11 @@ export class CalendarService {
       );
 
       this.logger.log(
-        `[${correlationId}] Created webhook subscription ${response.data.id || "unknown"} for user ${externalUserId}`
+        `[${correlationId}] Created webhook subscription ${response.data.id || "unknown"} for user ${internalUserId}`
       );
 
-      // Convert external user ID to internal database ID
-      this.logger.log(`[${correlationId}] Converting external user ID to internal ID`);
-      const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
-
       // Save the subscription to the database
-      this.logger.log(`[${correlationId}] Saving subscription to database (internalUserId: ${internalUserId})`);
+      this.logger.log(`[${correlationId}] Saving subscription to database (internalUserId: ${internalUserId}, externalUserId: ${externalUserId})`);
       await this.webhookSubscriptionRepository.saveSubscription({
         subscriptionId: response.data.id,
         userId: internalUserId,
@@ -554,12 +554,12 @@ export class CalendarService {
       );
 
       // Validate subscription and extract user ID
-      const {success, externalUserId, message} = await this.validateWebhookSubscription(
+      const {success, internalUserId, message} = await this.validateWebhookSubscription(
         subscriptionId,
         clientState
       );
 
-      if (!success || !externalUserId) {
+      if (!success || !internalUserId) {
         this.logger.error('validateWebhookSubscription failed', message || 'Unknown error');
         return { success: false, message: message || 'Unknown error' };
       }
@@ -567,12 +567,12 @@ export class CalendarService {
       // Process changes using appropriate strategy (passed as parameter)
       const totalProcessed = useStreaming
         ? await this.processChangesStreaming(
-            String(externalUserId),
+            internalUserId,
             String(subscriptionId || ''),
             resource || ''
           )
         : await this.processChangesBuffering(
-            String(externalUserId),
+            internalUserId,
             String(subscriptionId || ''),
             resource || ''
           );
@@ -907,14 +907,15 @@ export class CalendarService {
    * @returns Number of events processed
    */
   private async processChangesStreaming(
-    externalUserId: string,
+    internalUserId: number,
     subscriptionId: string,
     resource: string
   ): Promise<number> {
     let totalProcessed = 0;
     let batchCount = 0;
 
-    this.logger.log(`[processChangesStreaming] Using STREAMING mode for user ${externalUserId}`);
+    const externalUserId = await this.userIdConverter.internalToExternal(internalUserId);
+    this.logger.log(`[processChangesStreaming] Using STREAMING mode for user ${internalUserId}`);
 
     for await (const changeBatch of this.streamCalendarChanges(externalUserId)) {
       batchCount++;
@@ -929,7 +930,7 @@ export class CalendarService {
       for (const change of changeBatch) {
         this.processDeltaEventChange(
           change,
-          externalUserId,
+          internalUserId,
           subscriptionId,
           resource
         );
@@ -953,11 +954,13 @@ export class CalendarService {
    * @returns Number of events processed
    */
   private async processChangesBuffering(
-    externalUserId: string,
+    internalUserId: number,
     subscriptionId: string,
     resource: string
   ): Promise<number> {
-    this.logger.log(`[processChangesBuffering] Using BUFFERING mode for user ${externalUserId}`);
+    const externalUserId = await this.userIdConverter.internalToExternal(internalUserId);
+
+    this.logger.log(`[processChangesBuffering] Using BUFFERING mode for user ${internalUserId}`);
 
     const allChanges = await this.fetchAndSortChanges(externalUserId);
 
@@ -974,7 +977,7 @@ export class CalendarService {
     for (const change of allChanges) {
       this.processDeltaEventChange(
         change,
-        externalUserId,
+        internalUserId,
         subscriptionId,
         resource
       );
@@ -994,7 +997,7 @@ export class CalendarService {
    */
   private processDeltaEventChange(
     change: Event,
-    externalUserId: string,
+    internalUserId: number,
     subscriptionId: string,
     resource: string
   ): void {
@@ -1006,7 +1009,7 @@ export class CalendarService {
 
     const resourceData: OutlookResourceData = {
       id: change.id || "",
-      userId: undefined,  // TODO: Pass internalUserId instead of externalUserId to this method
+      userId: internalUserId,
       subscriptionId,
       resource,
       changeType: EVENT_TYPE_TO_CHANGE_TYPE[eventType],
@@ -1030,7 +1033,7 @@ export class CalendarService {
   private async validateWebhookSubscription(
     subscriptionId: string | undefined,
     clientState: string | null | undefined
-  ): Promise<{ success: boolean; externalUserId?: number | string; message?: string }> {
+  ): Promise<{ success: boolean; internalUserId?: number; message?: string }> {
     // Find the subscription in our database to verify it's legitimate
     const subscription =
       await this.webhookSubscriptionRepository.findBySubscriptionId(
@@ -1054,16 +1057,16 @@ export class CalendarService {
     }
 
     // External user Id is the client application userId
-    const externalUserId = subscription.userId;
+    const internalUserId = subscription.userId;
 
-    if (!externalUserId) {
+    if (!internalUserId) {
       this.logger.warn(
-        "Could not determine external user ID from client state"
+        "Could not determine internal user ID from client state"
       );
       return { success: false, message: "Invalid client state format" };
     }
 
-    return { success: true, externalUserId };
+    return { success: true, internalUserId };
   }
 
   /**

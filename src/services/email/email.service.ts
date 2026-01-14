@@ -77,8 +77,11 @@ export class EmailService {
     externalUserId: string,
   ): Promise<Subscription> {
     try {
+      // Convert external user ID to internal database ID
+      const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
+
       // Get a valid access token for this user
-      const accessToken = await this.microsoftAuthService.getUserAccessToken({externalUserId});
+      const accessToken = await this.microsoftAuthService.getUserAccessToken({internalUserId});
       
       // Set expiration date (max 3 days as per Microsoft documentation)
       const expirationDateTime = new Date();
@@ -99,7 +102,7 @@ export class EmailService {
         lifecycleNotificationUrl: notificationUrl,
         resource: '/me/messages',
         expirationDateTime: expirationDateTime.toISOString(),
-        clientState: `user_${externalUserId}_${Math.random().toString(36).substring(2, 15)}`,
+        clientState: `user_${internalUserId}_${Math.random().toString(36).substring(2, 15)}`,
       };
 
       this.logger.debug(`Creating email webhook subscription with notificationUrl: ${notificationUrl}`);
@@ -118,10 +121,7 @@ export class EmailService {
         },
       );
 
-      this.logger.log(`Created email webhook subscription ${response.data.id || 'unknown'} for user ${externalUserId}`);
-
-      // Convert external user ID to internal database ID
-      const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
+      this.logger.log(`Created email webhook subscription ${response.data.id || 'unknown'} for user ${internalUserId}`);
 
       // Save the subscription to the database
       await this.webhookSubscriptionRepository.saveSubscription({

@@ -16,6 +16,7 @@ import { PermissionScope } from '../../enums/permission-scope.enum';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, Repository } from 'typeorm';
 import { MicrosoftUser } from '../../entities/microsoft-user.entity';
+import { retryWithBackoff } from '../../utils/retry.util';
 
 /**
  * Important terminology:
@@ -519,39 +520,6 @@ export class MicrosoftAuthService {
   }
   
   /**
-   * Retry a function with exponential backoff
-   * @param fn Function to retry
-   * @param maxRetries Maximum number of retry attempts
-   * @param initialDelayMs Initial delay in milliseconds
-   * @returns Result of the function
-   */
-  private async retryWithBackoff<T>(
-    fn: () => Promise<T>,
-    maxRetries: number = 3,
-    initialDelayMs: number = 1000
-  ): Promise<T> {
-    let lastError: Error | undefined;
-
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      try {
-        return await fn();
-      } catch (error) {
-        lastError = error instanceof Error ? error : new Error('Unknown error');
-
-        if (attempt < maxRetries - 1) {
-          const delayMs = initialDelayMs * Math.pow(2, attempt);
-          this.logger.warn(
-            `Attempt ${attempt + 1}/${maxRetries} failed: ${lastError.message}. Retrying in ${delayMs}ms...`
-          );
-          await new Promise(resolve => setTimeout(resolve, delayMs));
-        }
-      }
-    }
-
-    throw lastError || new Error('Max retries exceeded');
-  }
-
-  /**
    * Setup webhook subscriptions for a user based on requested scopes
    * @param externalUserId - External user ID from the host application
    * @param scopes - Requested permission scopes
@@ -580,10 +548,12 @@ export class MicrosoftAuthService {
         // Create webhook subscription for the user's calendar with retry
         try {
           this.logger.log(`[${correlationId}] Creating calendar webhook subscription with retry logic`);
-          await this.retryWithBackoff(
+          await retryWithBackoff(
             () => this.calendarService.createWebhookSubscription(externalUserId),
-            3, // 3 retries
-            1000 // Initial delay 1 second
+            {
+              maxRetries: 3,
+              retryDelayMs: 1000
+            }
           );
           this.logger.log(`[${correlationId}] Successfully created calendar webhook subscription for user ${externalUserId}`);
         } catch (calendarError) {
@@ -599,10 +569,12 @@ export class MicrosoftAuthService {
         // Create webhook subscription for the user's email with retry
         try {
           this.logger.log(`[${correlationId}] Creating email webhook subscription with retry logic`);
-          await this.retryWithBackoff(
+          await retryWithBackoff(
             () => this.emailService.createWebhookSubscription(externalUserId),
-            3, // 3 retries
-            1000 // Initial delay 1 second
+            {
+              maxRetries: 3,
+              retryDelayMs: 1000
+            }
           );
           this.logger.log(`[${correlationId}] Successfully created email webhook subscription for user ${externalUserId}`);
         } catch (emailError) {

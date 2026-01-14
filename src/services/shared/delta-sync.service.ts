@@ -345,11 +345,11 @@ export class DeltaSyncService {
       ResourceType.CALENDAR
     );
 
-    this.logger.log(`[streamDeltaChanges] Starting stream for user ${externalUserId}, startLink: ${startLink ? 'exists' : 'none'}, forceReset: ${forceReset}`);
+    this.logger.log(`[streamDeltaChanges] Starting stream for user ${internalUserId}, startLink: ${startLink ? 'exists' : 'none'}, forceReset: ${forceReset}`);
 
     // Force reset if requested (e.g., on reconnection)
     if (forceReset && startLink) {
-      this.logger.log(`[streamDeltaChanges] Force reset requested, deleting existing delta link for user ${externalUserId}`);
+      this.logger.log(`[streamDeltaChanges] Force reset requested, deleting existing delta link for user ${internalUserId}`);
       await this.deltaLinkRepository.deleteDeltaLink(internalUserId, ResourceType.CALENDAR);
       startLink = null;
     }
@@ -360,7 +360,7 @@ export class DeltaSyncService {
 
     if (!startLink) {
       // No delta link exists - initialize from "now"
-      this.logger.log(`[streamDeltaChanges] No delta link found, initializing from current point for user ${externalUserId}`);
+      this.logger.log(`[streamDeltaChanges] No delta link found, initializing from current point for user ${internalUserId}`);
 
       // Build URL with date range if provided
       if (dateRange) {
@@ -372,7 +372,7 @@ export class DeltaSyncService {
       }
     } else {
       // Delta link exists - incremental sync
-      this.logger.log(`[streamDeltaChanges] Using existing delta link for incremental sync for user ${externalUserId}`);
+      this.logger.log(`[streamDeltaChanges] Using existing delta link for incremental sync for user ${internalUserId}`);
       urlToUse = startLink;
     }
 
@@ -383,7 +383,7 @@ export class DeltaSyncService {
 
       // Sort and yield this batch immediately
       const sortedBatch = this.sortDeltaItems(page.items);
-      this.logger.log(`[streamDeltaChanges] Yielding page ${pageCount} with ${sortedBatch.length} sorted items for user ${externalUserId}`);
+      this.logger.log(`[streamDeltaChanges] Yielding page ${pageCount} with ${sortedBatch.length} sorted items for user ${internalUserId}`);
 
       yield sortedBatch;
 
@@ -396,11 +396,11 @@ export class DeltaSyncService {
     // Save delta link after streaming all pages (if requested)
     if (finalDeltaLink && saveDeltaLink) {
       await this.saveDeltaLink(internalUserId, ResourceType.CALENDAR, finalDeltaLink);
-      this.logger.log(`[streamDeltaChanges] Saved delta link after streaming ${pageCount} pages for user ${externalUserId}`);
+      this.logger.log(`[streamDeltaChanges] Saved delta link after streaming ${pageCount} pages for user ${internalUserId}`);
     } else if (finalDeltaLink && !saveDeltaLink) {
-      this.logger.log(`[streamDeltaChanges] Delta link discarded (saveDeltaLink=false) after streaming ${pageCount} pages for user ${externalUserId}`);
+      this.logger.log(`[streamDeltaChanges] Delta link discarded (saveDeltaLink=false) after streaming ${pageCount} pages for user ${internalUserId}`);
     } else {
-      this.logger.warn(`[streamDeltaChanges] No delta link received after streaming ${pageCount} pages for user ${externalUserId}`);
+      this.logger.warn(`[streamDeltaChanges] No delta link received after streaming ${pageCount} pages for user ${internalUserId}`);
     }
 
     return finalDeltaLink;
