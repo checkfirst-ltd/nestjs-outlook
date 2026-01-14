@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.1.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.1.0...v5.1.1) (2026-01-14)
+
+
+### Bug Fixes
+
+* correct user ID handling in webhook and delta sync operations ([#63](https://github.com/checkfirst-ltd/nestjs-outlook/issues/63)) ([442a884](https://github.com/checkfirst-ltd/nestjs-outlook/commit/442a8840101d17908fa4d1a19460d5ac191ac07f))
+
 ## [5.1.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.0.1...v5.1.0) (2026-01-13)
 
 
