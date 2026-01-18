@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.1.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.1.1...v5.1.2) (2026-01-18)
+
+
+### Bug Fixes
+
+* delete event with exponential backoff and observability ([#67](https://github.com/checkfirst-ltd/nestjs-outlook/issues/67)) ([03e35d6](https://github.com/checkfirst-ltd/nestjs-outlook/commit/03e35d667d53f4ca073d16759ce8e2a360415ad7))
+
 ## [5.1.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.1.0...v5.1.1) (2026-01-14)
 
 
