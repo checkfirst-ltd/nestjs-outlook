@@ -175,15 +175,21 @@ export class CalendarService {
         },
       });
       this.logger.log(`Deleting event ${event.id} from calendar ${calendarId} for user ${externalUserId}`);
-      // Delete the event
-      (await client
-        .api(`/me/calendars/${calendarId}/events/${event.id}`)
-        .delete()) as Event;
+
+      // Delete the event with retry logic for transient failures
+      await retryWithBackoff(
+        async () => {
+          await client
+            .api(`/me/calendars/${calendarId}/events/${event.id}`)
+            .delete();
+        },
+        { maxRetries: 3, retryDelayMs: 1000 }
+      );
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error";
       this.logger.error(
-        `Failed to delete Outlook calendar event: ${errorMessage}`
+        `Failed to delete Outlook calendar event after retries: ${errorMessage}`
       );
       throw new Error(
         `Failed to delete Outlook calendar event: ${errorMessage}`
@@ -856,12 +862,16 @@ export class CalendarService {
    * Initialize delta sync tracking without importing events
    *
    * Call this AFTER manual import to establish baseline for incremental sync.
-   * This method initializes the delta link WITHOUT fetching events, allowing
-   * you to track ALL future calendar changes regardless of date range.
+   * This method initializes the delta link, allowing you to track ALL future
+   * calendar changes regardless of date range.
    *
    * Use case:
    * 1. Import events in a specific date range (e.g., next 3 months) using importEventsStream
    * 2. Call this method to enable tracking of ALL future changes (not limited to that range)
+   *
+   * Note: This method fetches all current events from Microsoft Graph to establish
+   * the delta baseline, but the events are intentionally not returned. Use
+   * importEventsStream for initial import, then call this to enable webhooks.
    *
    * @param externalUserId - External user ID
    *
@@ -879,6 +889,7 @@ export class CalendarService {
       const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
 
       // Initialize delta link WITHOUT date range = tracks ALL events going forward
+      // Events returned are intentionally ignored - we only need the delta token
       await this.deltaSyncService.initializeDeltaLink(
         client,
         "/me/events/delta",
