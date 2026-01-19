@@ -25,9 +25,9 @@ function isGraphErrorWithStatus(error: unknown, statusCode: number): boolean {
 
   // Check for nested error in stack array (Microsoft Graph SDK format)
   if ('stack' in error && Array.isArray(error.stack) && error.stack.length > 0) {
-    const firstError = error.stack[0];
+    const firstError: unknown = error.stack[0];
     if (firstError && typeof firstError === 'object' && 'statusCode' in firstError) {
-      return firstError.statusCode === statusCode;
+      return (firstError.statusCode as number) === statusCode;
     }
   }
 
@@ -80,7 +80,7 @@ export async function retryWithBackoff<T>(
     maxRetries?: number;
     retryDelayMs?: number;
     retryCount?: number;
-    logger?: { warn: (message: string, context?: any) => void };
+    logger?: { warn: (message: string, context?: Record<string, unknown>) => void };
     operationName?: string;
   }
 ): Promise<T> {
@@ -178,25 +178,26 @@ function extractErrorInfo(error: unknown): {
 
   // Check for nested error in stack array
   if ('stack' in error && Array.isArray(error.stack) && error.stack.length > 0) {
-    const firstError = error.stack[0];
+    const firstError: unknown = error.stack[0];
     if (firstError && typeof firstError === 'object') {
-      const statusCode = 'statusCode' in firstError ? (firstError.statusCode as number) : 'N/A';
-      const code = 'code' in firstError ? String(firstError.code) : 'N/A';
-      const body = 'body' in firstError ? String(firstError.body) : 'N/A';
+      const statusCode: number | string = 'statusCode' in firstError ? (firstError.statusCode as number) : 'N/A';
+      const code: string = 'code' in firstError ? String(firstError.code) : 'N/A';
+      const body: string = 'body' in firstError ? String(firstError.body) : 'N/A';
 
       return {
         statusCode,
         code,
         message: body,
-        type: statusCode === -1 ? 'network_error' : 'graph_api_error',
+        type: typeof statusCode === 'number' && statusCode === -1 ? 'network_error' : 'graph_api_error',
       };
     }
   }
 
+  const errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
   return {
     statusCode: 'N/A',
     code: 'N/A',
-    message: error instanceof Error ? error.message : String(error),
+    message: errorMessage,
     type: 'generic_error',
   };
 }

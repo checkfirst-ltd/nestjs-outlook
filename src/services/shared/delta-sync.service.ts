@@ -430,9 +430,9 @@ export class DeltaSyncService {
 
     // Check for nested error in stack array (Microsoft Graph SDK format)
     if ('stack' in error && Array.isArray(error.stack) && error.stack.length > 0) {
-      const firstError = error.stack[0];
+      const firstError: unknown = error.stack[0];
       if (firstError && typeof firstError === 'object' && 'statusCode' in firstError) {
-        return firstError.statusCode === 410;
+        return (firstError.statusCode as number) === 410;
       }
     }
 

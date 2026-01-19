@@ -688,13 +688,13 @@ export class CalendarService {
 
     // Check for nested error in stack array
     if ('stack' in error && Array.isArray(error.stack) && error.stack.length > 0) {
-      const firstError = error.stack[0];
+      const firstError: unknown = error.stack[0];
       if (firstError && typeof firstError === 'object') {
-        const statusCode = 'statusCode' in firstError ? (firstError.statusCode as number) : 'N/A';
-        const code = 'code' in firstError ? String(firstError.code) : 'N/A';
-        const body = 'body' in firstError ? String(firstError.body) : 'N/A';
+        const statusCode: number | string = 'statusCode' in firstError ? (firstError.statusCode as number) : 'N/A';
+        const code: string = 'code' in firstError ? String(firstError.code) : 'N/A';
+        const body: string = 'body' in firstError ? String(firstError.body) : 'N/A';
 
-        if (statusCode === -1) {
+        if (typeof statusCode === 'number' && statusCode === -1) {
           return {
             type: 'network_error',
             statusCode: -1,
@@ -717,7 +717,7 @@ export class CalendarService {
       type: 'generic_error',
       statusCode: 'N/A',
       code: 'N/A',
-      message: error instanceof Error ? error.message : String(error),
+      message: error instanceof Error ? error.message : JSON.stringify(error),
     };
   }
 
@@ -765,7 +765,7 @@ export class CalendarService {
 
       this.logger.log(`[streamCalendarChanges] Completed streaming for user ${externalUserId}`);
     } catch (error) {
-      this.logger.error(`[streamCalendarChanges] Error streaming delta changes:`, error);
+      this.logger.error(`[streamCalendarChanges] Error streaming delta changes:`, error instanceof Error ? error.message : String(error));
       throw error;
     }
   }
