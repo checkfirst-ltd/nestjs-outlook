@@ -607,6 +607,8 @@ export class CalendarService {
     const requestUrl = "/me/events/delta";
 
     try {
+      this.logger.log(`[fetchAndSortChanges] Starting delta fetch for user ${externalUserId} (forceReset: ${forceReset})`);
+
       const items = await this.deltaSyncService.fetchAndSortChanges(
         client,
         requestUrl,
@@ -615,11 +617,108 @@ export class CalendarService {
         dateRange
       );
 
+      this.logger.log(`[fetchAndSortChanges] ✅ Successfully fetched ${items.length} calendar changes for user ${externalUserId}`);
       return items as Event[];
     } catch (error) {
+      // Enhanced error logging with context
+      const errorDetails = this.extractErrorDetails(error);
+
+      this.logger.error(
+        `[fetchAndSortChanges] ❌ Failed to fetch delta changes for user ${externalUserId}`,
+        {
+          userId: externalUserId,
+          forceReset,
+          errorType: errorDetails.type,
+          statusCode: errorDetails.statusCode,
+          errorCode: errorDetails.code,
+          errorMessage: errorDetails.message,
+          timestamp: new Date().toISOString(),
+        }
+      );
+
+      // Log full error stack for debugging
       this.logger.error("Error fetching delta changes:", error);
       throw error;
     }
+  }
+
+  /**
+   * Extract detailed error information from Microsoft Graph errors
+   * @param error - The error object
+   * @returns Structured error details
+   */
+  private extractErrorDetails(error: unknown): {
+    type: string;
+    statusCode: number | string;
+    code: string;
+    message: string;
+  } {
+    if (!error || typeof error !== 'object') {
+      return {
+        type: 'unknown',
+        statusCode: 'N/A',
+        code: 'N/A',
+        message: String(error),
+      };
+    }
+
+    // Check for Microsoft Graph SDK error format
+    if ('statusCode' in error) {
+      const statusCode = error.statusCode as number;
+      const code = 'code' in error ? String(error.code) : 'N/A';
+      const body = 'body' in error ? String(error.body) : 'N/A';
+
+      // Detect network errors
+      if (statusCode === -1) {
+        return {
+          type: 'network_error',
+          statusCode: -1,
+          code: code,
+          message: 'Network connectivity failure - unable to reach Microsoft Graph API. Check internet connection, firewall, or proxy settings.',
+        };
+      }
+
+      return {
+        type: 'graph_api_error',
+        statusCode: statusCode,
+        code: code,
+        message: body,
+      };
+    }
+
+    // Check for nested error in stack array
+    if ('stack' in error && Array.isArray(error.stack) && error.stack.length > 0) {
+      const firstError = error.stack[0];
+      if (firstError && typeof firstError === 'object') {
+        const statusCode = 'statusCode' in firstError ? (firstError.statusCode as number) : 'N/A';
+        const code = 'code' in firstError ? String(firstError.code) : 'N/A';
+        const body = 'body' in firstError ? String(firstError.body) : 'N/A';
+
+        if (statusCode === -1) {
+          return {
+            type: 'network_error',
+            statusCode: -1,
+            code: code,
+            message: 'Network connectivity failure - unable to reach Microsoft Graph API',
+          };
+        }
+
+        return {
+          type: 'graph_api_error',
+          statusCode: statusCode,
+          code: code,
+          message: body,
+        };
+      }
+    }
+
+    // Generic error
+    return {
+      type: 'generic_error',
+      statusCode: 'N/A',
+      code: 'N/A',
+      message: error instanceof Error ? error.message : String(error),
+    };
   }
 
   /**

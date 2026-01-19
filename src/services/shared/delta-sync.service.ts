@@ -118,6 +118,78 @@ export class DeltaSyncService {
   }
 
   /**
+   * @deprecated This method is NO LONGER NEEDED for delta queries.
+   *
+   * Microsoft Graph delta query (/me/events/delta) already returns FULL event data
+   * including all properties (subject, start, end, body, attendees, location, etc.).
+   *
+   * This method was originally written for APIs that return partial data, but v1.0
+   * delta queries return complete event objects, making individual fetches unnecessary.
+   *
+   * Kept for reference and potential future edge cases.
+   *
+   * @param client Microsoft Graph client
+   * @param items Delta items to fetch details for
+   * @param concurrencyLimit Maximum concurrent API requests (default: 5)
+   * @returns Array of event details with full data
+   */
+  private async fetchEventDetailsWithConcurrencyLimit(
+    client: Client,
+    items: DeltaItem[],
+    concurrencyLimit: number = 5
+  ): Promise<DeltaItem[]> {
+    if (items.length === 0) {
+      return [];
+    }
+
+    const startTime = Date.now();
+    const results: DeltaItem[] = [];
+    const totalChunks = Math.ceil(items.length / concurrencyLimit);
+    const deletedCount = items.filter(item => item["@removed"]).length;
+    const fetchCount = items.length - deletedCount;
+
+    this.logger.warn(
+      `[fetchEventDetailsWithConcurrencyLimit] ⚠️ DEPRECATED METHOD CALLED - ` +
+      `Fetching ${fetchCount} event details (${deletedCount} deleted, skipped) in ${totalChunks} chunks. ` +
+      `This should not be called for delta queries!`
+    );
+
+    // Process in chunks with controlled concurrency
+    let chunkNumber = 0;
+    for (let i = 0; i < items.length; i += concurrencyLimit) {
+      chunkNumber++;
+      const chunk = items.slice(i, i + concurrencyLimit);
+
+      this.logger.debug(
+        `[fetchEventDetailsWithConcurrencyLimit] Processing chunk ${chunkNumber}/${totalChunks} ` +
+        `(${chunk.length} items)`
+      );
+
+      // Fetch this chunk concurrently
+      const chunkResults = await Promise.all(
+        chunk.map((item) =>
+          item["@removed"]
+            ? Promise.resolve(item)
+            : (client.api(`/me/events/${item.id}`).get() as Promise<DeltaItem>)
+        )
+      );
+
+      results.push(...chunkResults);
+
+      // No delay needed - concurrency limit alone is sufficient to avoid throttling
+      // Microsoft's limit is ~10 concurrent requests, we're using 8
+    }
+
+    const duration = Date.now() - startTime;
+    this.logger.log(
+      `[fetchEventDetailsWithConcurrencyLimit] ✅ Fetched ${results.length} event details ` +
+      `in ${duration}ms (avg ${Math.round(duration / results.length)}ms per event)`
+    );
+
+    return results;
+  }
+
+  /**
    * Core async generator that fetches delta pages one at a time
    * This is the foundational logic used by both batch and streaming approaches
    *
@@ -147,37 +219,27 @@ export class DeltaSyncService {
 
     while (currentUrl) {
       pageCount++;
-      this.logger.debug(`[fetchDeltaPagesCore] Fetching page ${pageCount} for user ${userId}`);
 
-      // Fetch page with retry logic
+      // Fetch page with retry logic (retry utility handles its own logging)
       const response = (await retryWithBackoff(
         () => client.api(currentUrl).get(),
         {
           maxRetries: this.MAX_RETRIES,
           retryDelayMs: this.RETRY_DELAY_MS,
+          logger: this.logger,
+          operationName: `fetchDeltaPage-${pageCount}-user-${userId}`,
         }
       )) as DeltaResponse<DeltaItem>;
 
-      this.logger.debug(`[fetchDeltaPagesCore] Received ${response.value.length} items in page ${pageCount}`);
-
-      // Fetch full event details for each item (skip deleted items)
-      const eventDetails = await Promise.all(
-        response.value.map((item) =>
-          item["@removed"]
-            ? Promise.resolve(item)
-            : (client.api(`/me/events/${item.id}`).get() as Promise<DeltaItem>)
-        )
-      );
+      // Microsoft Graph delta query already returns FULL event data
+      // No need to fetch individual events - the response.value contains all properties
+      const eventDetails = response.value;
 
       // Check if we got the delta link (indicates last page)
       const deltaLink = response["@odata.deltaLink"]
         ? this.getDeltaLink(response)
         : null;
       const isLastPage = deltaLink !== null;
-
-      if (isLastPage) {
-        this.logger.log(`[fetchDeltaPagesCore] Reached last page (${pageCount}) with delta link for user ${userId}`);
-      }
 
       // Yield this page
       yield {
@@ -189,7 +251,7 @@ export class DeltaSyncService {
       // Update URL for next iteration
       currentUrl = response["@odata.nextLink"] || "";
 
-      // Rate limiting
+      // Rate limiting between pages
       if (currentUrl) {
         await delay(200);
       }
@@ -218,21 +280,36 @@ export class DeltaSyncService {
     startUrl: string,
     userId: number
   ): Promise<{ items: DeltaItem[]; deltaLink: string | null }> {
+    const startTime = Date.now();
     const allItems: DeltaItem[] = [];
     let lastDeltaLink: string | null = null;
     let pageCount = 0;
 
+    this.logger.log(`[fetchAllDeltaPages] Starting delta fetch for user ${userId}`);
+
     // Consume core generator and collect all items
-    for await (const page of this.fetchDeltaPagesCore(client, startUrl, userId)) {
-      allItems.push(...page.items);
-      pageCount++;
+    try {
+      for await (const page of this.fetchDeltaPagesCore(client, startUrl, userId)) {
+        allItems.push(...page.items);
+        pageCount++;
 
-      if (page.isLastPage && page.deltaLink) {
-        lastDeltaLink = page.deltaLink;
+        if (page.isLastPage && page.deltaLink) {
+          lastDeltaLink = page.deltaLink;
+        }
       }
-    }
 
-    this.logger.log(`[fetchAllDeltaPages] Collected ${allItems.length} items across ${pageCount} pages for user ${userId}`);
+      const duration = Date.now() - startTime;
+      this.logger.log(
+        `[fetchAllDeltaPages] ✅ Completed: ${allItems.length} items across ${pageCount} pages in ${duration}ms (user ${userId})`
+      );
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      this.logger.error(
+        `[fetchAllDeltaPages] ❌ Failed after ${pageCount} pages and ${duration}ms (user ${userId})`,
+        error
+      );
+      throw error;
+    }
 
     return { items: allItems, deltaLink: lastDeltaLink };
   }
@@ -292,20 +369,74 @@ export class DeltaSyncService {
     // Incremental sync: fetch changes since last delta link
     this.logger.debug(`[fetchAndSortChanges] Starting incremental sync with existing delta link for user ${externalUserId}`);
 
-    const { items: allItems, deltaLink: lastDeltaLink } = await this.fetchAllDeltaPages(
-      client,
-      startLink,
-      internalUserId
-    );
+    try {
+      const { items: allItems, deltaLink: lastDeltaLink } = await this.fetchAllDeltaPages(
+        client,
+        startLink,
+        internalUserId
+      );
 
-    // Save the delta link for incremental syncs (initialization already saves it)
-    if (lastDeltaLink) {
-      await this.saveDeltaLink(internalUserId, ResourceType.CALENDAR, lastDeltaLink);
-      this.logger.log(`[fetchAndSortChanges] Saved delta link after fetching ${allItems.length} changes for user ${externalUserId}`);
+      // Save the delta link for incremental syncs (initialization already saves it)
+      if (lastDeltaLink) {
+        await this.saveDeltaLink(internalUserId, ResourceType.CALENDAR, lastDeltaLink);
+        this.logger.log(`[fetchAndSortChanges] Saved delta link after fetching ${allItems.length} changes for user ${externalUserId}`);
+      }
+
+      // Sort and return items
+      return this.sortDeltaItems(allItems);
+    } catch (error) {
+      // Handle 410 Gone (expired delta token) - automatically recover with full sync
+      if (this.is410Error(error)) {
+        this.logger.warn(
+          `[fetchAndSortChanges] Delta token expired (410) for user ${externalUserId}, ` +
+          `deleting expired token and reinitializing with full sync`
+        );
+
+        // Delete the expired delta token
+        await this.deltaLinkRepository.deleteDeltaLink(internalUserId, ResourceType.CALENDAR);
+
+        // Reinitialize with full sync
+        this.logger.log(`[fetchAndSortChanges] Performing full sync after token expiration for user ${externalUserId}`);
+        const result = await this.initializeDeltaLink(
+          client,
+          requestUrl,
+          internalUserId,
+          ResourceType.CALENDAR,
+          dateRange
+        );
+
+        return this.sortDeltaItems(result);
+      }
+
+      // Re-throw other errors
+      throw error;
+    }
+  }
+
+  /**
+   * Check if an error is a 410 Gone error (sync state/delta token expired)
+   * @param error - The error to check
+   * @returns True if the error is a 410 Gone error
+   */
+  private is410Error(error: unknown): boolean {
+    if (!error || typeof error !== 'object') {
+      return false;
     }
 
-    // Sort and return items
-    return this.sortDeltaItems(allItems);
+    // Check for Microsoft Graph SDK error format
+    if ('statusCode' in error && error.statusCode === 410) {
+      return true;
+    }
+
+    // Check for nested error in stack array (Microsoft Graph SDK format)
+    if ('stack' in error && Array.isArray(error.stack) && error.stack.length > 0) {
+      const firstError = error.stack[0];
+      if (firstError && typeof firstError === 'object' && 'statusCode' in firstError) {
+        return firstError.statusCode === 410;
+      }
+    }
+
+    return false;
   }
 
   /**
@@ -376,34 +507,89 @@ export class DeltaSyncService {
       urlToUse = startLink;
     }
 
-    // Stream pages using core generator
+    // Stream pages using core generator with 410 error recovery
     let pageCount = 0;
-    for await (const page of this.fetchDeltaPagesCore(client, urlToUse, internalUserId)) {
-      pageCount++;
+    try {
+      for await (const page of this.fetchDeltaPagesCore(client, urlToUse, internalUserId)) {
+        pageCount++;
 
-      // Sort and yield this batch immediately
-      const sortedBatch = this.sortDeltaItems(page.items);
-      this.logger.log(`[streamDeltaChanges] Yielding page ${pageCount} with ${sortedBatch.length} sorted items for user ${internalUserId}`);
+        // Sort and yield this batch immediately
+        const sortedBatch = this.sortDeltaItems(page.items);
+        this.logger.log(`[streamDeltaChanges] Yielding page ${pageCount} with ${sortedBatch.length} sorted items for user ${internalUserId}`);
 
-      yield sortedBatch;
+        yield sortedBatch;
 
-      // Capture final delta link
-      if (page.isLastPage && page.deltaLink) {
-        finalDeltaLink = page.deltaLink;
+        // Capture final delta link
+        if (page.isLastPage && page.deltaLink) {
+          finalDeltaLink = page.deltaLink;
+        }
       }
-    }
 
-    // Save delta link after streaming all pages (if requested)
-    if (finalDeltaLink && saveDeltaLink) {
-      await this.saveDeltaLink(internalUserId, ResourceType.CALENDAR, finalDeltaLink);
-      this.logger.log(`[streamDeltaChanges] Saved delta link after streaming ${pageCount} pages for user ${internalUserId}`);
-    } else if (finalDeltaLink && !saveDeltaLink) {
-      this.logger.log(`[streamDeltaChanges] Delta link discarded (saveDeltaLink=false) after streaming ${pageCount} pages for user ${internalUserId}`);
-    } else {
-      this.logger.warn(`[streamDeltaChanges] No delta link received after streaming ${pageCount} pages for user ${internalUserId}`);
-    }
+      // Save delta link after streaming all pages (if requested)
+      if (finalDeltaLink && saveDeltaLink) {
+        await this.saveDeltaLink(internalUserId, ResourceType.CALENDAR, finalDeltaLink);
+        this.logger.log(`[streamDeltaChanges] Saved delta link after streaming ${pageCount} pages for user ${internalUserId}`);
+      } else if (finalDeltaLink && !saveDeltaLink) {
+        this.logger.log(`[streamDeltaChanges] Delta link discarded (saveDeltaLink=false) after streaming ${pageCount} pages for user ${internalUserId}`);
+      } else {
+        this.logger.warn(`[streamDeltaChanges] No delta link received after streaming ${pageCount} pages for user ${internalUserId}`);
+      }
 
-    return finalDeltaLink;
+      return finalDeltaLink;
+    } catch (error) {
+      // Handle 410 Gone (expired delta token) - automatically recover with full sync
+      if (this.is410Error(error)) {
+        this.logger.warn(
+          `[streamDeltaChanges] Delta token expired (410) for user ${externalUserId}, ` +
+          `deleting expired token and reinitializing with full sync stream`
+        );
+
+        // Delete the expired delta token
+        await this.deltaLinkRepository.deleteDeltaLink(internalUserId, ResourceType.CALENDAR);
+
+        // Restart streaming with full sync (no delta link)
+        this.logger.log(`[streamDeltaChanges] Restarting stream with full sync after token expiration for user ${externalUserId}`);
+
+        // Build fresh URL without delta link
+        const freshUrl = dateRange
+          ? `${requestUrl}?startDateTime=${dateRange.startDate.toISOString()}&endDateTime=${dateRange.endDate.toISOString()}`
+          : requestUrl;
+
+        // Stream from beginning with recovery
+        let recoveryPageCount = 0;
+        let recoveryDeltaLink: string | null = null;
+
+        for await (const page of this.fetchDeltaPagesCore(client, freshUrl, internalUserId)) {
+          recoveryPageCount++;
+
+          // Sort and yield this batch immediately
+          const sortedBatch = this.sortDeltaItems(page.items);
+          this.logger.log(
+            `[streamDeltaChanges] [RECOVERY] Yielding page ${recoveryPageCount} with ${sortedBatch.length} sorted items for user ${internalUserId}`
+          );
+
+          yield sortedBatch;
+
+          // Capture final delta link
+          if (page.isLastPage && page.deltaLink) {
+            recoveryDeltaLink = page.deltaLink;
+          }
+        }
+
+        // Save delta link after recovery (if requested)
+        if (recoveryDeltaLink && saveDeltaLink) {
+          await this.saveDeltaLink(internalUserId, ResourceType.CALENDAR, recoveryDeltaLink);
+          this.logger.log(
+            `[streamDeltaChanges] [RECOVERY] Saved delta link after streaming ${recoveryPageCount} pages for user ${internalUserId}`
+          );
+        }
+
+        return recoveryDeltaLink;
+      }
+
+      // Re-throw other errors
+      throw error;
+    }
   }
 
   /**
@@ -430,7 +616,8 @@ export class DeltaSyncService {
       endDate: Date;
     }
   ): Promise<DeltaItem[]> {
-    this.logger.log(`[initializeDeltaLink] Initializing delta link and fetching current items for user ${internalUserId}`);
+    const startTime = Date.now();
+    this.logger.log(`[initializeDeltaLink] Starting initialization for user ${internalUserId}`);
 
     let urlWithDateRange = requestUrl;
 
@@ -438,10 +625,9 @@ export class DeltaSyncService {
     if (dateRange) {
       const { startDate, endDate } = dateRange;
       urlWithDateRange = `${requestUrl}?startDateTime=${startDate.toISOString()}&endDateTime=${endDate.toISOString()}`;
-      this.logger.log(`[initializeDeltaLink] Using date range: ${startDate.toISOString()} to ${endDate.toISOString()}`);
     }
 
-    // Fetch all delta pages using shared function
+    // Fetch all delta pages (fetchAllDeltaPages handles its own logging)
     const { items: allItems, deltaLink: lastDeltaLink } = await this.fetchAllDeltaPages(
       client,
       urlWithDateRange,
@@ -449,12 +635,17 @@ export class DeltaSyncService {
     );
 
     if (!lastDeltaLink) {
+      this.logger.error(`[initializeDeltaLink] ❌ No delta link received (user ${internalUserId})`);
       throw new Error('Failed to initialize delta link - no delta link received from Microsoft Graph');
     }
 
     // Save the delta link for future syncs
     await this.saveDeltaLink(internalUserId, resourceType, lastDeltaLink);
-    this.logger.log(`[initializeDeltaLink] Delta link initialized and saved for user ${internalUserId}, returning ${allItems.length} items to process`);
+
+    const totalDuration = Date.now() - startTime;
+    this.logger.log(
+      `[initializeDeltaLink] ✅ Complete: ${allItems.length} items, ${totalDuration}ms (user ${internalUserId})`
+    );
 
     return allItems;
   }
