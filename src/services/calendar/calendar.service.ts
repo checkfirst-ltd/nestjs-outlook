@@ -158,6 +158,54 @@ export class CalendarService {
     }
   }
 
+  /**
+   * Updates an existing event in the user's Outlook calendar
+   * @param eventId - The ID of the event to update
+   * @param updates - Partial Event object with fields to update
+   * @param externalUserId - External user ID associated with the calendar
+   * @param calendarId - Calendar ID where the event exists
+   * @returns The updated event data
+   */
+  async updateEvent(
+    eventId: string,
+    updates: Partial<Event>,
+    externalUserId: string,
+    calendarId: string
+  ): Promise<{ event: Event }> {
+    try {
+      // Get a valid access token for this user
+      const accessToken =
+        await this.microsoftAuthService.getUserAccessToken({externalUserId});
+
+      // Initialize Microsoft Graph client
+      const client = Client.init({
+        authProvider: (done) => {
+          done(null, accessToken);
+        },
+      });
+
+      this.logger.log(`Updating event ${eventId} in calendar ${calendarId} for user ${externalUserId}`);
+
+      // PATCH the existing event
+      const updatedEvent = (await client
+        .api(`/me/calendars/${calendarId}/events/${eventId}`)
+        .patch(updates)) as Event;
+
+      return {
+        event: updatedEvent,
+      };
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
+      this.logger.error(
+        `Failed to update Outlook calendar event: ${errorMessage}`
+      );
+      throw new Error(
+        `Failed to update Outlook calendar event: ${errorMessage}`
+      );
+    }
+  }
+
   async deleteEvent(
     event: Partial<Event>,
     externalUserId: string,
