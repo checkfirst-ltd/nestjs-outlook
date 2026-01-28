@@ -63,6 +63,105 @@ export function is410Error(error: unknown): boolean {
 }
 
 /**
+ * Check if an error is a 429 Rate Limit error
+ * @param error - The error to check
+ * @returns True if the error is a 429 Rate Limit error
+ */
+export function is429Error(error: unknown): boolean {
+  return isGraphErrorWithStatus(error, 429);
+}
+
+/**
+ * Check if an error is a 404 Not Found error
+ * @param error - The error to check
+ * @returns True if the error is a 404 Not Found error
+ */
+export function is404Error(error: unknown): boolean {
+  return isGraphErrorWithStatus(error, 404);
+}
+
+/**
+ * Check if an error is a network error (connection timeout, etc.)
+ * @param error - The error to check
+ * @returns True if the error is a network error
+ */
+export function isNetworkError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+
+  // Check for axios error with network error codes
+  if ('code' in error) {
+    const code = String(error.code);
+    return code === 'ECONNABORTED' || code === 'ETIMEDOUT' || code === 'ENOTFOUND' || code === 'ECONNRESET';
+  }
+
+  return false;
+}
+
+/**
+ * Check if an error is a server error (5xx status codes)
+ * These are typically retryable as they indicate temporary server issues
+ * @param error - The error to check
+ * @returns True if the error is a server error (5xx)
+ */
+export function isServerError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+
+  // Check for Microsoft Graph SDK error format
+  if ('statusCode' in error && typeof error.statusCode === 'number') {
+    return error.statusCode >= 500 && error.statusCode < 600;
+  }
+
+  // Check for nested error in stack array (Microsoft Graph SDK format)
+  if ('stack' in error && Array.isArray(error.stack) && error.stack.length > 0) {
+    const firstError: unknown = error.stack[0];
+    if (firstError && typeof firstError === 'object' && 'statusCode' in firstError) {
+      const statusCode = firstError.statusCode as number;
+      return statusCode >= 500 && statusCode < 600;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Extract Retry-After header value from axios error
+ * Microsoft Graph API returns this header on 429 rate limit errors
+ * @param error - The error to extract from (must be axios error)
+ * @returns Number of seconds to wait, or null if not found
+ */
+export function extractRetryAfterSeconds(error: unknown): number | null {
+  if (!error || typeof error !== 'object') {
+    return null;
+  }
+
+  // Check if this is an axios error with response headers
+  if ('response' in error && error.response && typeof error.response === 'object') {
+    const response = error.response as { headers?: Record<string, unknown> };
+    if (response.headers && 'retry-after' in response.headers) {
+      const retryAfter = response.headers['retry-after'];
+
+      // Retry-After can be a number (seconds) or a date string
+      if (typeof retryAfter === 'string') {
+        const parsed = parseInt(retryAfter, 10);
+        if (!isNaN(parsed)) {
+          // Microsoft recommends treating Retry-After: 0 as a meaningful delay
+          // Use at least 5 seconds even if they say 0
+          return Math.max(parsed, 5);
+        }
+      } else if (typeof retryAfter === 'number') {
+        return Math.max(retryAfter, 5);
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
  * Retry an operation with exponential backoff
  * @param operation - The async operation to retry
  * @param options - Retry configuration options

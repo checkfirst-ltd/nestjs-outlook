@@ -14,17 +14,20 @@ export type {
   Attendee,
   EmailAddress,
   Location,
-  
+
   // Email related types
   Message,
-  
+
   // Webhook related types
   Subscription,
   ChangeNotification,
   ChangeType
 } from '@microsoft/microsoft-graph-types';
 
-// You can extend or modify types if needed
-// export interface ExtendedEvent extends Event {
-//   customProperty?: string;
-// } 
+/**
+ * Extended Event type that includes transactionId property
+ * The transactionId maps to the iCalUId property in Microsoft Graph
+ */
+export interface EventWithTransactionId extends Event {
+  transactionId?: string;
+} 
