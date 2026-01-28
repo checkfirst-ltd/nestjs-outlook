@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.2.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.1.3...v5.2.0) (2026-01-28)
+
+
+### Features
+
+* add update event to act as upsert based on trasnaction id ([#71](https://github.com/checkfirst-ltd/nestjs-outlook/issues/71)) ([0d5abf0](https://github.com/checkfirst-ltd/nestjs-outlook/commit/0d5abf071e91d585e156b6e2a40b62a480276fc5))
+
 ## [5.1.3](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.1.2...v5.1.3) (2026-01-19)
 
 
