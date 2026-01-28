@@ -168,8 +168,10 @@ export function extractRetryAfterSeconds(error: unknown): number | null {
  * @param options.maxRetries - Maximum number of retries (default: 3)
  * @param options.retryDelayMs - Base delay in milliseconds (default: 1000)
  * @param options.retryCount - Current retry count (used internally for recursion)
+ * @param options.logger - Optional logger for retry attempts
+ * @param options.operationName - Optional name for logging context
  * @returns The result of the operation
- * @throws The last error if all retries are exhausted
+ * @throws The last error if all retries are exhausted or if error is non-retryable
  */
 export async function retryWithBackoff<T>(
   operation: () => Promise<T>,
@@ -177,27 +179,124 @@ export async function retryWithBackoff<T>(
     maxRetries?: number;
     retryDelayMs?: number;
     retryCount?: number;
+    logger?: { warn: (message: string, context?: Record<string, unknown>) => void };
+    operationName?: string;
   }
 ): Promise<T> {
   const maxRetries = options?.maxRetries ?? 3;
   const retryDelayMs = options?.retryDelayMs ?? 1000;
   const retryCount = options?.retryCount ?? 0;
+  const logger = options?.logger;
+  const operationName = options?.operationName ?? 'operation';
 
   try {
     return await operation();
   } catch (error) {
+    // Extract error details for logging
+    const errorDetails = extractErrorInfo(error);
+
+    // Don't retry non-retryable errors (401, 403, 404, 410)
+    if (isNonRetryableError(error)) {
+      if (logger) {
+        logger.warn(`[retryWithBackoff] Non-retryable error for ${operationName}, not retrying`, {
+          statusCode: errorDetails.statusCode,
+          errorCode: errorDetails.code,
+        });
+      }
+      throw error;
+    }
+
     if (retryCount >= maxRetries) {
+      if (logger) {
+        logger.warn(`[retryWithBackoff] Max retries (${maxRetries}) exceeded for ${operationName}`, {
+          statusCode: errorDetails.statusCode,
+          errorCode: errorDetails.code,
+          errorMessage: errorDetails.message,
+        });
+      }
       throw error;
     }
 
     // Calculate exponential backoff delay
     const delayMs = retryDelayMs * Math.pow(2, retryCount);
+
+    if (logger) {
+      logger.warn(`[retryWithBackoff] Retry ${retryCount + 1}/${maxRetries} for ${operationName} after ${delayMs}ms`, {
+        statusCode: errorDetails.statusCode,
+        errorCode: errorDetails.code,
+        errorType: errorDetails.type,
+        delayMs,
+      });
+    }
+
     await delay(delayMs);
 
     return retryWithBackoff(operation, {
       maxRetries,
       retryDelayMs,
       retryCount: retryCount + 1,
+      logger,
+      operationName,
     });
   }
+}
+
+/**
+ * Extract error information for logging
+ * @param error - The error object
+ * @returns Error details
+ */
+function extractErrorInfo(error: unknown): {
+  statusCode: number | string;
+  code: string;
+  message: string;
+  type: string;
+} {
+  if (!error || typeof error !== 'object') {
+    return {
+      statusCode: 'N/A',
+      code: 'N/A',
+      message: String(error),
+      type: 'unknown',
+    };
+  }
+
+  // Check for Microsoft Graph SDK error format
+  if ('statusCode' in error) {
+    const statusCode = error.statusCode as number;
+    const code = 'code' in error ? String(error.code) : 'N/A';
+    const body = 'body' in error ? String(error.body) : 'N/A';
+
+    return {
+      statusCode,
+      code,
+      message: body,
+      type: statusCode === -1 ? 'network_error' : 'graph_api_error',
+    };
+  }
+
+  // Check for nested error in stack array
+  if ('stack' in error && Array.isArray(error.stack) && error.stack.length > 0) {
+    const firstError: unknown = error.stack[0];
+    if (firstError && typeof firstError === 'object') {
+      const statusCode: number | string = 'statusCode' in firstError ? (firstError.statusCode as number) : 'N/A';
+      const code: string = 'code' in firstError ? String(firstError.code) : 'N/A';
+      const body: string = 'body' in firstError ? String(firstError.body) : 'N/A';
+
+      return {
+        statusCode,
+        code,
+        message: body,
+        type: typeof statusCode === 'number' && statusCode === -1 ? 'network_error' : 'graph_api_error',
+      };
+    }
+  }
+
+  const errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+  return {
+    statusCode: 'N/A',
+    code: 'N/A',
+    message: errorMessage,
+    type: 'generic_error',
+  };
 }

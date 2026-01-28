@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.1.3](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.1.2...v5.1.3) (2026-01-19)
+
+
+### Bug Fixes
+
+* Delta Link Expired with error stateNotFound ([#69](https://github.com/checkfirst-ltd/nestjs-outlook/issues/69)) ([0f24e87](https://github.com/checkfirst-ltd/nestjs-outlook/commit/0f24e87901240c34377617ab5ebf8a6746552900))
+
 ## [5.1.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.1.1...v5.1.2) (2026-01-18)
 
 
