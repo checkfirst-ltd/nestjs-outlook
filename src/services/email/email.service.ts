@@ -145,6 +145,123 @@ export class EmailService {
   }
 
   /**
+   * Delete an email webhook subscription
+   *
+   * Deletes the subscription at Microsoft Graph API and deactivates it locally.
+   * Identical implementation to CalendarService for consistency.
+   *
+   * @param subscriptionId - ID of the subscription to delete at Microsoft
+   * @param userId - User ID (can be external string or internal number)
+   * @returns True if deletion was successful
+   * @throws Error if user not found or deletion fails (except 404)
+   *
+   * @example
+   * await emailService.deleteWebhookSubscription('sub-789', 'user-7');
+   */
+  async deleteWebhookSubscription(
+    subscriptionId: string,
+    userId: string | number
+  ): Promise<boolean> {
+    const correlationId = `delete-email-sub-${subscriptionId}-${Date.now()}`;
+
+    try {
+      this.logger.log(
+        `[${correlationId}] Deleting email subscription ${subscriptionId} for user ${userId}`
+      );
+
+      // Determine if userId is external or internal
+      const isExternal = typeof userId === 'string';
+
+      this.logger.debug(
+        `[${correlationId}] User ID type: ${isExternal ? 'external' : 'internal'}`
+      );
+
+      // Get access token (works with both ID types)
+      const accessToken = isExternal
+        ? await this.microsoftAuthService.getUserAccessToken({
+            externalUserId: userId as string
+          })
+        : await this.microsoftAuthService.getUserAccessToken({
+            internalUserId: userId as number
+          });
+
+      this.logger.debug(`[${correlationId}] Access token obtained`);
+
+      // Make the request to Microsoft Graph API to delete the subscription
+      this.logger.debug(
+        `[${correlationId}] Calling Microsoft Graph API to delete email subscription`
+      );
+
+      await axios.delete(
+        `https://graph.microsoft.com/v1.0/subscriptions/${subscriptionId}`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      this.logger.log(
+        `[${correlationId}] Successfully deleted email subscription at Microsoft`
+      );
+
+      // Remove the subscription from our database (soft delete)
+      await this.webhookSubscriptionRepository.deactivateSubscription(
+        subscriptionId
+      );
+
+      this.logger.debug(
+        `[${correlationId}] Deactivated email subscription in local database`
+      );
+
+      // Mark user as inactive
+      const updateCriteria = typeof userId === 'string' ? { externalUserId: userId } : { id: userId };
+      await this.microsoftUserRepository.update(
+        updateCriteria,
+        { isActive: false }
+      );
+
+      this.logger.debug(
+        `[${correlationId}] Marked Microsoft user as inactive (${isExternal ? 'externalUserId' : 'id'}: ${userId})`
+      );
+
+      this.logger.log(
+        `[${correlationId}] Successfully deleted email subscription ${subscriptionId}`
+      );
+
+      return true;
+
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+
+      // If we get a 404, the subscription doesn't exist anymore at Microsoft
+      if (axios.isAxiosError(error) && error.response?.status === 404) {
+        this.logger.log(
+          `[${correlationId}] Email subscription ${subscriptionId} not found at Microsoft, ` +
+          `cleaning up local database`
+        );
+
+        await this.webhookSubscriptionRepository.deactivateSubscription(
+          subscriptionId
+        );
+
+        this.logger.log(
+          `[${correlationId}] Successfully cleaned up orphaned email subscription ${subscriptionId}`
+        );
+
+        return true;
+      }
+
+      this.logger.error(
+        `[${correlationId}] Failed to delete email subscription ${subscriptionId}: ${errorMessage}`
+      );
+
+      throw new Error(`Failed to delete email webhook subscription: ${errorMessage}`);
+    }
+  }
+
+  /**
    * Handle a webhook notification from Microsoft for email changes
    * @param notificationItem - The notification data from Microsoft
    * @returns Success status and message
