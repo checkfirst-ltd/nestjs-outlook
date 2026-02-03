@@ -20,6 +20,7 @@ import { OutlookDeltaLinkRepository } from "./repositories/outlook-delta-link.re
 import { DeltaSyncService } from "./services/shared/delta-sync.service";
 import { UserIdConverterService } from "./services/shared/user-id-converter.service";
 import { LifecycleEventHandlerService } from "./services/calendar/lifecycle-event-handler.service";
+import { MicrosoftSubscriptionService } from "./services/subscription/microsoft-subscription.service";
 
 export const { ConfigurableModuleClass, MODULE_OPTIONS_TOKEN } =
   new ConfigurableModuleBuilder<MicrosoftOutlookConfig>()
@@ -57,6 +58,7 @@ export const { ConfigurableModuleClass, MODULE_OPTIONS_TOKEN } =
     DeltaSyncService,
     UserIdConverterService,
     LifecycleEventHandlerService,
+    MicrosoftSubscriptionService,
   ],
   exports: [
     CalendarService,
@@ -65,6 +67,7 @@ export const { ConfigurableModuleClass, MODULE_OPTIONS_TOKEN } =
     OutlookDeltaLinkRepository,
     DeltaSyncService,
     UserIdConverterService,
+    MicrosoftSubscriptionService,
   ],
 })
 export class MicrosoftOutlookModule extends ConfigurableModuleClass {}
