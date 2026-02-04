@@ -179,10 +179,10 @@ export class EmailService {
       // Get access token (works with both ID types)
       const accessToken = isExternal
         ? await this.microsoftAuthService.getUserAccessToken({
-            externalUserId: userId as string
+            externalUserId: userId
           })
         : await this.microsoftAuthService.getUserAccessToken({
-            internalUserId: userId as number
+            internalUserId: userId
           });
 
       this.logger.debug(`[${correlationId}] Access token obtained`);

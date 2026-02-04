@@ -63,10 +63,13 @@ export class MicrosoftSubscriptionService {
         },
         timeout: 10000,
       });
+      
+      const data = response.data as { value?: MicrosoftSubscription[] };
 
-      return response.data.value || [];
-    } catch (error: any) {
-      this.logger.warn(`Failed to get subscriptions from Microsoft: ${error.message}`);
+      return data.value || [];
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.warn(`Failed to get subscriptions from Microsoft: ${message}`);
       return [];
     }
   }
@@ -114,8 +117,8 @@ export class MicrosoftSubscriptionService {
         timeout: 10000,
       });
       this.logger.log(`✅ Deleted subscription ${subscriptionId} at Microsoft`);
-    } catch (error: any) {
-      if (error.response?.status === 404) {
+    } catch (error: unknown) {
+      if (axios.isAxiosError(error) && error.response?.status === 404) {
         this.logger.log(`Subscription ${subscriptionId} already deleted at Microsoft`);
         return;
       }
@@ -167,21 +170,23 @@ export class MicrosoftSubscriptionService {
           await this.deleteSubscription(subscription.id, accessToken);
           result.successfullyDeleted++;
           result.deletedSubscriptionIds.push(subscription.id);
-        } catch (deleteError: any) {
+        } catch (deleteError: unknown) {
+          const message = deleteError instanceof Error ? deleteError.message : 'Unknown error';
           result.failedToDelete++;
           result.errors.push({
             subscriptionId: subscription.id,
-            error: deleteError.message,
+            error: deleteError instanceof Error ? deleteError.message : 'Unknown error',
           });
-          this.logger.warn(`⚠️ Failed to delete subscription ${subscription.id}: ${deleteError.message}`);
+          this.logger.warn(`⚠️ Failed to delete subscription ${subscription.id}: ${message}`);
         }
       }
 
       this.logger.log(
         `🗑️ Cleanup completed: ${result.successfullyDeleted} deleted, ${result.failedToDelete} failed`,
       );
-    } catch (error: any) {
-      this.logger.error(`❌ Cleanup operation failed: ${error.message}`);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`❌ Cleanup operation failed: ${message}`);
       throw error;
     }
 
@@ -246,8 +251,9 @@ export class MicrosoftSubscriptionService {
       );
 
       this.logger.log('✅ Microsoft tokens revoked successfully');
-    } catch (error: any) {
-      this.logger.warn(`⚠️ Failed to revoke Microsoft tokens: ${error.message}`);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.warn(`⚠️ Failed to revoke Microsoft tokens: ${message}`);
     }
   }
 
