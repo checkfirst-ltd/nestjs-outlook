@@ -15,7 +15,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { MicrosoftUser } from "../../entities/microsoft-user.entity";
 import { Repository } from "typeorm";
 import { DeltaSyncService } from "../shared/delta-sync.service";
-import { delay, retryWithBackoff } from "../../utils/retry.util";
+import { delay, retryWithBackoff, is404Error } from "../../utils/retry.util";
 import { UserIdConverterService } from "../shared/user-id-converter.service";
 import { ResourceType } from "../../enums/resource-type.enum";
 
@@ -234,6 +234,14 @@ export class CalendarService {
         { maxRetries: 3, retryDelayMs: 1000 }
       );
     } catch (error: unknown) {
+      // If the event doesn't exist (404), deletion intent is fulfilled — treat as success
+      if (is404Error(error)) {
+        this.logger.warn(
+          `Outlook calendar event ${event.id} not found (already deleted), treating as successful deletion`
+        );
+        return;
+      }
+
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error";
       this.logger.error(
@@ -487,7 +495,9 @@ export class CalendarService {
         }
       );
 
-      // Remove the subscription from our database
+      this.logger.log(`Deleted webhook subscription: ${subscriptionId}`);
+
+      // Remove the subscription from our database (soft delete)
       await this.webhookSubscriptionRepository.deactivateSubscription(
         subscriptionId
       );

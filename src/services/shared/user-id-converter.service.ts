@@ -20,6 +20,23 @@ export class UserIdConverterService {
   ) {}
 
   /**
+   * 
+   * @param userId - The user ID from the host application or the internal database ID
+   * @returns The internal database ID
+   * @throws Error if no Microsoft user found for the external ID
+   *
+   * @example
+   * ```typescript
+   * // Your app user ID: "7"
+   * const internalId = await converter.toInternalUserId("7");
+   * // Returns: 42 (database primary key)
+   * ```
+   */
+  async toInternalUserId(userId: string | number): Promise<number> {
+    return typeof userId === 'string' ? await this.externalToInternal(userId) : userId;
+  }
+
+  /**
    * Convert external user ID to internal database ID
    *
    * @param externalUserId - The user ID from the host application
