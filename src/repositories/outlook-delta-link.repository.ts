@@ -52,6 +52,7 @@ export class OutlookDeltaLinkRepository {
   ): Promise<string | null> {
     const deltaLinkEntity = await this.repository.findOne({
       where: { userId: internalUserId, resourceType },
+      cache: 30000,
     });
 
     return deltaLinkEntity?.deltaLink || null;

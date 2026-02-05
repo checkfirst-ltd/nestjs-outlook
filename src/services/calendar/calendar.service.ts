@@ -15,7 +15,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { MicrosoftUser } from "../../entities/microsoft-user.entity";
 import { Repository } from "typeorm";
 import { DeltaSyncService } from "../shared/delta-sync.service";
-import { delay, retryWithBackoff } from "../../utils/retry.util";
+import { delay, retryWithBackoff, is404Error } from "../../utils/retry.util";
 import { UserIdConverterService } from "../shared/user-id-converter.service";
 import { ResourceType } from "../../enums/resource-type.enum";
 import { MicrosoftSubscriptionService } from "../subscription/microsoft-subscription.service";
@@ -215,8 +215,9 @@ export class CalendarService {
   ): Promise<void> {
     try {
       // Get a valid access token for this user
+      const internalUserId = await this.userIdConverter.toInternalUserId(externalUserId);
       const accessToken =
-        await this.microsoftAuthService.getUserAccessToken({externalUserId});
+        await this.microsoftAuthService.getUserAccessToken({internalUserId});
 
       // Initialize Microsoft Graph client
       const client = Client.init({
@@ -236,6 +237,14 @@ export class CalendarService {
         { maxRetries: 3, retryDelayMs: 1000 }
       );
     } catch (error: unknown) {
+      // If the event doesn't exist (404), deletion intent is fulfilled — treat as success
+      if (is404Error(error)) {
+        this.logger.warn(
+          `Outlook calendar event ${event.id} not found (already deleted), treating as successful deletion`
+        );
+        return;
+      }
+
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error";
       this.logger.error(
@@ -546,6 +555,7 @@ export class CalendarService {
         `[${correlationId}] Calling MicrosoftSubscriptionService to delete subscription`
       );
 
+      this.logger.log(`Deleted webhook subscription: ${subscriptionId}`);
       await this.subscriptionService.deleteSubscription(subscriptionId, accessToken);
 
       this.logger.log(

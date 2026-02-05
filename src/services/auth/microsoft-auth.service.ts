@@ -342,7 +342,8 @@ export class MicrosoftAuthService {
     }
 
     return await this.microsoftUserRepository.findOne({
-      where: whereCondition
+      where: whereCondition,
+      cache: true,
     });
   }
 
