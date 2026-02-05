@@ -38,7 +38,7 @@ export class OutlookWebhookSubscriptionRepository {
   }
 
   async findBySubscriptionId(subscriptionId: string): Promise<OutlookWebhookSubscription | null> {
-    return this.repository.findOne({ where: { subscriptionId, isActive: true } });
+    return this.repository.findOne({ where: { subscriptionId, isActive: true }, cache: true });
   }
 
   async updateSubscriptionExpiration(
@@ -84,6 +84,7 @@ export class OutlookWebhookSubscriptionRepository {
   async findActiveByUserId(userId: number): Promise<OutlookWebhookSubscription | null> {
     return this.repository.findOne({
       where: { userId, isActive: true },
+      cache: true,
     });
   }
 }

@@ -213,8 +213,9 @@ export class CalendarService {
   ): Promise<void> {
     try {
       // Get a valid access token for this user
+      const internalUserId = await this.userIdConverter.toInternalUserId(externalUserId);
       const accessToken =
-        await this.microsoftAuthService.getUserAccessToken({externalUserId});
+        await this.microsoftAuthService.getUserAccessToken({internalUserId});
 
       // Initialize Microsoft Graph client
       const client = Client.init({

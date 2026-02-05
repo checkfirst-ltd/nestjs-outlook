@@ -8,7 +8,7 @@ export async function getExternalUserIdFromUserId(
   logger: Logger
 ): Promise<string | null> {
   try {
-    const user: MicrosoftUser | null = await microsoftUserRepository.findOne({ where: { id: userId } });
+    const user: MicrosoftUser | null = await microsoftUserRepository.findOne({ where: { id: userId }, cache: 300000 });
     if (user && typeof user.externalUserId === 'string') {
       return user.externalUserId;
     }
