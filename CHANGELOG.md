@@ -1,5 +1,13 @@
 # Changelog
 
+## [5.2.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.2.0...v5.2.1) (2026-02-05)
+
+
+### Bug Fixes
+
+* constant errors due to orphaned subscription ([#73](https://github.com/checkfirst-ltd/nestjs-outlook/issues/73)) ([be1b097](https://github.com/checkfirst-ltd/nestjs-outlook/commit/be1b097c985b137c3d9d9fbb644dea2092534316))
+* delete event user access ([#74](https://github.com/checkfirst-ltd/nestjs-outlook/issues/74)) ([7c946d3](https://github.com/checkfirst-ltd/nestjs-outlook/commit/7c946d31682db67352f6f149ef9f89408e3d3a71))
+
 ## [5.2.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.1.3...v5.2.0) (2026-01-28)
 
 
