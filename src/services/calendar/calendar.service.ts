@@ -546,7 +546,8 @@ export class CalendarService {
         `[${correlationId}] Deleting calendar subscription ${subscriptionId} for user ${userId}`
       );
 
-      const accessToken = await this.microsoftAuthService.getUserAccessToken({externalUserId: userId as string, internalUserId: userId as number});
+      const internalUserId = await this.userIdConverter.toInternalUserId(userId);
+      const accessToken = await this.microsoftAuthService.getUserAccessToken({internalUserId});
 
       this.logger.debug(`[${correlationId}] Access token obtained`);
 
@@ -628,8 +629,9 @@ export class CalendarService {
       // Convert external to internal ID
       const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
 
+      this.logger.log(`[getActiveSubscription] Getting active subscription for user ${externalUserId} (internalUserId: ${internalUserId})`);
       const subscription = await this.webhookSubscriptionRepository.findActiveByUserId(internalUserId);
-
+      this.logger.log(`[getActiveSubscription] Found subscription: ${subscription?.subscriptionId}`);
       return subscription?.subscriptionId ?? null;
     } catch {
       // User may not have connected Microsoft account yet - this is not an error
@@ -1096,6 +1098,78 @@ export class CalendarService {
         error instanceof Error ? error.message : "Unknown error";
       this.logger.error(
         `Error streaming events for user ${externalUserId}: ${errorMessage}`
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Stream instances of a specific recurring event series
+   *
+   * Uses the Microsoft Graph /me/events/{seriesMasterId}/instances endpoint to fetch
+   * only the expanded occurrences of a specific recurring event within a date range.
+   * This is more targeted than calendarView which returns ALL events.
+   *
+   * @param seriesMasterId - The ID of the recurring event series master
+   * @param externalUserId - External user ID
+   * @param options - Optional date range and batch size
+   * @yields Batches of Event instances for the recurring series
+   */
+  async *getRecurringEventInstances(
+    seriesMasterId: string,
+    externalUserId: string,
+    options?: { startDate?: Date; endDate?: Date; batchSize?: number }
+  ): AsyncGenerator<Event[], void, unknown> {
+    const batchSize = options?.batchSize ?? 100;
+
+    try {
+      const client = await this.getAuthenticatedClient(externalUserId);
+
+      const now = new Date();
+      const startDate = options?.startDate ?? new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
+      const endDate = options?.endDate ?? new Date(now.getFullYear(), now.getMonth() + 6, now.getDate());
+
+      this.logger.log(
+        `[getRecurringEventInstances] Fetching instances for series ${seriesMasterId} from ${startDate.toISOString()} to ${endDate.toISOString()}`
+      );
+
+      let nextLink: string | undefined =
+        `/me/events/${seriesMasterId}/instances?startDateTime=${startDate.toISOString()}&endDateTime=${endDate.toISOString()}&$top=${batchSize}`;
+
+      const buffer: Event[] = [];
+      let totalFetched = 0;
+
+      while (nextLink) {
+        const response = (await retryWithBackoff(() =>
+          client.api(nextLink as string).get()
+        )) as { value: Event[]; '@odata.nextLink'?: string };
+
+        const items: Event[] = response.value;
+        buffer.push(...items);
+        totalFetched += items.length;
+
+        while (buffer.length >= batchSize) {
+          const chunk = buffer.splice(0, batchSize);
+          yield chunk;
+        }
+
+        nextLink = response['@odata.nextLink'];
+        if (nextLink) {
+          await delay(200);
+        }
+      }
+
+      if (buffer.length > 0) {
+        yield buffer;
+      }
+
+      this.logger.log(
+        `[getRecurringEventInstances] Completed: ${totalFetched} instances for series ${seriesMasterId}`
+      );
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(
+        `[getRecurringEventInstances] Error fetching instances for series ${seriesMasterId}: ${errorMessage}`
       );
       throw error;
     }
