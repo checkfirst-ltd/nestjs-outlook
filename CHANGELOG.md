@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.3.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.2.1...v5.3.0) (2026-02-06)
+
+
+### Features
+
+* get the recurring events through master series id ([#76](https://github.com/checkfirst-ltd/nestjs-outlook/issues/76)) ([d645553](https://github.com/checkfirst-ltd/nestjs-outlook/commit/d6455538d2efe7d858f315a5cc54ab5f4152e794))
+
 ## [5.2.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.2.0...v5.2.1) (2026-02-05)
 
 
