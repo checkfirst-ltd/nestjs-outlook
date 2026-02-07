@@ -5,6 +5,7 @@ import { OutlookEventTypes } from '../../enums/event-types.enum';
 import { OutlookWebhookSubscriptionRepository } from '../../repositories/outlook-webhook-subscription.repository';
 import { CalendarService } from './calendar.service';
 import { OutlookWebhookNotificationItemDto } from '../../dto/outlook-webhook-notification.dto';
+import { UserIdConverterService } from '../shared/user-id-converter.service';
 
 /**
  * Service for handling Microsoft Graph lifecycle events
@@ -23,6 +24,7 @@ export class LifecycleEventHandlerService {
     private readonly calendarService: CalendarService,
     private readonly subscriptionRepository: OutlookWebhookSubscriptionRepository,
     private readonly eventEmitter: EventEmitter2,
+    private readonly userIdConverter: UserIdConverterService,
   ) {}
 
   /**
@@ -273,9 +275,11 @@ export class LifecycleEventHandlerService {
         `[MISSED] Starting delta sync for user ${subscription.userId} to recover missed changes`,
       );
 
+      const externalUserId = await this.userIdConverter.internalToExternal(subscription.userId);
+
       // Use streaming mode for better performance
       const changes = await this.calendarService.fetchAndSortChanges(
-        String(subscription.userId),
+        externalUserId,
         false, // Don't force reset, use existing delta link
       );
 
