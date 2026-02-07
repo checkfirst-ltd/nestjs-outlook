@@ -1384,7 +1384,6 @@ export class CalendarService {
       return { success: false, message: "Client state mismatch" };
     }
 
-    // External user Id is the client application userId
     const internalUserId = subscription.userId;
 
     if (!internalUserId) {
