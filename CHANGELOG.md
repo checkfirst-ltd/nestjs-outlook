@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.3.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.3.0...v5.3.1) (2026-02-07)
+
+
+### Bug Fixes
+
+* finding active subscription while handling the missed notification lifecycle ([#78](https://github.com/checkfirst-ltd/nestjs-outlook/issues/78)) ([f19316b](https://github.com/checkfirst-ltd/nestjs-outlook/commit/f19316b764930f4633003852b37e4af9bdf6ed8b))
+
 ## [5.3.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.2.1...v5.3.0) (2026-02-06)
 
 
