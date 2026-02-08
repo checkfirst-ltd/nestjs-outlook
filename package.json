@@ -1,6 +1,6 @@
 {
   "name": "@checkfirst/nestjs-outlook",
-  "version": "5.3.1",
+  "version": "5.3.2",
   "description": "An opinionated NestJS module for Microsoft Outlook integration that provides easy access to Microsoft Graph API for emails, calendars, and more.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
