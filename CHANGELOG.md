@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.3.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.3.1...v5.3.2) (2026-02-08)
+
+
+### Bug Fixes
+
+* delete subscription blocked if user is inactive ([#80](https://github.com/checkfirst-ltd/nestjs-outlook/issues/80)) ([c4de1af](https://github.com/checkfirst-ltd/nestjs-outlook/commit/c4de1afa23b1a0f8e30b4314753367bb4be21bcd))
+
 ## [5.3.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.3.0...v5.3.1) (2026-02-07)
 
 
