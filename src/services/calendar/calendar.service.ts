@@ -547,7 +547,12 @@ export class CalendarService {
       );
 
       const internalUserId = await this.userIdConverter.toInternalUserId(userId);
-      const accessToken = await this.microsoftAuthService.getUserAccessToken({internalUserId});
+
+      // Get access token (including inactive users since we need to clean up their subscriptions)
+      const accessToken = await this.microsoftAuthService.getUserAccessToken({
+        internalUserId,
+        includeInactive: true
+      });
 
       this.logger.debug(`[${correlationId}] Access token obtained`);
 

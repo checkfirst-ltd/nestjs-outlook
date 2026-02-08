@@ -169,21 +169,13 @@ export class EmailService {
         `[${correlationId}] Deleting email subscription ${subscriptionId} for user ${userId}`
       );
 
-      // Determine if userId is external or internal
-      const isExternal = typeof userId === 'string';
+      const internalUserId = await this.userIdConverter.toInternalUserId(userId);
 
-      this.logger.debug(
-        `[${correlationId}] User ID type: ${isExternal ? 'external' : 'internal'}`
-      );
-
-      // Get access token (works with both ID types)
-      const accessToken = isExternal
-        ? await this.microsoftAuthService.getUserAccessToken({
-            externalUserId: userId
-          })
-        : await this.microsoftAuthService.getUserAccessToken({
-            internalUserId: userId
-          });
+      // Get access token (including inactive users since we need to clean up their subscriptions)
+      const accessToken = await this.microsoftAuthService.getUserAccessToken({
+        internalUserId,
+        includeInactive: true
+      });
 
       this.logger.debug(`[${correlationId}] Access token obtained`);
 
@@ -223,7 +215,7 @@ export class EmailService {
       );
 
       this.logger.debug(
-        `[${correlationId}] Marked Microsoft user as inactive (${isExternal ? 'externalUserId' : 'id'}: ${userId})`
+        `[${correlationId}] Marked Microsoft user as inactive (${typeof userId === 'string' ? 'externalUserId' : 'id'}: ${userId})`
       );
 
       this.logger.log(
