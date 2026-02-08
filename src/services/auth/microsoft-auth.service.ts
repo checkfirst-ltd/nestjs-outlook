@@ -322,16 +322,22 @@ export class MicrosoftAuthService {
    * Get Microsoft user by internal ID or external user ID
    *
    * @param params - Object with either internalUserId or externalUserId
+   * @param includeInactive - If true, includes inactive users in the search (default: false)
    * @returns Microsoft user entity or null if not found
    */
-  private async getMicrosoftUser(params: { internalUserId?: number; externalUserId?: string }): Promise<MicrosoftUser | null> {
-    const { internalUserId, externalUserId } = params;
+  private async getMicrosoftUser(params: { internalUserId?: number; externalUserId?: string; includeInactive?: boolean }): Promise<MicrosoftUser | null> {
+    const { internalUserId, externalUserId, includeInactive = false } = params;
 
     if (!internalUserId && !externalUserId) {
       throw new Error('Either internalUserId or externalUserId must be provided');
     }
 
-    const whereCondition: FindOptionsWhere<MicrosoftUser> = { isActive: true };
+    const whereCondition: FindOptionsWhere<MicrosoftUser> = {};
+
+    // Only filter by isActive if we don't want to include inactive users
+    if (!includeInactive) {
+      whereCondition.isActive = true;
+    }
 
     if (internalUserId !== undefined) {
       whereCondition.id = internalUserId;
@@ -351,11 +357,12 @@ export class MicrosoftAuthService {
    * Gets a valid access token for a user, REFRESH it if necessary
    *
    * @param params - Object with either internalUserId or externalUserId
+   * @param params.includeInactive - If true, allows getting tokens for inactive users (useful for cleanup operations)
    * @returns Valid access token string
    */
-  async getUserAccessToken(params: { internalUserId?: number; externalUserId?: string }): Promise<string> {
+  async getUserAccessToken(params: { internalUserId?: number; externalUserId?: string; includeInactive?: boolean }): Promise<string> {
     try {
-      const { internalUserId, externalUserId } = params;
+      const { internalUserId, externalUserId, includeInactive = false } = params;
 
       // Guard clause
       if (!internalUserId && !externalUserId) {
@@ -365,7 +372,8 @@ export class MicrosoftAuthService {
       // Get the Microsoft user by internal or external user ID
       const user = await this.getMicrosoftUser({
         internalUserId,
-        externalUserId
+        externalUserId,
+        includeInactive
       });
 
       // Guard clause
@@ -381,8 +389,8 @@ export class MicrosoftAuthService {
         tokenExpiry: user.tokenExpiry,
         scopes: user.scopes
       }, user.id);
-    } 
-    
+    }
+
     // Error handling
     catch (error) {
       const identifier = params.internalUserId
