@@ -30,4 +30,36 @@ export type {
  */
 export interface EventWithTransactionId extends Event {
   transactionId?: string;
+}
+
+/**
+ * Represents a single request in a Microsoft Graph batch operation
+ */
+export interface BatchRequest {
+  id: string;
+  method: string;
+  url: string;
+}
+
+/**
+ * Represents a single response in a Microsoft Graph batch operation
+ */
+export interface BatchResponse<T = unknown> {
+  id: string;
+  status: number;
+  body: T;
+}
+
+/**
+ * Represents the payload for a Microsoft Graph batch request
+ */
+export interface BatchRequestPayload {
+  requests: BatchRequest[];
+}
+
+/**
+ * Represents the response from a Microsoft Graph batch request
+ */
+export interface BatchResponsePayload<T = unknown> {
+  responses: BatchResponse<T>[];
 } 
