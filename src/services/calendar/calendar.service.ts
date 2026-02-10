@@ -19,6 +19,7 @@ import { delay, retryWithBackoff, is404Error } from "../../utils/retry.util";
 import { UserIdConverterService } from "../shared/user-id-converter.service";
 import { ResourceType } from "../../enums/resource-type.enum";
 import { MicrosoftSubscriptionService } from "../subscription/microsoft-subscription.service";
+import { executeGraphApiCall } from "../../utils/outlook-api-executor.util";
 
 // Event type constants
 const OUTLOOK_EVENT_CREATED = OutlookEventTypes.EVENT_CREATED;
@@ -1437,17 +1438,31 @@ export class CalendarService {
         `[getEventsBatch] Fetching ${batchPayload.requests.length} events in batch for user ${externalUserId}`
       );
 
-      // Execute batch request
-      const response = await axios.post<BatchResponsePayload<Event>>(
-        'https://graph.microsoft.com/v1.0/$batch',
-        batchPayload,
+      // Execute batch request with automatic retry and rate limit handling
+      const response = await executeGraphApiCall(
+        () => axios.post<BatchResponsePayload<Event>>(
+          'https://graph.microsoft.com/v1.0/$batch',
+          batchPayload,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              'Content-Type': 'application/json',
+            },
+          }
+        ),
         {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-          },
+          maxRetries: 3,
+          retryDelayMs: 1000,
+          logger: this.logger,
+          resourceName: `batch events (user: ${externalUserId})`,
         }
       );
+
+      // Handle null response (shouldn't happen for batch requests, but type safety)
+      if (!response) {
+        this.logger.error(`[getEventsBatch] Batch request returned null for user ${externalUserId}`);
+        return [];
+      }
 
       // Process responses
       const events: Event[] = [];
@@ -1468,13 +1483,12 @@ export class CalendarService {
           );
           notFoundCount++;
         } else if (batchResponse.status === 429) {
-          // Rate limited - throw to allow retry logic upstream
-          this.logger.error(
-            `[getEventsBatch] Rate limited (429) for event ${eventId}`
+          // Rate limited within batch response - log warning but continue
+          // (outer executeGraphApiCall should handle retries for entire batch)
+          this.logger.warn(
+            `[getEventsBatch] Individual event ${eventId} rate limited (429) within batch response`
           );
-          throw new Error(
-            `Rate limited by Microsoft Graph API (status 429) for event ${eventId}`
-          );
+          errorCount++;
         } else {
           // Other errors - log and continue
           this.logger.error(
