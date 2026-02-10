@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.4.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.4.0...v5.4.1) (2026-02-10)
+
+
+### Bug Fixes
+
+* microsoft graph api batching requests with retry ([#84](https://github.com/checkfirst-ltd/nestjs-outlook/issues/84)) ([19f1000](https://github.com/checkfirst-ltd/nestjs-outlook/commit/19f10003b9720db8fe17eb537bd0fb8b1a91afa8))
+
 ## [5.4.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.3.2...v5.4.0) (2026-02-09)
 
 
