@@ -10,6 +10,8 @@ export enum OutlookEventTypes {
   EVENT_CREATED = 'outlook.event.created',
   EVENT_UPDATED = 'outlook.event.updated',
 
+  EVENT_NOTIFICATION = 'outlook.event.notification',
+
   // Calendar import events
   IMPORT_COMPLETED = 'outlook.calendar.import.completed',
 

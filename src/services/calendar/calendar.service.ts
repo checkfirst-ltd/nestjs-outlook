@@ -20,6 +20,7 @@ import { UserIdConverterService } from "../shared/user-id-converter.service";
 import { ResourceType } from "../../enums/resource-type.enum";
 import { MicrosoftSubscriptionService } from "../subscription/microsoft-subscription.service";
 import { executeGraphApiCall } from "../../utils/outlook-api-executor.util";
+import { OutlookWebhookSubscription } from "../../entities/outlook-webhook-subscription.entity";
 
 // Event type constants
 const OUTLOOK_EVENT_CREATED = OutlookEventTypes.EVENT_CREATED;
@@ -698,8 +699,8 @@ export class CalendarService {
       const basePath = this.microsoftConfig.basePath;
       const basePathUrl = basePath ? `${appUrl}/${basePath}` : appUrl;
 
-      // Create subscription payload with proper URL encoding
-      const notificationUrl = `${basePathUrl}/calendar/webhook`;
+      const webhookPath = this.microsoftConfig.calendarWebhookPath || '/calendar/webhook';
+      const notificationUrl = `${basePathUrl}${webhookPath}`;
 
       // Create subscription payload
       const subscriptionData = {
@@ -924,6 +925,16 @@ export class CalendarService {
 
       throw new Error(`Failed to renew webhook subscription: ${errorMessage}`);
     }
+  }
+
+  async getSubscription(subscriptionId: string): Promise<OutlookWebhookSubscription | null> {
+    const subscription = await this.webhookSubscriptionRepository.findBySubscriptionId(subscriptionId);
+
+    if (!subscription) {
+      return null;
+    }
+
+    return subscription;
   }
 
 
@@ -1656,6 +1667,38 @@ export class CalendarService {
         `Error streaming events for user ${externalUserId}: ${errorMessage}`
       );
       throw error;
+    }
+  }
+
+  async handleOutlookWebhookV2(
+    notificationItem: ChangeNotification,
+  ) {
+    if (!notificationItem.subscriptionId) {
+      this.logger.error(`Subscription ID is required`);
+      return { success: false, message: `Subscription ID is required` };
+    }
+
+    try {
+      const subscription = await this.getSubscription(notificationItem.subscriptionId);
+
+      if (!subscription) {
+        this.logger.error(`Subscription not found for subscriptionId: ${notificationItem.subscriptionId}`);
+        return { success: false, message: `Subscription not found for subscriptionId: ${notificationItem.subscriptionId}` };
+      }
+
+      this.eventEmitter.emit(OutlookEventTypes.EVENT_NOTIFICATION, {
+        userId: subscription.userId,
+        subscriptionId: subscription.subscriptionId,
+        clientState: subscription.clientState,
+        resource: subscription.resource,
+        changeType: subscription.changeType,
+      });
+
+      return { success: true, message: 'Notification processed' };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`Error handling Outlook webhook v2: ${errorMessage}`);
+      return { success: false, message: errorMessage };
     }
   }
 
