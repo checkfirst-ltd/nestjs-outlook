@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.5.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.4.1...v5.5.0) (2026-02-12)
+
+
+### Features
+
+* add webhook endpoint that pass the notification directly ([#86](https://github.com/checkfirst-ltd/nestjs-outlook/issues/86)) ([8841160](https://github.com/checkfirst-ltd/nestjs-outlook/commit/884116059111f55f660067263799dba88be3fdcc))
+
 ## [5.4.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.4.0...v5.4.1) (2026-02-10)
 
 
