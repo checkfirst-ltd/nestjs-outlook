@@ -18,6 +18,130 @@ export class CalendarController {
     private readonly lifecycleEventHandler: LifecycleEventHandlerService,
   ) {}
 
+ /**
+   * Webhook endpoint for Outlook calendar notifications
+   * 
+   * This endpoint receives notifications when calendar events are changed in Outlook
+   * and handles Microsoft Graph validation requests.
+   * 
+   * It follows Microsoft's best practices for webhook implementations:
+   * - Responds within 3 seconds or returns 202 Accepted for long-running processes
+   * - Properly handles validation requests
+   * - Returns appropriate HTTP status codes
+   * 
+   * @see https://learn.microsoft.com/en-us/graph/change-notifications-delivery-webhooks
+   */
+  @Post('webhook/notification')
+  @HttpCode(200)
+  @ApiResponse({
+    status: 200,
+    description: 'Webhook validation or notification processed successfully',
+  })
+  @ApiResponse({
+    status: 202,
+    description: 'Notification accepted for processing',
+  })
+  @ApiResponse({
+    status: 500,
+    description: 'Server error processing the notification',
+  })
+  @ApiQuery({
+    name: 'validationToken',
+    required: false,
+    description: 'Token sent by Microsoft Graph to validate the webhook endpoint',
+  })
+  @ApiBody({
+    description: 'Microsoft Graph webhook notification payload',
+    type: OutlookWebhookNotificationDto,
+    required: false,
+  })
+  async handleCalendarWebhookNotification(
+    @Query('validationToken') validationToken: string,
+    @Body() notificationBody: OutlookWebhookNotificationDto,
+    @Req() req: Request,
+    @Res() res: Response,
+  ) {
+    // Handle Microsoft Graph endpoint validation
+    if (validationToken) {
+      this.logger.log('Handling Microsoft Graph validation request');
+      
+      // According to Microsoft's docs, we need to return the decoded token as plain text
+      const decodedToken = decodeURIComponent(validationToken);
+      res.set('Content-Type', 'text/plain; charset=utf-8');
+      res.send(decodedToken);
+      return;
+    }
+
+    // Process notification
+    try {
+      this.logger.debug(`Received webhook notification: ${JSON.stringify(notificationBody)}`);
+
+      // Early response with 202 Accepted if we have multiple notifications
+      // This follows Microsoft's best practice to avoid timing out on the response
+      if (Array.isArray(notificationBody.value) && notificationBody.value.length > 2) {
+        this.logger.log(`Received batch of ${notificationBody.value.length.toString()} notifications, responding with 202 Accepted`);
+        res.status(202).json({
+          success: true,
+          message: 'Notifications accepted for processing',
+        });
+
+        if (Array.isArray(notificationBody.value) && notificationBody.value.length > 0) {
+          for (const item of notificationBody.value) {
+            await this.calendarService.handleOutlookWebhookV2({
+              subscriptionId: item.subscriptionId,
+              subscriptionExpirationDateTime: item.subscriptionExpirationDateTime,
+              changeType: item.changeType as ChangeType,
+              resource: item.resource,
+              resourceData: item.resourceData,
+              clientState: item.clientState,
+              tenantId: item.tenantId,
+            });
+          }
+          res.json({
+            success: true,
+            message: `Notifications accepted for processing`,
+          });
+          return;
+        }
+      }
+
+      // For smaller batches, process synchronously
+      if (Array.isArray(notificationBody.value) && notificationBody.value.length > 0) {
+        for (const item of notificationBody.value) {
+          await this.calendarService.handleOutlookWebhookV2({
+            subscriptionId: item.subscriptionId,
+            subscriptionExpirationDateTime: item.subscriptionExpirationDateTime,
+            changeType: item.changeType as ChangeType,
+            resource: item.resource,
+            resourceData: item.resourceData,
+            clientState: item.clientState,
+            tenantId: item.tenantId,
+          });
+        }
+        res.json({
+          success: true,
+          message: `Processed ${notificationBody.value.length.toString()} notifications`,
+        });
+        return;
+      }
+
+      // Handle empty or unexpected notification format
+      this.logger.warn('Received webhook notification with unexpected format');
+      res.json({
+        success: true,
+        message: `Received webhook notification with unexpected format`,
+      });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      this.logger.error(`Error processing webhook notification: ${errorMessage}`, errorStack);
+      res.status(500).json({
+        success: false,
+        message: 'Error processing webhook notification',
+      });
+    }
+  }
+
   /**
    * Webhook endpoint for Outlook calendar notifications
    * 

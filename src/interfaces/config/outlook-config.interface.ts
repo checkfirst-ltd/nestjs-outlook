@@ -22,4 +22,9 @@ export interface MicrosoftOutlookConfig {
    * The base path of the backend. e.g. api/v1
    */
   basePath?: string;
+  /**
+   * The path for the calendar webhook endpoint. e.g. /calendar/webhook
+   * Defaults to /calendar/webhook
+   */
+  calendarWebhookPath?: string;
 }
