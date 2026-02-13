@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.6.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.5.0...v5.6.0) (2026-02-13)
+
+
+### Features
+
+* recurring event handlers' ([#88](https://github.com/checkfirst-ltd/nestjs-outlook/issues/88)) ([a93f713](https://github.com/checkfirst-ltd/nestjs-outlook/commit/a93f7132141ca55ea7b409dc3aa7cd0a71b4b12a))
+
 ## [5.5.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.4.1...v5.5.0) (2026-02-12)
 
 
