@@ -3,6 +3,7 @@
 // Export services
 export * from './services/auth/microsoft-auth.service';
 export * from './services/calendar/calendar.service';
+export * from './services/calendar/recurrence.service';
 export * from './services/email/email.service';
 export * from './services/shared/user-id-converter.service';
 export * from './services/subscription/microsoft-subscription.service';
@@ -13,6 +14,7 @@ export * from './microsoft-outlook.module';
 // Export interfaces
 export * from './interfaces/outlook/token-response.interface';
 export * from './interfaces/config/outlook-config.interface';
+export * from './interfaces/recurrence.interfaces';
 
 // Export enums
 export * from './enums/permission-scope.enum';
