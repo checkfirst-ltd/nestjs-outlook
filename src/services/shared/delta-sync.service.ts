@@ -658,7 +658,7 @@ export class DeltaSyncService {
    * @param deltaLink - The delta link from Microsoft Graph
    * @private This method is for internal use only
    */
-  private async saveDeltaLink(
+  async saveDeltaLink(
     internalUserId: number,
     resourceType: ResourceType,
     deltaLink: string

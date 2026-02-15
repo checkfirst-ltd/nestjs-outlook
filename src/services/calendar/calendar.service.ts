@@ -1313,6 +1313,7 @@ export class CalendarService {
    * @param dateRange Optional date range for calendar delta queries (only used on initialization)
    * @param saveDeltaLink Whether to save the delta link to database (default: true). Set to false for one-time windowed imports.
    * @yields Sorted batches of events (one batch per Microsoft Graph page)
+   * @returns Final delta link (null if not available)
    */
   async *streamCalendarChanges(
     externalUserId: string,
@@ -1322,26 +1323,25 @@ export class CalendarService {
       endDate: Date;
     },
     saveDeltaLink: boolean = true
-  ): AsyncGenerator<Event[], void, unknown> {
+  ): AsyncGenerator<Event[], string | null, unknown> {
     const client = await this.getAuthenticatedClient(externalUserId);
     const requestUrl = "/me/events/delta";
 
     try {
       this.logger.log(`[streamCalendarChanges] Starting stream for user ${externalUserId} (saveDeltaLink: ${saveDeltaLink})`);
 
-      for await (const batch of this.deltaSyncService.streamDeltaChanges(
+      const deltaLink = yield* this.deltaSyncService.streamDeltaChanges(
         client,
         requestUrl,
         externalUserId,
         forceReset,
         dateRange,
         saveDeltaLink
-      )) {
-        this.logger.debug(`[streamCalendarChanges] Yielding batch of ${batch.length} events for user ${externalUserId}`);
-        yield batch as Event[];
-      }
+      );
 
-      this.logger.log(`[streamCalendarChanges] Completed streaming for user ${externalUserId}`);
+      this.logger.log(`[streamCalendarChanges] Completed streaming for user ${externalUserId}, deltaLink: ${deltaLink ? 'received' : 'none'}`);
+
+      return deltaLink;
     } catch (error) {
       this.logger.error(`[streamCalendarChanges] Error streaming delta changes:`, error instanceof Error ? error.message : String(error));
       throw error;
@@ -1357,6 +1357,17 @@ export class CalendarService {
         done(null, accessToken);
       },
     });
+  }
+
+  /**
+   * Save delta link for calendar resource
+   * @param externalUserId External user ID
+   * @param deltaLink Delta link to save
+   */
+  async saveDeltaLink(externalUserId: string, deltaLink: string): Promise<void> {
+    const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
+    await this.deltaLinkRepository.saveDeltaLink(internalUserId, ResourceType.CALENDAR, deltaLink);
+    this.logger.log(`[saveDeltaLink] Saved delta link for user ${externalUserId} (internal: ${internalUserId})`);
   }
 
   async getEventDetails(
@@ -1728,12 +1739,19 @@ export class CalendarService {
       const startDate = options?.startDate ?? new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
       const endDate = options?.endDate ?? new Date(now.getFullYear(), now.getMonth() + 6, now.getDate());
 
+      // Microsoft Graph API's endDateTime parameter is EXCLUSIVE (only returns occurrences starting BEFORE this time).
+      // To include occurrences that happen ON the end date, we add 1 day to make it inclusive.
+      // Example: For a weekly Tuesday series ending Jan 28, without this adjustment, the Jan 28 occurrence
+      // (starting at 10:00 AM) would be excluded because it doesn't start before midnight Jan 28.
+      const inclusiveEndDate = new Date(endDate);
+      inclusiveEndDate.setDate(inclusiveEndDate.getDate() + 1);
+
       this.logger.log(
-        `[getRecurringEventInstances] Fetching instances for series ${seriesMasterId} from ${startDate.toISOString()} to ${endDate.toISOString()}`
+        `[getRecurringEventInstances] Fetching instances for series ${seriesMasterId} from ${startDate.toISOString()} to ${endDate.toISOString()} (API endDateTime: ${inclusiveEndDate.toISOString()})`
       );
 
       let nextLink: string | undefined =
-        `/me/events/${seriesMasterId}/instances?startDateTime=${startDate.toISOString()}&endDateTime=${endDate.toISOString()}&$top=${batchSize}`;
+        `/me/events/${seriesMasterId}/instances?startDateTime=${startDate.toISOString()}&endDateTime=${inclusiveEndDate.toISOString()}&$top=${batchSize}`;
 
       const buffer: Event[] = [];
       let totalFetched = 0;
