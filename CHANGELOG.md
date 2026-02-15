@@ -1,5 +1,16 @@
 # Changelog
 
+## [6.0.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.6.0...v6.0.0) (2026-02-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* return the delta link after dry run of delta changes ([#90](https://github.com/checkfirst-ltd/nestjs-outlook/issues/90))
+
+### Features
+
+* return the delta link after dry run of delta changes ([#90](https://github.com/checkfirst-ltd/nestjs-outlook/issues/90)) ([39c785f](https://github.com/checkfirst-ltd/nestjs-outlook/commit/39c785f48d95498c44641e03aed3b6dee742fc92))
+
 ## [5.6.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.5.0...v5.6.0) (2026-02-13)
 
 
