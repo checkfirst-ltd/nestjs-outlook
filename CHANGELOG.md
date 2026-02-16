@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.1.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v6.0.0...v6.1.0) (2026-02-16)
+
+
+### Features
+
+* Add per-user rate limiter for better control ([#92](https://github.com/checkfirst-ltd/nestjs-outlook/issues/92)) ([919334e](https://github.com/checkfirst-ltd/nestjs-outlook/commit/919334effbc53c02c26882277190357c10979105))
+
 ## [6.0.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v5.6.0...v6.0.0) (2026-02-15)
 
 
