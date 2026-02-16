@@ -21,6 +21,7 @@ import { ResourceType } from "../../enums/resource-type.enum";
 import { MicrosoftSubscriptionService } from "../subscription/microsoft-subscription.service";
 import { executeGraphApiCall } from "../../utils/outlook-api-executor.util";
 import { OutlookWebhookSubscription } from "../../entities/outlook-webhook-subscription.entity";
+import { GraphRateLimiterService } from "../shared/graph-rate-limiter.service";
 
 // Event type constants
 const OUTLOOK_EVENT_CREATED = OutlookEventTypes.EVENT_CREATED;
@@ -81,7 +82,8 @@ export class CalendarService {
     private readonly microsoftUserRepository: Repository<MicrosoftUser>,
     private readonly deltaSyncService: DeltaSyncService,
     private readonly userIdConverter: UserIdConverterService,
-    private readonly subscriptionService: MicrosoftSubscriptionService
+    private readonly subscriptionService: MicrosoftSubscriptionService,
+    private readonly rateLimiter: GraphRateLimiterService
   ) {}
 
   /**
@@ -129,6 +131,9 @@ export class CalendarService {
     externalUserId: string,
     calendarId: string
   ): Promise<{ event: Event }> {
+    // Rate limit before making request
+    await this.rateLimiter.acquirePermit(externalUserId);
+
     try {
       // Get a valid access token for this user
       const accessToken =
@@ -159,6 +164,8 @@ export class CalendarService {
       throw new Error(
         `Failed to create Outlook calendar event: ${errorMessage}`
       );
+    } finally {
+      this.rateLimiter.releasePermit(externalUserId);
     }
   }
 
@@ -176,6 +183,9 @@ export class CalendarService {
     externalUserId: string,
     calendarId: string
   ): Promise<{ event: Event }> {
+    // Rate limit before making request
+    await this.rateLimiter.acquirePermit(externalUserId);
+
     try {
       // Get a valid access token for this user
       const accessToken =
@@ -207,6 +217,8 @@ export class CalendarService {
       throw new Error(
         `Failed to update Outlook calendar event: ${errorMessage}`
       );
+    } finally {
+      this.rateLimiter.releasePermit(externalUserId);
     }
   }
 
@@ -215,6 +227,9 @@ export class CalendarService {
     externalUserId: string,
     calendarId: string
   ): Promise<void> {
+    // Rate limit before making request
+    await this.rateLimiter.acquirePermit(externalUserId);
+
     try {
       // Get a valid access token for this user
       const internalUserId = await this.userIdConverter.toInternalUserId(externalUserId);
@@ -255,6 +270,8 @@ export class CalendarService {
       throw new Error(
         `Failed to delete Outlook calendar event: ${errorMessage}`
       );
+    } finally {
+      this.rateLimiter.releasePermit(externalUserId);
     }
   }
 
@@ -307,24 +324,27 @@ export class CalendarService {
       for (let i = 0; i < events.length; i += BATCH_SIZE) {
         const batchEvents = events.slice(i, i + BATCH_SIZE);
 
-        // Build batch request payload
-        const batchPayload: BatchRequestPayload = {
-          requests: batchEvents.map((event, index) => ({
-            id: `${index}`,
-            method: 'POST',
-            url: `/me/calendars/${calendarId}/events`,
-            body: event,
-            headers: {
-              'Content-Type': 'application/json',
-            },
-          })),
-        };
-
-        this.logger.log(
-          `Creating batch of ${batchEvents.length} events in calendar ${calendarId} for user ${externalUserId}`
-        );
+        // Rate limit before making batch request
+        await this.rateLimiter.acquirePermit(externalUserId);
 
         try {
+          // Build batch request payload
+          const batchPayload: BatchRequestPayload = {
+            requests: batchEvents.map((event, index) => ({
+              id: `${index}`,
+              method: 'POST',
+              url: `/me/calendars/${calendarId}/events`,
+              body: event,
+              headers: {
+                'Content-Type': 'application/json',
+              },
+            })),
+          };
+
+          this.logger.log(
+            `Creating batch of ${batchEvents.length} events in calendar ${calendarId} for user ${externalUserId}`
+          );
+
           // Execute batch request with retry logic
           const batchResponse = await retryWithBackoff(
             async () => {
@@ -385,6 +405,8 @@ export class CalendarService {
           this.logger.error(
             `Batch creation failed for ${batchEvents.length} events: ${errorMessage}`
           );
+        } finally {
+          this.rateLimiter.releasePermit(externalUserId);
         }
       }
 
@@ -1410,6 +1432,11 @@ export class CalendarService {
    * This method uses the Microsoft Graph /$batch endpoint to fetch up to 20 events
    * in a single HTTP request, significantly improving performance over individual calls.
    *
+   * Enhanced with:
+   * - Per-user rate limiting to prevent 429 errors
+   * - Automatic retry of individual 429s within batch responses
+   * - Retry-After header support for cooldown periods
+   *
    * @param eventIds - Array of event IDs to fetch (max 20 per Microsoft Graph limit)
    * @param externalUserId - External user ID
    * @returns Array of successfully fetched events
@@ -1424,13 +1451,31 @@ export class CalendarService {
    * @remarks
    * - Maximum 20 events per batch (Microsoft Graph limit)
    * - Handles partial failures gracefully (404s are logged, not thrown)
-   * - Only returns events with successful responses (status 200)
-   * - Rate limiting (429) will throw an error
-   * - Uses parallel batch mode for maximum performance
+   * - Retries individual 429s up to 2 times per event
+   * - Uses per-user rate limiting (4 req/sec, 10k req/10min)
    */
   async getEventsBatch(
     eventIds: string[],
     externalUserId: string
+  ): Promise<Event[]> {
+    return this.getEventsBatchInternal(eventIds, externalUserId, new Map());
+  }
+
+  /**
+   * Internal implementation of getEventsBatch with retry tracking
+   *
+   * @param eventIds - Event IDs to fetch
+   * @param externalUserId - External user ID
+   * @param retryCount - Map tracking retry attempts per event ID
+   * @param maxRetries - Maximum retries per event (default: 2)
+   * @returns Successfully fetched events
+   * @private
+   */
+  private async getEventsBatchInternal(
+    eventIds: string[],
+    externalUserId: string,
+    retryCount: Map<string, number>,
+    maxRetries = 2
   ): Promise<Event[]> {
     if (eventIds.length === 0) {
       return [];
@@ -1438,9 +1483,12 @@ export class CalendarService {
 
     if (eventIds.length > 20) {
       this.logger.warn(
-        `getEventsBatch called with ${eventIds.length} events, exceeding Microsoft Graph limit of 20. Only first 20 will be fetched.`
+        `[getEventsBatch] Called with ${eventIds.length} events, exceeding limit. Only first 20 will be fetched.`
       );
     }
+
+    // Rate limit BEFORE making batch request
+    await this.rateLimiter.acquirePermit(externalUserId);
 
     try {
       // Get a valid access token for this user
@@ -1488,6 +1536,7 @@ export class CalendarService {
 
       // Process responses
       const events: Event[] = [];
+      const rateLimitedEventIds: string[] = [];
       let successCount = 0;
       let notFoundCount = 0;
       let errorCount = 0;
@@ -1505,16 +1554,17 @@ export class CalendarService {
           );
           notFoundCount++;
         } else if (batchResponse.status === 429) {
-          // Rate limited within batch response - log warning but continue
-          // (outer executeGraphApiCall should handle retries for entire batch)
+          // Individual event rate limited - queue for retry
+          rateLimitedEventIds.push(eventId);
           this.logger.warn(
-            `[getEventsBatch] Individual event ${eventId} rate limited (429) within batch response`
+            `[getEventsBatch] Event ${eventId} rate limited (429) within batch response`
           );
           errorCount++;
         } else {
           // Other errors - log and continue
           this.logger.error(
-            `[getEventsBatch] Failed to fetch event ${eventId}: status ${batchResponse.status}, body: ${JSON.stringify(batchResponse.body)}`
+            `[getEventsBatch] Event ${eventId} failed: status ${batchResponse.status}, ` +
+            `body: ${JSON.stringify(batchResponse.body)}`
           );
           errorCount++;
         }
@@ -1525,6 +1575,47 @@ export class CalendarService {
         `success=${successCount}, notFound=${notFoundCount}, errors=${errorCount}`
       );
 
+      // Retry rate-limited events (with per-event retry limit)
+      if (rateLimitedEventIds.length > 0) {
+        const retryableEvents = rateLimitedEventIds.filter(id => {
+          const count = retryCount.get(id) || 0;
+          return count < maxRetries;
+        });
+
+        if (retryableEvents.length > 0) {
+          // Extract Retry-After from response headers if present
+          const retryAfter = this.extractRetryAfterFromResponse(response);
+          if (retryAfter) {
+            this.rateLimiter.handleRateLimitResponse(externalUserId, retryAfter);
+          }
+
+          // Update retry counts
+          retryableEvents.forEach(id => {
+            retryCount.set(id, (retryCount.get(id) || 0) + 1);
+          });
+
+          const maxAttempt = Math.max(...retryableEvents.map(id => retryCount.get(id) || 0));
+          this.logger.log(
+            `[getEventsBatch] Retrying ${retryableEvents.length} rate-limited events ` +
+            `(attempt ${maxAttempt}/${maxRetries})`
+          );
+
+          // Recursive retry with updated counts
+          const retriedEvents = await this.getEventsBatchInternal(
+            retryableEvents,
+            externalUserId,
+            retryCount,
+            maxRetries
+          );
+
+          events.push(...retriedEvents);
+        } else {
+          this.logger.error(
+            `[getEventsBatch] ${rateLimitedEventIds.length} events exceeded max retries - DATA LOSS WARNING`
+          );
+        }
+      }
+
       return events;
     } catch (error) {
       const errorMessage =
@@ -1533,7 +1624,31 @@ export class CalendarService {
         `[getEventsBatch] Batch request failed for user ${externalUserId}: ${errorMessage}`
       );
       throw error;
+    } finally {
+      // Always release permit
+      this.rateLimiter.releasePermit(externalUserId);
     }
+  }
+
+  /**
+   * Extract Retry-After header from batch response
+   * @param response - Axios response from batch request
+   * @returns Retry-After seconds, or null if not present
+   * @private
+   */
+  private extractRetryAfterFromResponse(
+    response: { headers?: Record<string, unknown> }
+  ): number | null {
+    try {
+      const retryAfter = response.headers?.['retry-after'];
+      if (typeof retryAfter === 'string' || typeof retryAfter === 'number') {
+        const parsed = parseInt(String(retryAfter), 10);
+        return !isNaN(parsed) ? Math.max(parsed, 5) : null;
+      }
+    } catch (_error) {
+      this.logger.debug('[extractRetryAfterFromResponse] Failed to extract Retry-After header');
+    }
+    return null;
   }
 
   /**

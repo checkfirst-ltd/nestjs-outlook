@@ -22,6 +22,7 @@ import { UserIdConverterService } from "./services/shared/user-id-converter.serv
 import { LifecycleEventHandlerService } from "./services/calendar/lifecycle-event-handler.service";
 import { RecurrenceService } from "./services/calendar/recurrence.service";
 import { MicrosoftSubscriptionService } from "./services/subscription/microsoft-subscription.service";
+import { GraphRateLimiterService } from "./services/shared/graph-rate-limiter.service";
 
 export const { ConfigurableModuleClass, MODULE_OPTIONS_TOKEN } =
   new ConfigurableModuleBuilder<MicrosoftOutlookConfig>()
@@ -61,6 +62,7 @@ export const { ConfigurableModuleClass, MODULE_OPTIONS_TOKEN } =
     LifecycleEventHandlerService,
     RecurrenceService,
     MicrosoftSubscriptionService,
+    GraphRateLimiterService,
   ],
   exports: [
     CalendarService,
@@ -71,6 +73,7 @@ export const { ConfigurableModuleClass, MODULE_OPTIONS_TOKEN } =
     DeltaSyncService,
     UserIdConverterService,
     MicrosoftSubscriptionService,
+    GraphRateLimiterService,
   ],
 })
 export class MicrosoftOutlookModule extends ConfigurableModuleClass {}

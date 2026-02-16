@@ -7,6 +7,7 @@ export * from './services/calendar/recurrence.service';
 export * from './services/email/email.service';
 export * from './services/shared/user-id-converter.service';
 export * from './services/subscription/microsoft-subscription.service';
+export * from './services/shared/graph-rate-limiter.service';
 
 // Export module
 export * from './microsoft-outlook.module';
