@@ -3,8 +3,10 @@ import { Client } from "@microsoft/microsoft-graph-client";
 import { OutlookDeltaLinkRepository } from "../../repositories/outlook-delta-link.repository";
 import { ResourceType } from "../../enums/resource-type.enum";
 import { Event, Message } from "../../types";
-import { delay, retryWithBackoff } from "../../utils/retry.util";
+import { delay } from "../../utils/retry.util";
+import { executeGraphApiCall } from "../../utils/outlook-api-executor.util";
 import { UserIdConverterService } from "./user-id-converter.service";
+import { GraphRateLimiterService } from "./graph-rate-limiter.service";
 
 export interface DeltaItem {
   lastModifiedDateTime?: string;
@@ -43,7 +45,8 @@ export class DeltaSyncService {
 
   constructor(
     private readonly deltaLinkRepository: OutlookDeltaLinkRepository,
-    private readonly userIdConverter: UserIdConverterService
+    private readonly userIdConverter: UserIdConverterService,
+    private readonly rateLimiter: GraphRateLimiterService
   ) {}
 
   private handleDeltaResponse<T extends DeltaItem>(
@@ -202,7 +205,7 @@ export class DeltaSyncService {
    *
    * @param client Microsoft Graph client
    * @param startUrl Initial URL to start fetching from
-   * @param userId User ID for logging
+   * @param userId User ID (internal user ID) for logging and rate limiting
    * @yields Object with page items, delta link (if last page), and isLastPage flag
    */
   private async *fetchDeltaPagesCore(
@@ -220,14 +223,19 @@ export class DeltaSyncService {
     while (currentUrl) {
       pageCount++;
 
-      // Fetch page with retry logic (retry utility handles its own logging)
-      const response = (await retryWithBackoff(
+      // Acquire rate limit permit before making request (preventive rate limiting)
+      await this.rateLimiter.acquirePermit(userId.toString());
+
+      // Fetch page with retry logic and error handling
+      // Note: executeGraphApiCall handles 429 errors with Retry-After header
+      // The rate limiter above helps prevent hitting 429 in the first place
+      const response = (await executeGraphApiCall(
         () => client.api(currentUrl).get(),
         {
           maxRetries: this.MAX_RETRIES,
           retryDelayMs: this.RETRY_DELAY_MS,
           logger: this.logger,
-          operationName: `fetchDeltaPage-${pageCount}-user-${userId}`,
+          resourceName: `deltaPage-${pageCount}-user-${userId}`,
         }
       )) as DeltaResponse<DeltaItem>;
 
@@ -272,7 +280,7 @@ export class DeltaSyncService {
    *
    * @param client Microsoft Graph client
    * @param startUrl Initial URL to start fetching from
-   * @param userId User ID for logging
+   * @param userId User ID (internal user ID) for logging and rate limiting
    * @returns Object with all items and the final delta link
    */
   private async fetchAllDeltaPages(
