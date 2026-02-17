@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.1.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v6.1.0...v6.1.1) (2026-02-17)
+
+
+### Bug Fixes
+
+* webhook notification endpoint ([#94](https://github.com/checkfirst-ltd/nestjs-outlook/issues/94)) ([01144f1](https://github.com/checkfirst-ltd/nestjs-outlook/commit/01144f10a546144e973ed8f26e480ff543e40967))
+
 ## [6.1.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v6.0.0...v6.1.0) (2026-02-16)
 
 
