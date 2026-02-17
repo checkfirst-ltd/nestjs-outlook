@@ -1816,8 +1816,8 @@ export class CalendarService {
         userId: subscription.userId,
         subscriptionId: subscription.subscriptionId,
         clientState: subscription.clientState,
-        resource: subscription.resource,
-        changeType: subscription.changeType,
+        resource: notificationItem,
+        changeType: notificationItem.changeType,
       });
 
       return { success: true, message: 'Notification processed' };
