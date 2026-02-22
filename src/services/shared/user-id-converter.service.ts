@@ -32,8 +32,8 @@ export class UserIdConverterService {
    * // Returns: 42 (database primary key)
    * ```
    */
-  async toInternalUserId(userId: string | number): Promise<number> {
-    return typeof userId === 'string' ? await this.externalToInternal(userId) : userId;
+  async toInternalUserId(userId: string | number, {cache = true}: {cache?: boolean} = {}): Promise<number> {
+    return typeof userId === 'string' ? await this.externalToInternal(userId, {cache}) : userId;
   }
 
   /**
@@ -50,10 +50,10 @@ export class UserIdConverterService {
    * // Returns: 42 (database primary key)
    * ```
    */
-  async externalToInternal(externalUserId: string): Promise<number> {
+  async externalToInternal(externalUserId: string, {cache = true}: {cache?: boolean} = {}): Promise<number> {
     const user = await this.microsoftUserRepository.findOne({
       where: { externalUserId },
-      cache: 300000,
+      cache: cache ? 300000 : false,
     });
 
     if (!user) {
@@ -82,10 +82,10 @@ export class UserIdConverterService {
    * // Returns: "7" (your app's user ID)
    * ```
    */
-  async internalToExternal(internalUserId: number): Promise<string> {
+  async internalToExternal(internalUserId: number, {cache = true}: {cache?: boolean} = {}): Promise<string> {
     const user = await this.microsoftUserRepository.findOne({
       where: { id: internalUserId },
-      cache: 300000,
+      cache: cache ? 300000 : false,
     });
 
     if (!user) {

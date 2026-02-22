@@ -325,8 +325,8 @@ export class MicrosoftAuthService {
    * @param includeInactive - If true, includes inactive users in the search (default: false)
    * @returns Microsoft user entity or null if not found
    */
-  private async getMicrosoftUser(params: { internalUserId?: number; externalUserId?: string; includeInactive?: boolean }): Promise<MicrosoftUser | null> {
-    const { internalUserId, externalUserId, includeInactive = false } = params;
+  private async getMicrosoftUser(params: { internalUserId?: number; externalUserId?: string; includeInactive?: boolean; cache?: boolean }): Promise<MicrosoftUser | null> {
+    const { internalUserId, externalUserId, includeInactive = false, cache = true } = params;
 
     if (!internalUserId && !externalUserId) {
       throw new Error('Either internalUserId or externalUserId must be provided');
@@ -349,7 +349,7 @@ export class MicrosoftAuthService {
 
     return await this.microsoftUserRepository.findOne({
       where: whereCondition,
-      cache: true,
+      cache,
     });
   }
 
@@ -360,9 +360,9 @@ export class MicrosoftAuthService {
    * @param params.includeInactive - If true, allows getting tokens for inactive users (useful for cleanup operations)
    * @returns Valid access token string
    */
-  async getUserAccessToken(params: { internalUserId?: number; externalUserId?: string; includeInactive?: boolean }): Promise<string> {
+  async getUserAccessToken(params: { internalUserId?: number; externalUserId?: string; includeInactive?: boolean; cache?: boolean }): Promise<string> {
     try {
-      const { internalUserId, externalUserId, includeInactive = false } = params;
+      const { internalUserId, externalUserId, includeInactive = false, cache = true } = params;
 
       // Guard clause
       if (!internalUserId && !externalUserId) {
@@ -373,7 +373,8 @@ export class MicrosoftAuthService {
       const user = await this.getMicrosoftUser({
         internalUserId,
         externalUserId,
-        includeInactive
+        includeInactive,
+        cache
       });
 
       // Guard clause

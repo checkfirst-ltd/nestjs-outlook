@@ -698,7 +698,7 @@ export class CalendarService {
     externalUserId: string
   ): Promise<Subscription> {
     // Convert external user ID to internal database ID
-    const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
+    const internalUserId = await this.userIdConverter.externalToInternal(externalUserId, {cache: false});
 
     const correlationId = `webhook-${internalUserId}-${Date.now()}`;
     this.logger.log(`[${correlationId}] Starting webhook subscription creation for user ${internalUserId}`);
@@ -708,7 +708,7 @@ export class CalendarService {
       this.logger.log(`[${correlationId}] Fetching access token for user ${internalUserId}`);
 
       const accessToken =
-        await this.microsoftAuthService.getUserAccessToken({internalUserId});
+        await this.microsoftAuthService.getUserAccessToken({internalUserId, cache: false});
 
       this.logger.log(`[${correlationId}] Successfully obtained access token`);
 
