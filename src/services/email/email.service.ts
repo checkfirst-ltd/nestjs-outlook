@@ -11,7 +11,7 @@ import { OutlookResourceData } from '../../dto/outlook-webhook-notification.dto'
 import { OutlookEventTypes } from '../../enums/event-types.enum';
 import { MicrosoftUser } from '../../entities/microsoft-user.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, Not } from 'typeorm';
 import { UserIdConverterService } from '../shared/user-id-converter.service';
 
 @Injectable()
@@ -207,16 +207,31 @@ export class EmailService {
         `[${correlationId}] Deactivated email subscription in local database`
       );
 
-      // Mark user as inactive
-      const updateCriteria = typeof userId === 'string' ? { externalUserId: userId } : { id: userId };
-      await this.microsoftUserRepository.update(
-        updateCriteria,
-        { isActive: false }
-      );
+      // Check if user has OTHER active subscriptions before marking inactive
+      const otherActiveSubscriptions = await this.webhookSubscriptionRepository.count({
+        where: {
+          userId: internalUserId,
+          isActive: true,
+          subscriptionId: Not(subscriptionId)
+        }
+      });
 
-      this.logger.debug(
-        `[${correlationId}] Marked Microsoft user as inactive (${typeof userId === 'string' ? 'externalUserId' : 'id'}: ${userId})`
-      );
+      // Only mark user inactive if this was the LAST subscription
+      if (otherActiveSubscriptions === 0) {
+        const updateCriteria = typeof userId === 'string' ? { externalUserId: userId } : { id: userId };
+        await this.microsoftUserRepository.update(
+          updateCriteria,
+          { isActive: false }
+        );
+
+        this.logger.debug(
+          `[${correlationId}] Marked Microsoft user as inactive - no other subscriptions remain`
+        );
+      } else {
+        this.logger.debug(
+          `[${correlationId}] User still has ${otherActiveSubscriptions} other active subscription(s), keeping user active`
+        );
+      }
 
       this.logger.log(
         `[${correlationId}] Successfully deleted email subscription ${subscriptionId}`
