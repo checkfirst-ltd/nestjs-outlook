@@ -1,5 +1,13 @@
 # Changelog
 
+## [6.1.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v6.1.1...v6.1.2) (2026-02-22)
+
+
+### Bug Fixes
+
+* email/calendar unsubscribing create orphaned renewal for the other ([#98](https://github.com/checkfirst-ltd/nestjs-outlook/issues/98)) ([c384dd9](https://github.com/checkfirst-ltd/nestjs-outlook/commit/c384dd9be4e5ea52a2f789b47399d9f22ee30f38))
+* initial subscription caching race condition ([#96](https://github.com/checkfirst-ltd/nestjs-outlook/issues/96)) ([ca4c45b](https://github.com/checkfirst-ltd/nestjs-outlook/commit/ca4c45bc0c3c460ecb7ed0a00db35fa56608e181))
+
 ## [6.1.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v6.1.0...v6.1.1) (2026-02-17)
 
 
