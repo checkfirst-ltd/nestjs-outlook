@@ -15,7 +15,6 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { MicrosoftUser } from "../../entities/microsoft-user.entity";
 import { Repository, Not } from "typeorm";
 import { DeltaSyncService } from "../shared/delta-sync.service";
-import { delay, retryWithBackoff, is404Error } from "../../utils/retry.util";
 import { UserIdConverterService } from "../shared/user-id-converter.service";
 import { ResourceType } from "../../enums/resource-type.enum";
 import { MicrosoftSubscriptionService } from "../subscription/microsoft-subscription.service";
@@ -88,33 +87,70 @@ export class CalendarService {
 
   /**
    * Get the user's default calendar ID
+   * Caches the calendar ID in the database after first fetch to avoid redundant API calls
    * @param externalUserId - External user ID
    * @returns The default calendar ID
    */
   async getDefaultCalendarId(externalUserId: string): Promise<string> {
     try {
-      // Get a valid access token for this user
-      const accessToken =
-        await this.microsoftAuthService.getUserAccessToken({externalUserId});
+      // Check if we have the calendar ID cached in the database
+      const user = await this.microsoftUserRepository.findOne({
+        where: { externalUserId, isActive: true },
+        cache: true,
+      });
 
-      // Using axios for direct API call
-      const response = await axios.get<Calendar>(
-        "https://graph.microsoft.com/v1.0/me/calendar",
+      if (!user) {
+        throw new Error(`No Microsoft user found for external user ID ${externalUserId}`);
+      }
+
+      // Return cached calendar ID if available
+      if (user.defaultCalendarId) {
+        this.logger.debug(`Using cached calendar ID for user ${externalUserId}`);
+        return user.defaultCalendarId;
+      }
+
+      this.logger.debug(`Fetching calendar ID from Microsoft for user ${externalUserId}`);
+
+      // Get a valid access token (with caching)
+      const accessToken =
+        await this.microsoftAuthService.getUserAccessToken({ externalUserId, cache: true });
+
+      // Acquire rate limit permit before making API call
+      await this.rateLimiter.acquirePermit(externalUserId);
+
+      // Fetch calendar ID from Microsoft Graph API with retry logic
+      const response = await executeGraphApiCall(
+        () => axios.get<Calendar>(
+          "https://graph.microsoft.com/v1.0/me/calendar",
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+          }
+        ),
         {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
+          logger: this.logger,
+          resourceName: `me/calendar for user ${externalUserId}`,
+          maxRetries: 3,
         }
       );
 
-      if (!response.data.id) {
+      if (!response?.data.id) {
         throw new Error("Failed to retrieve calendar ID");
       }
 
-      return response.data.id;
+      const calendarId = response.data.id;
+
+      // Cache the calendar ID in the database
+      user.defaultCalendarId = calendarId;
+      await this.microsoftUserRepository.save(user);
+
+      this.logger.log(`Cached calendar ID for user ${externalUserId}`);
+
+      return calendarId;
     } catch (error) {
-      this.logger.error("Error getting default calendar ID:", error);
+      this.logger.error(`Error getting default calendar ID for user ${externalUserId}:`, error);
       throw new Error("Failed to get calendar ID from Microsoft");
     }
   }
@@ -131,9 +167,6 @@ export class CalendarService {
     externalUserId: string,
     calendarId: string
   ): Promise<{ event: Event }> {
-    // Rate limit before making request
-    await this.rateLimiter.acquirePermit(externalUserId);
-
     try {
       // Get a valid access token for this user
       const accessToken =
@@ -146,10 +179,17 @@ export class CalendarService {
         },
       });
 
-      // Create the event
-      const createdEvent = (await client
-        .api(`/me/calendars/${calendarId}/events`)
-        .post(event)) as Event;
+      // Create the event with retry and rate limiting
+      const createdEvent = (await executeGraphApiCall(
+        () => client.api(`/me/calendars/${calendarId}/events`).post(event),
+        {
+          logger: this.logger,
+          resourceName: `create event in calendar ${calendarId} for user ${externalUserId}`,
+          maxRetries: 3,
+          rateLimiter: this.rateLimiter,
+          userId: externalUserId,
+        }
+      )) as Event;
 
       // Return just the event
       return {
@@ -164,8 +204,6 @@ export class CalendarService {
       throw new Error(
         `Failed to create Outlook calendar event: ${errorMessage}`
       );
-    } finally {
-      this.rateLimiter.releasePermit(externalUserId);
     }
   }
 
@@ -183,9 +221,6 @@ export class CalendarService {
     externalUserId: string,
     calendarId: string
   ): Promise<{ event: Event }> {
-    // Rate limit before making request
-    await this.rateLimiter.acquirePermit(externalUserId);
-
     try {
       // Get a valid access token for this user
       const accessToken =
@@ -200,10 +235,17 @@ export class CalendarService {
 
       this.logger.log(`Updating event ${eventId} in calendar ${calendarId} for user ${externalUserId}`);
 
-      // PATCH the existing event
-      const updatedEvent = (await client
-        .api(`/me/calendars/${calendarId}/events/${eventId}`)
-        .patch(updates)) as Event;
+      // PATCH the existing event with retry and rate limiting
+      const updatedEvent = (await executeGraphApiCall(
+        () => client.api(`/me/calendars/${calendarId}/events/${eventId}`).patch(updates),
+        {
+          logger: this.logger,
+          resourceName: `update event ${eventId} in calendar ${calendarId} for user ${externalUserId}`,
+          maxRetries: 3,
+          rateLimiter: this.rateLimiter,
+          userId: externalUserId,
+        }
+      )) as Event;
 
       return {
         event: updatedEvent,
@@ -217,8 +259,6 @@ export class CalendarService {
       throw new Error(
         `Failed to update Outlook calendar event: ${errorMessage}`
       );
-    } finally {
-      this.rateLimiter.releasePermit(externalUserId);
     }
   }
 
@@ -227,9 +267,6 @@ export class CalendarService {
     externalUserId: string,
     calendarId: string
   ): Promise<void> {
-    // Rate limit before making request
-    await this.rateLimiter.acquirePermit(externalUserId);
-
     try {
       // Get a valid access token for this user
       const internalUserId = await this.userIdConverter.toInternalUserId(externalUserId);
@@ -244,24 +281,19 @@ export class CalendarService {
       });
       this.logger.log(`Deleting event ${event.id} from calendar ${calendarId} for user ${externalUserId}`);
 
-      // Delete the event with retry logic for transient failures
-      await retryWithBackoff(
-        async () => {
-          await client
-            .api(`/me/calendars/${calendarId}/events/${event.id}`)
-            .delete();
-        },
-        { maxRetries: 3, retryDelayMs: 1000 }
+      // Delete the event with retry and rate limiting
+      await executeGraphApiCall(
+        () => client.api(`/me/calendars/${calendarId}/events/${event.id}`).delete(),
+        {
+          logger: this.logger,
+          resourceName: `delete event ${event.id} from calendar ${calendarId} for user ${externalUserId}`,
+          maxRetries: 3,
+          rateLimiter: this.rateLimiter,
+          userId: externalUserId,
+          return404AsNull: true,
+        }
       );
     } catch (error: unknown) {
-      // If the event doesn't exist (404), deletion intent is fulfilled — treat as success
-      if (is404Error(error)) {
-        this.logger.warn(
-          `Outlook calendar event ${event.id} not found (already deleted), treating as successful deletion`
-        );
-        return;
-      }
-
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error";
       this.logger.error(
@@ -270,8 +302,6 @@ export class CalendarService {
       throw new Error(
         `Failed to delete Outlook calendar event: ${errorMessage}`
       );
-    } finally {
-      this.rateLimiter.releasePermit(externalUserId);
     }
   }
 
@@ -345,23 +375,30 @@ export class CalendarService {
             `Creating batch of ${batchEvents.length} events in calendar ${calendarId} for user ${externalUserId}`
           );
 
-          // Execute batch request with retry logic
-          const batchResponse = await retryWithBackoff(
-            async () => {
-              const response = await axios.post<BatchResponsePayload<Event>>(
-                'https://graph.microsoft.com/v1.0/$batch',
-                batchPayload,
-                {
-                  headers: {
-                    Authorization: `Bearer ${accessToken}`,
-                    'Content-Type': 'application/json',
-                  },
-                }
-              );
-              return response.data;
-            },
-            { maxRetries: 3, retryDelayMs: 1000 }
+          // Execute batch request with retry and rate limiting
+          const response = await executeGraphApiCall(
+            () => axios.post<BatchResponsePayload<Event>>(
+              'https://graph.microsoft.com/v1.0/$batch',
+              batchPayload,
+              {
+                headers: {
+                  Authorization: `Bearer ${accessToken}`,
+                  'Content-Type': 'application/json',
+                },
+              }
+            ),
+            {
+              logger: this.logger,
+              resourceName: `batch create ${batchEvents.length} events for user ${externalUserId}`,
+              maxRetries: 3,
+            }
           );
+
+          const batchResponse = response?.data;
+
+          if (!batchResponse) {
+            throw new Error('Batch request returned null response');
+          }
 
           // Process batch results
           batchResponse.responses.forEach((response, batchIndex) => {
@@ -485,23 +522,30 @@ export class CalendarService {
         );
 
         try {
-          // Execute batch request with retry logic
-          const batchResponse = await retryWithBackoff(
-            async () => {
-              const response = await axios.post<BatchResponsePayload<Event>>(
-                'https://graph.microsoft.com/v1.0/$batch',
-                batchPayload,
-                {
-                  headers: {
-                    Authorization: `Bearer ${accessToken}`,
-                    'Content-Type': 'application/json',
-                  },
-                }
-              );
-              return response.data;
-            },
-            { maxRetries: 3, retryDelayMs: 1000 }
+          // Execute batch request with retry and rate limiting
+          const response = await executeGraphApiCall(
+            () => axios.post<BatchResponsePayload<Event>>(
+              'https://graph.microsoft.com/v1.0/$batch',
+              batchPayload,
+              {
+                headers: {
+                  Authorization: `Bearer ${accessToken}`,
+                  'Content-Type': 'application/json',
+                },
+              }
+            ),
+            {
+              logger: this.logger,
+              resourceName: `batch update ${batchUpdates.length} events for user ${externalUserId}`,
+              maxRetries: 3,
+            }
           );
+
+          const batchResponse = response?.data;
+
+          if (!batchResponse) {
+            throw new Error('Batch request returned null response');
+          }
 
           // Process batch results
           batchResponse.responses.forEach((response, batchIndex) => {
@@ -605,23 +649,30 @@ export class CalendarService {
         );
 
         try {
-          // Execute batch request with retry logic
-          const batchResponse = await retryWithBackoff(
-            async () => {
-              const response = await axios.post<BatchResponsePayload>(
-                'https://graph.microsoft.com/v1.0/$batch',
-                batchPayload,
-                {
-                  headers: {
-                    Authorization: `Bearer ${accessToken}`,
-                    'Content-Type': 'application/json',
-                  },
-                }
-              );
-              return response.data;
-            },
-            { maxRetries: 3, retryDelayMs: 1000 }
+          // Execute batch request with retry and rate limiting
+          const response = await executeGraphApiCall(
+            () => axios.post<BatchResponsePayload>(
+              'https://graph.microsoft.com/v1.0/$batch',
+              batchPayload,
+              {
+                headers: {
+                  Authorization: `Bearer ${accessToken}`,
+                  'Content-Type': 'application/json',
+                },
+              }
+            ),
+            {
+              logger: this.logger,
+              resourceName: `batch delete ${batchEventIds.length} events for user ${externalUserId}`,
+              maxRetries: 3,
+            }
           );
+
+          const batchResponse = response?.data;
+
+          if (!batchResponse) {
+            throw new Error('Batch request returned null response');
+          }
 
           // Process batch results
           batchResponse.responses.forEach((response, index) => {
@@ -744,16 +795,27 @@ export class CalendarService {
       );
       // Create the subscription with Microsoft Graph API
       this.logger.log(`[${correlationId}] Sending POST request to Microsoft Graph API`);
-      const response = await axios.post<Subscription>(
-        "https://graph.microsoft.com/v1.0/subscriptions",
-        subscriptionData,
+      const response = await executeGraphApiCall(
+        () => axios.post<Subscription>(
+          "https://graph.microsoft.com/v1.0/subscriptions",
+          subscriptionData,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+          }
+        ),
         {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
+          logger: this.logger,
+          resourceName: `create webhook subscription for user ${internalUserId}`,
+          maxRetries: 3,
         }
       );
+
+      if (!response?.data) {
+        throw new Error('Subscription creation returned null response');
+      }
 
       this.logger.log(
         `[${correlationId}] Created webhook subscription ${response.data.id || "unknown"} for user ${internalUserId}`
@@ -866,17 +928,28 @@ export class CalendarService {
         `[${correlationId}] Calling Microsoft Graph API to renew subscription`
       );
 
-      // Make the request to Microsoft Graph API to renew the subscription
-      const response = await axios.patch<Subscription>(
-        `https://graph.microsoft.com/v1.0/subscriptions/${subscriptionId}`,
-        renewalData,
+      // Make the request to Microsoft Graph API to renew the subscription with retry
+      const response = await executeGraphApiCall(
+        () => axios.patch<Subscription>(
+          `https://graph.microsoft.com/v1.0/subscriptions/${subscriptionId}`,
+          renewalData,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+          }
+        ),
         {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
+          logger: this.logger,
+          resourceName: `renew webhook subscription ${subscriptionId} for user ${internalUserId}`,
+          maxRetries: 3,
         }
       );
+
+      if (!response?.data) {
+        throw new Error('Subscription renewal returned null response');
+      }
 
       this.logger.debug(
         `[${correlationId}] Microsoft Graph API returned status: ${response.status}`
@@ -1416,25 +1489,25 @@ export class CalendarService {
       const accessToken =
         await this.microsoftAuthService.getUserAccessToken({externalUserId});
 
-      const response = await axios.get(
-        `https://graph.microsoft.com/v1.0/${resource}`,
+      const response = await executeGraphApiCall(
+        () => axios.get(
+          `https://graph.microsoft.com/v1.0/${resource}`,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+            },
+          }
+        ),
         {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
+          logger: this.logger,
+          resourceName: `event details for ${resource}`,
+          maxRetries: 3,
+          return404AsNull: true,
         }
       );
 
-      return response.data as Event;
+      return response?.data as Event;
     } catch (error) {
-      // If event deleted (404), return null gracefully
-      if (axios.isAxiosError(error) && error.response?.status === 404) {
-        this.logger.debug(
-          `Event not found (404) for resource ${resource}, likely deleted - returning null`
-        );
-        return null;
-      }
-
       // For other errors, throw
       this.logger.error("Error fetching event details:", error);
       throw error;
@@ -1760,9 +1833,15 @@ export class CalendarService {
       while (nextLink) {
         this.logger.debug(`Fetching page: ${nextLink}`);
 
-        // Fetch with retry logic
-        const response = (await retryWithBackoff(() =>
-          client.api(nextLink as string).get()
+        // Fetch with retry logic and rate limiting
+        const response = (await executeGraphApiCall(
+          () => client.api(nextLink as string).get(),
+          {
+            logger: this.logger,
+            resourceName: `calendarView for user ${externalUserId}`,
+            rateLimiter: this.rateLimiter,
+            userId: externalUserId,
+          }
         )) as { value: Event[]; "@odata.nextLink"?: string };
 
         const items: Event[] = response.value;
@@ -1779,11 +1858,6 @@ export class CalendarService {
         }
 
         nextLink = response["@odata.nextLink"];
-
-        // Small delay between pages for rate limiting
-        if (nextLink) {
-          await delay(200);
-        }
       }
 
       // Yield remaining items in buffer
@@ -1887,8 +1961,14 @@ export class CalendarService {
       let totalFetched = 0;
 
       while (nextLink) {
-        const response = (await retryWithBackoff(() =>
-          client.api(nextLink as string).get()
+        const response = (await executeGraphApiCall(
+          () => client.api(nextLink as string).get(),
+          {
+            logger: this.logger,
+            resourceName: `recurring event instances for series ${seriesMasterId}`,
+            rateLimiter: this.rateLimiter,
+            userId: externalUserId,
+          }
         )) as { value: Event[]; '@odata.nextLink'?: string };
 
         const items: Event[] = response.value;
@@ -1901,9 +1981,6 @@ export class CalendarService {
         }
 
         nextLink = response['@odata.nextLink'];
-        if (nextLink) {
-          await delay(200);
-        }
       }
 
       if (buffer.length > 0) {

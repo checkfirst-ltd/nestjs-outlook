@@ -13,6 +13,7 @@ import { MicrosoftUser } from '../../entities/microsoft-user.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Not } from 'typeorm';
 import { UserIdConverterService } from '../shared/user-id-converter.service';
+import { executeGraphApiCall } from '../../utils/outlook-api-executor.util';
 
 @Injectable()
 export class EmailService {
@@ -52,10 +53,15 @@ export class EmailService {
         },
       });
 
-      // Send the email
-      const sentMessage = await client
-        .api('/me/sendMail')
-        .post({ message }) as Message;
+      // Send the email with retry and rate limiting
+      const sentMessage = await executeGraphApiCall(
+        () => client.api('/me/sendMail').post({ message }),
+        {
+          logger: this.logger,
+          resourceName: `send email for user ${externalUserId}`,
+          maxRetries: 3,
+        }
+      ) as Message;
 
       // Return just the message
       return {
@@ -108,18 +114,29 @@ export class EmailService {
       this.logger.debug(`Creating email webhook subscription with notificationUrl: ${notificationUrl}`);
 
       this.logger.debug(`Subscription data: ${JSON.stringify(subscriptionData)}`);
-      
-      // Create the subscription with Microsoft Graph API
-      const response = await axios.post<Subscription>(
-        'https://graph.microsoft.com/v1.0/subscriptions',
-        subscriptionData,
+
+      // Create the subscription with Microsoft Graph API with retry
+      const response = await executeGraphApiCall(
+        () => axios.post<Subscription>(
+          'https://graph.microsoft.com/v1.0/subscriptions',
+          subscriptionData,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              'Content-Type': 'application/json',
+            },
+          }
+        ),
         {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-          },
-        },
+          logger: this.logger,
+          resourceName: `create email webhook subscription for user ${internalUserId}`,
+          maxRetries: 3,
+        }
       );
+
+      if (!response || !response.data) {
+        throw new Error('Email subscription creation returned null response');
+      }
 
       this.logger.log(`Created email webhook subscription ${response.data.id || 'unknown'} for user ${internalUserId}`);
 
@@ -179,18 +196,26 @@ export class EmailService {
 
       this.logger.debug(`[${correlationId}] Access token obtained`);
 
-      // Make the request to Microsoft Graph API to delete the subscription
+      // Make the request to Microsoft Graph API to delete the subscription with retry
       this.logger.debug(
         `[${correlationId}] Calling Microsoft Graph API to delete email subscription`
       );
 
-      await axios.delete(
-        `https://graph.microsoft.com/v1.0/subscriptions/${subscriptionId}`,
+      await executeGraphApiCall(
+        () => axios.delete(
+          `https://graph.microsoft.com/v1.0/subscriptions/${subscriptionId}`,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+          }
+        ),
         {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
+          logger: this.logger,
+          resourceName: `delete email webhook subscription ${subscriptionId} for user ${internalUserId}`,
+          maxRetries: 3,
+          return404AsNull: true,
         }
       );
 
@@ -343,11 +368,18 @@ export class EmailService {
               },
             });
             
-            // Get the email message details
-            emailData = await client
-              .api(`/me/messages/${messageId}`)
-              .select('id,subject,receivedDateTime,from,toRecipients,ccRecipients,body')
-              .get() as Record<string, unknown>;
+            // Get the email message details with retry
+            emailData = await executeGraphApiCall(
+              () => client
+                .api(`/me/messages/${messageId}`)
+                .select('id,subject,receivedDateTime,from,toRecipients,ccRecipients,body')
+                .get(),
+              {
+                logger: this.logger,
+                resourceName: `email message details for ${messageId}`,
+                maxRetries: 3,
+              }
+            ) as Record<string, unknown>;
               
             this.logger.log(`Retrieved email details for message ID: ${messageId}`);
           }

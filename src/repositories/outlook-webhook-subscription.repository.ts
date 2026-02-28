@@ -89,6 +89,6 @@ export class OutlookWebhookSubscriptionRepository {
   }
 
   async count(options: Parameters<Repository<OutlookWebhookSubscription>['count']>[0]): Promise<number> {
-    return this.repository.count(options);
+    return await this.repository.count(options);
   }
 }

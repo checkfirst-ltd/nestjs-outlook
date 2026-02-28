@@ -167,7 +167,6 @@ export function extractRetryAfterSeconds(error: unknown): number | null {
  * @param options - Retry configuration options
  * @param options.maxRetries - Maximum number of retries (default: 3)
  * @param options.retryDelayMs - Base delay in milliseconds (default: 1000)
- * @param options.retryCount - Current retry count (used internally for recursion)
  * @param options.logger - Optional logger for retry attempts
  * @param options.operationName - Optional name for logging context
  * @returns The result of the operation
@@ -178,67 +177,67 @@ export async function retryWithBackoff<T>(
   options?: {
     maxRetries?: number;
     retryDelayMs?: number;
-    retryCount?: number;
     logger?: { warn: (message: string, context?: Record<string, unknown>) => void };
     operationName?: string;
   }
 ): Promise<T> {
   const maxRetries = options?.maxRetries ?? 3;
   const retryDelayMs = options?.retryDelayMs ?? 1000;
-  const retryCount = options?.retryCount ?? 0;
   const logger = options?.logger;
   const operationName = options?.operationName ?? 'operation';
 
-  try {
-    return await operation();
-  } catch (error) {
-    // Extract error details for logging
-    const errorDetails = extractErrorInfo(error);
+  let lastError: unknown;
 
-    // Don't retry non-retryable errors (401, 403, 404, 410)
-    if (isNonRetryableError(error)) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+
+      // Extract error details for logging
+      const errorDetails = extractErrorInfo(error);
+
+      // Don't retry non-retryable errors (401, 403, 404, 410)
+      if (isNonRetryableError(error)) {
+        if (logger) {
+          logger.warn(`[retryWithBackoff] Non-retryable error for ${operationName}, not retrying`, {
+            statusCode: errorDetails.statusCode,
+            errorCode: errorDetails.code,
+          });
+        }
+        throw error;
+      }
+
+      // If we've exhausted all retries, throw the error
+      if (attempt >= maxRetries) {
+        if (logger) {
+          logger.warn(`[retryWithBackoff] Max retries (${maxRetries}) exceeded for ${operationName}`, {
+            statusCode: errorDetails.statusCode,
+            errorCode: errorDetails.code,
+            errorMessage: errorDetails.message,
+          });
+        }
+        throw error;
+      }
+
+      // Calculate exponential backoff delay
+      const delayMs = retryDelayMs * Math.pow(2, attempt);
+
       if (logger) {
-        logger.warn(`[retryWithBackoff] Non-retryable error for ${operationName}, not retrying`, {
+        logger.warn(`[retryWithBackoff] Retry ${attempt + 1}/${maxRetries} for ${operationName} after ${delayMs}ms`, {
           statusCode: errorDetails.statusCode,
           errorCode: errorDetails.code,
+          errorType: errorDetails.type,
+          delayMs,
         });
       }
-      throw error;
+
+      await delay(delayMs);
     }
-
-    if (retryCount >= maxRetries) {
-      if (logger) {
-        logger.warn(`[retryWithBackoff] Max retries (${maxRetries}) exceeded for ${operationName}`, {
-          statusCode: errorDetails.statusCode,
-          errorCode: errorDetails.code,
-          errorMessage: errorDetails.message,
-        });
-      }
-      throw error;
-    }
-
-    // Calculate exponential backoff delay
-    const delayMs = retryDelayMs * Math.pow(2, retryCount);
-
-    if (logger) {
-      logger.warn(`[retryWithBackoff] Retry ${retryCount + 1}/${maxRetries} for ${operationName} after ${delayMs}ms`, {
-        statusCode: errorDetails.statusCode,
-        errorCode: errorDetails.code,
-        errorType: errorDetails.type,
-        delayMs,
-      });
-    }
-
-    await delay(delayMs);
-
-    return retryWithBackoff(operation, {
-      maxRetries,
-      retryDelayMs,
-      retryCount: retryCount + 1,
-      logger,
-      operationName,
-    });
   }
+
+  // This should never be reached, but TypeScript requires it
+  throw lastError;
 }
 
 /**
