@@ -1,5 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { Client } from "@microsoft/microsoft-graph-client";
+import { EventEmitter2 } from "@nestjs/event-emitter";
 import { OutlookDeltaLinkRepository } from "../../repositories/outlook-delta-link.repository";
 import { ResourceType } from "../../enums/resource-type.enum";
 import { Event, Message } from "../../types";
@@ -46,7 +47,8 @@ export class DeltaSyncService {
   constructor(
     private readonly deltaLinkRepository: OutlookDeltaLinkRepository,
     private readonly userIdConverter: UserIdConverterService,
-    private readonly rateLimiter: GraphRateLimiterService
+    private readonly rateLimiter: GraphRateLimiterService,
+    private readonly eventEmitter: EventEmitter2
   ) {}
 
   private handleDeltaResponse<T extends DeltaItem>(
@@ -517,13 +519,25 @@ export class DeltaSyncService {
 
     // Stream pages using core generator with 410 error recovery
     let pageCount = 0;
+    let totalItemsProcessed = 0;
     try {
       for await (const page of this.fetchDeltaPagesCore(client, urlToUse, internalUserId)) {
         pageCount++;
 
         // Sort and yield this batch immediately
         const sortedBatch = this.sortDeltaItems(page.items);
+        totalItemsProcessed += sortedBatch.length;
         this.logger.log(`[streamDeltaChanges] Yielding page ${pageCount} with ${sortedBatch.length} sorted items for user ${internalUserId}`);
+
+        // Emit progress event for upstream tracking
+        this.eventEmitter.emit('delta-sync.page-processed', {
+          userId: externalUserId,
+          pageNumber: pageCount,
+          itemsInPage: sortedBatch.length,
+          totalItemsSoFar: totalItemsProcessed,
+          isLastPage: page.isLastPage,
+          timestamp: new Date(),
+        });
 
         yield sortedBatch;
 
@@ -566,15 +580,28 @@ export class DeltaSyncService {
         // Stream from beginning with recovery
         let recoveryPageCount = 0;
         let recoveryDeltaLink: string | null = null;
+        let recoveryTotalItems = 0;
 
         for await (const page of this.fetchDeltaPagesCore(client, freshUrl, internalUserId)) {
           recoveryPageCount++;
 
           // Sort and yield this batch immediately
           const sortedBatch = this.sortDeltaItems(page.items);
+          recoveryTotalItems += sortedBatch.length;
           this.logger.log(
             `[streamDeltaChanges] [RECOVERY] Yielding page ${recoveryPageCount} with ${sortedBatch.length} sorted items for user ${internalUserId}`
           );
+
+          // Emit progress event for upstream tracking (recovery path)
+          this.eventEmitter.emit('delta-sync.page-processed', {
+            userId: externalUserId,
+            pageNumber: recoveryPageCount,
+            itemsInPage: sortedBatch.length,
+            totalItemsSoFar: recoveryTotalItems,
+            isLastPage: page.isLastPage,
+            isRecovery: true,
+            timestamp: new Date(),
+          });
 
           yield sortedBatch;
 
