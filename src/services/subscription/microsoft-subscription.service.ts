@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
+import { executeGraphApiCall } from '../../utils/outlook-api-executor.util';
 
 /**
  * Microsoft Graph API subscription structure
@@ -56,15 +57,22 @@ export class MicrosoftSubscriptionService {
    */
   async getActiveSubscriptions(accessToken: string): Promise<MicrosoftSubscription[]> {
     try {
-      const response = await axios.get(`${this.graphApiBaseUrl}/subscriptions`, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 10000,
-      });
-      
-      const data = response.data as { value?: MicrosoftSubscription[] };
+      const response = await executeGraphApiCall(
+        () => axios.get(`${this.graphApiBaseUrl}/subscriptions`, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          timeout: 10000,
+        }),
+        {
+          logger: this.logger,
+          resourceName: 'get active subscriptions',
+          maxRetries: 3,
+        }
+      );
+
+      const data = response?.data as { value?: MicrosoftSubscription[] };
 
       return data.value || [];
     } catch (error: unknown) {
@@ -110,18 +118,22 @@ export class MicrosoftSubscriptionService {
    */
   async deleteSubscription(subscriptionId: string, accessToken: string): Promise<void> {
     try {
-      await axios.delete(`${this.graphApiBaseUrl}/subscriptions/${subscriptionId}`, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-        timeout: 10000,
-      });
+      await executeGraphApiCall(
+        () => axios.delete(`${this.graphApiBaseUrl}/subscriptions/${subscriptionId}`, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+          timeout: 10000,
+        }),
+        {
+          logger: this.logger,
+          resourceName: `delete subscription ${subscriptionId}`,
+          maxRetries: 3,
+          return404AsNull: true,
+        }
+      );
       this.logger.log(`✅ Deleted subscription ${subscriptionId} at Microsoft`);
     } catch (error: unknown) {
-      if (axios.isAxiosError(error) && error.response?.status === 404) {
-        this.logger.log(`Subscription ${subscriptionId} already deleted at Microsoft`);
-        return;
-      }
       throw error;
     }
   }

@@ -2,11 +2,10 @@ import {
   delay,
   is404Error,
   is429Error,
-  isNetworkError,
-  isNonRetryableError,
-  isServerError,
   extractRetryAfterSeconds,
+  retryWithBackoff,
 } from './retry.util';
+import { GraphRateLimiterService } from '../services/shared/graph-rate-limiter.service';
 
 /**
  * Options for executing Microsoft Graph API calls
@@ -26,6 +25,10 @@ export interface GraphApiExecutorOptions {
   resourceName?: string;
   /** If true, returns null on 404 instead of throwing (default: false) */
   return404AsNull?: boolean;
+  /** Rate limiter service for per-user request throttling */
+  rateLimiter?: GraphRateLimiterService;
+  /** User ID for rate limiting (required if rateLimiter is provided) */
+  userId?: string;
 }
 
 /**
@@ -69,7 +72,7 @@ export async function executeGraphApiCall<T>(
   options: GraphApiExecutorOptions = {}
 ): Promise<T | null> {
   const {
-    maxRetries = 3,
+    maxRetries = 10,
     retryDelayMs = 1000,
     logger = {
       warn: (message: string) => { console.warn(message); },
@@ -77,80 +80,68 @@ export async function executeGraphApiCall<T>(
     },
     resourceName = 'resource',
     return404AsNull = false,
+    rateLimiter,
+    userId,
   } = options;
 
-  for (let retryCount = 0; retryCount < maxRetries; retryCount++) {
-    try {
-      return await operation();
-    } catch (error) {
-      // Handle 404 - resource not found (likely deleted between webhook and this call)
-      if (is404Error(error)) {
-        if (return404AsNull) {
-          logger.warn(`Resource not found (likely deleted): ${resourceName}`);
-          return null;
+  try {
+    // Use retryWithBackoff utility with custom 429 handling
+    return await retryWithBackoff(
+      async () => {
+        // Acquire rate limit permit before making request
+        if (rateLimiter && userId) {
+          await rateLimiter.acquirePermit(userId);
         }
-        // Otherwise throw immediately - 404 is non-retryable
-        logger.error(`Resource not found: ${resourceName}`, error);
-        throw error;
+
+        try {
+          return await operation();
+        } catch (error) {
+          // Special handling for 429 rate limit errors with Retry-After header
+          // This takes precedence over standard exponential backoff
+          if (is429Error(error)) {
+            const retryAfterSeconds = extractRetryAfterSeconds(error);
+
+            if (retryAfterSeconds !== null) {
+              const delayMs = retryAfterSeconds * 1000;
+
+              // Notify rate limiter about 429 response
+              if (rateLimiter && userId) {
+                rateLimiter.handleRateLimitResponse(userId, retryAfterSeconds);
+              }
+
+              logger.warn(
+                `Rate limited on ${resourceName}, waiting ${delayMs / 1000}s as per Retry-After header`
+              );
+
+              await delay(delayMs);
+            }
+          }
+
+          // Re-throw to let retryWithBackoff handle retry logic
+          throw error;
+        }
+      },
+      {
+        maxRetries,
+        retryDelayMs,
+        logger: {
+          warn: (message: string, context?: Record<string, unknown>) => {
+            logger.warn(message, context);
+          },
+        },
+        operationName: resourceName,
       }
-
-      // Handle 401 and other non-retryable errors - throw immediately
-      if (isNonRetryableError(error)) {
-        logger.error(`Non-retryable error for ${resourceName}`, error);
-        throw error;
+    );
+  } catch (error) {
+    // Handle 404 - resource not found (likely deleted between webhook and this call)
+    if (is404Error(error)) {
+      if (return404AsNull) {
+        logger.warn(`Resource not found (likely deleted): ${resourceName}`);
+        return null;
       }
-
-      // Check if we've exhausted retries
-      if (retryCount >= maxRetries) {
-        logger.error(`Max retries (${maxRetries}) exceeded for ${resourceName}`, error);
-        throw error;
-      }
-
-      // Handle 429 - rate limit with Retry-After header (Microsoft's recommended fastest recovery)
-      if (is429Error(error)) {
-        const retryAfterSeconds = extractRetryAfterSeconds(error);
-        const delayMs = retryAfterSeconds !== null
-          ? retryAfterSeconds * 1000
-          : retryDelayMs * Math.pow(2, retryCount); // Fallback to exponential backoff
-
-        logger.warn(
-          `Rate limited on ${resourceName}, retrying after ${delayMs / 1000}s (${maxRetries - retryCount} attempts remaining)`
-        );
-
-        await delay(delayMs);
-        retryCount++;
-        continue;
-      }
-
-      // Handle network/timeout errors with exponential backoff
-      if (isNetworkError(error)) {
-        const delayMs = retryDelayMs * Math.pow(2, retryCount);
-        logger.warn(
-          `Network timeout on ${resourceName}, retrying after ${delayMs}ms (${maxRetries - retryCount} attempts remaining)`
-        );
-
-        await delay(delayMs);
-        retryCount++;
-        continue;
-      }
-
-      // Handle server errors (5xx) with exponential backoff
-      if (isServerError(error)) {
-        const delayMs = retryDelayMs * Math.pow(2, retryCount);
-        logger.warn(
-          `Server error on ${resourceName}, retrying after ${delayMs}ms (${maxRetries - retryCount} attempts remaining)`
-        );
-
-        await delay(delayMs);
-        retryCount++;
-        continue;
-      }
-
-      // Unknown error - throw immediately
-      logger.error(`Unknown error for ${resourceName}`, error);
-      throw error;
+      logger.error(`Resource not found: ${resourceName}`, error);
     }
-  }
 
-  throw new Error(`Max retries (${maxRetries}) exceeded for ${resourceName}`);
+    throw error;
+  }
 }
