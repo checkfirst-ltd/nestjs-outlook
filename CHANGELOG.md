@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.1.3](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v6.1.2...v6.1.3) (2026-03-01)
+
+
+### Bug Fixes
+
+* using microsoft graph api handler unified for all api requests ([#99](https://github.com/checkfirst-ltd/nestjs-outlook/issues/99)) ([da34a85](https://github.com/checkfirst-ltd/nestjs-outlook/commit/da34a856b1d492e85b425023816816ec8bd8bb1c))
+
 ## [6.1.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v6.1.1...v6.1.2) (2026-02-22)
 
 
