@@ -134,7 +134,7 @@ export class EmailService {
         }
       );
 
-      if (!response || !response.data) {
+      if (!response?.data) {
         throw new Error('Email subscription creation returned null response');
       }
 
