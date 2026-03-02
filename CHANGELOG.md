@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.2.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v6.2.0...v6.2.1) (2026-03-02)
+
+
+### Bug Fixes
+
+* caching user query for fresh users ([#104](https://github.com/checkfirst-ltd/nestjs-outlook/issues/104)) ([d2402b3](https://github.com/checkfirst-ltd/nestjs-outlook/commit/d2402b3b1082f6f673bdb6a7c2d5c2c068d08e78))
+
 ## [6.2.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v6.1.3...v6.2.0) (2026-03-02)
 
 
