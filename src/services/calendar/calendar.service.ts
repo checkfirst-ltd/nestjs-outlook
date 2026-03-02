@@ -1164,7 +1164,7 @@ export class CalendarService {
   async getActiveSubscription(externalUserId: string): Promise<string | null> {
     try {
       // Convert external to internal ID
-      const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
+      const internalUserId = await this.userIdConverter.externalToInternal(externalUserId, {cache: false});
 
       this.logger.log(`[getActiveSubscription] Getting active subscription for user ${externalUserId} (internalUserId: ${internalUserId})`);
       const subscription = await this.webhookSubscriptionRepository.findActiveByUserId(internalUserId);
@@ -1476,7 +1476,7 @@ export class CalendarService {
    * @param deltaLink Delta link to save
    */
   async saveDeltaLink(externalUserId: string, deltaLink: string): Promise<void> {
-    const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
+    const internalUserId = await this.userIdConverter.externalToInternal(externalUserId, {cache: false});
     await this.deltaLinkRepository.saveDeltaLink(internalUserId, ResourceType.CALENDAR, deltaLink);
     this.logger.log(`[saveDeltaLink] Saved delta link for user ${externalUserId} (internal: ${internalUserId})`);
   }
@@ -2005,7 +2005,7 @@ export class CalendarService {
       const client = await this.getAuthenticatedClient(externalUserId);
 
       // Convert external ID to internal ID
-      const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
+      const internalUserId = await this.userIdConverter.externalToInternal(externalUserId, {cache: false});
 
       // Initialize delta link WITHOUT date range = tracks ALL events going forward
       // Events returned are intentionally ignored - we only need the delta token

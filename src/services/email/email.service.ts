@@ -84,7 +84,7 @@ export class EmailService {
   ): Promise<Subscription> {
     try {
       // Convert external user ID to internal database ID
-      const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
+      const internalUserId = await this.userIdConverter.externalToInternal(externalUserId, {cache: false});
 
       // Get a valid access token for this user
       const accessToken = await this.microsoftAuthService.getUserAccessToken({internalUserId});

@@ -53,7 +53,7 @@ export class UserIdConverterService {
   async externalToInternal(externalUserId: string, {cache = true}: {cache?: boolean} = {}): Promise<number> {
     const user = await this.microsoftUserRepository.findOne({
       where: { externalUserId },
-      cache: cache ? 300000 : false,
+      cache: cache ? 5000 : false,
     });
 
     if (!user) {
@@ -85,7 +85,7 @@ export class UserIdConverterService {
   async internalToExternal(internalUserId: number, {cache = true}: {cache?: boolean} = {}): Promise<string> {
     const user = await this.microsoftUserRepository.findOne({
       where: { id: internalUserId },
-      cache: cache ? 300000 : false,
+      cache: cache ? 3000 : false,
     });
 
     if (!user) {
