@@ -21,6 +21,7 @@ import { MicrosoftSubscriptionService } from "../subscription/microsoft-subscrip
 import { executeGraphApiCall } from "../../utils/outlook-api-executor.util";
 import { OutlookWebhookSubscription } from "../../entities/outlook-webhook-subscription.entity";
 import { GraphRateLimiterService } from "../shared/graph-rate-limiter.service";
+import { extractRetryAfterSeconds } from "../../utils/retry.util";
 
 // Event type constants
 const OUTLOOK_EVENT_CREATED = OutlookEventTypes.EVENT_CREATED;
@@ -1663,7 +1664,7 @@ export class CalendarService {
         `success=${successCount}, notFound=${notFoundCount}, errors=${errorCount}`
       );
 
-      // Retry rate-limited events (with per-event retry limit)
+      // Retry rate-limited events using exponential backoff
       if (rateLimitedEventIds.length > 0) {
         const retryableEvents = rateLimitedEventIds.filter(id => {
           const count = retryCount.get(id) || 0;
@@ -1672,23 +1673,21 @@ export class CalendarService {
 
         if (retryableEvents.length > 0) {
           // Extract Retry-After from response headers if present
-          const retryAfter = this.extractRetryAfterFromResponse(response);
-          if (retryAfter) {
-            this.rateLimiter.handleRateLimitResponse(externalUserId, retryAfter);
+          const retryAfterSeconds = extractRetryAfterSeconds(response);
+          if (retryAfterSeconds) {
+            this.rateLimiter.handleRateLimitResponse(externalUserId, retryAfterSeconds);
           }
 
-          // Update retry counts
-          retryableEvents.forEach(id => {
-            retryCount.set(id, (retryCount.get(id) || 0) + 1);
-          });
-
-          const maxAttempt = Math.max(...retryableEvents.map(id => retryCount.get(id) || 0));
           this.logger.log(
-            `[getEventsBatch] Retrying ${retryableEvents.length} rate-limited events ` +
-            `(attempt ${maxAttempt}/${maxRetries})`
+            `[getEventsBatch] Retrying ${retryableEvents.length} rate-limited events after ${retryAfterSeconds}s`
           );
 
-          // Recursive retry with updated counts
+          // Wait for the retry-after duration before retrying
+          if (retryAfterSeconds) {
+            await new Promise(resolve => setTimeout(resolve, retryAfterSeconds * 1000));
+          }
+
+          // Retry the batch (executeGraphApiCall will handle its own retry logic)
           const retriedEvents = await this.getEventsBatchInternal(
             retryableEvents,
             externalUserId,
@@ -1716,27 +1715,6 @@ export class CalendarService {
       // Always release permit
       this.rateLimiter.releasePermit(externalUserId);
     }
-  }
-
-  /**
-   * Extract Retry-After header from batch response
-   * @param response - Axios response from batch request
-   * @returns Retry-After seconds, or null if not present
-   * @private
-   */
-  private extractRetryAfterFromResponse(
-    response: { headers?: Record<string, unknown> }
-  ): number | null {
-    try {
-      const retryAfter = response.headers?.['retry-after'];
-      if (typeof retryAfter === 'string' || typeof retryAfter === 'number') {
-        const parsed = parseInt(String(retryAfter), 10);
-        return !isNaN(parsed) ? Math.max(parsed, 5) : null;
-      }
-    } catch (_error) {
-      this.logger.debug('[extractRetryAfterFromResponse] Failed to extract Retry-After header');
-    }
-    return null;
   }
 
   /**
