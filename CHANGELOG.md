@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.2.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v6.1.3...v6.2.0) (2026-03-02)
+
+
+### Features
+
+* add progress tracking in batch streaming ([#101](https://github.com/checkfirst-ltd/nestjs-outlook/issues/101)) ([997a99b](https://github.com/checkfirst-ltd/nestjs-outlook/commit/997a99bee9da15df7a01d4baae6f316871717343))
+
 ## [6.1.3](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v6.1.2...v6.1.3) (2026-03-01)
 
 
