@@ -458,15 +458,14 @@ export class MicrosoftAuthService {
       throw new Error(`CSRF validation failed: ${csrfError}`);
     }
 
+    // Define these outside try block so they're accessible in catch
+    const scopesToUse = stateData.requestedScopes || this.defaultScopes;
+    const scopeString = this.mapToMicrosoftScopes(scopesToUse).join(' ');
+
     try {
       this.logger.log(`[${correlationId}] Exchanging code for token with redirect URI: ${this.redirectUri}`);
-
-      // Use scopes from state if available, otherwise use defaults
-      const scopesToUse = stateData.requestedScopes || this.defaultScopes;
-      this.logger.log(`[${correlationId}] Using scopes for token exchange: ${scopesToUse.join(', ')}`);
-
-      // Build scope string
-      const scopeString = this.mapToMicrosoftScopes(scopesToUse).join(' ');
+      this.logger.log(`[${correlationId}] Using scopes for token exchange (enum): ${scopesToUse.join(', ')}`);
+      this.logger.log(`[${correlationId}] Mapped Microsoft scopes: ${scopeString}`);
 
       const postData = new URLSearchParams({
         client_id: this.clientId,
@@ -524,7 +523,20 @@ export class MicrosoftAuthService {
       this.logger.log(`[${correlationId}] Token exchange completed successfully`);
       return tokenData;
     } catch (error) {
-      this.logger.error(`[${correlationId}] Error exchanging code for token:`, error);
+      if (axios.isAxiosError(error)) {
+        this.logger.error(
+          `[${correlationId}] Microsoft token exchange failed:`,
+          {
+            status: error.response?.status,
+            statusText: error.response?.statusText,
+            data: error.response?.data as unknown,
+            requestScopes: scopeString,
+            message: error.message
+          }
+        );
+      } else {
+        this.logger.error(`[${correlationId}] Error exchanging code for token:`, error);
+      }
       throw new Error('Failed to exchange code for token');
     }
   }
