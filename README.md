@@ -456,7 +456,7 @@ For authentication to work properly with Microsoft, you need to configure your r
    - For local development with ngrok: `https://[your-ngrok-url]/auth/microsoft/callback`
    - For local development without ngrok: `http://localhost:[your-port]/auth/microsoft/callback`
 
-5. **Save your changes**
+5. **Save your changes** 
 
 > **Note:** The sample app runs on the port specified in your configuration (typically 3000). If you're using a different port, make sure to:
 > - Start ngrok with your actual port: `ngrok http [your-port]`
