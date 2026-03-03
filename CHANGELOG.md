@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.3.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v6.2.1...v6.3.0) (2026-03-03)
+
+
+### Features
+
+* dummy commit for previous PR ([#107](https://github.com/checkfirst-ltd/nestjs-outlook/issues/107)) ([23ff9da](https://github.com/checkfirst-ltd/nestjs-outlook/commit/23ff9da0d81c4efeb5d0b97decffc34388b6a2e0))
+
 ## [6.2.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v6.2.0...v6.2.1) (2026-03-02)
 
 
