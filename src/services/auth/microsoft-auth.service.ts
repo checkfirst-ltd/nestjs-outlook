@@ -573,7 +573,7 @@ export class MicrosoftAuthService {
           await retryWithBackoff(
             () => this.calendarService.createWebhookSubscription(externalUserId),
             {
-              maxRetries: 3,
+              maxRetries: 7,
               retryDelayMs: 1000
             }
           );
@@ -594,7 +594,7 @@ export class MicrosoftAuthService {
           await retryWithBackoff(
             () => this.emailService.createWebhookSubscription(externalUserId),
             {
-              maxRetries: 3,
+              maxRetries: 7,
               retryDelayMs: 1000
             }
           );
