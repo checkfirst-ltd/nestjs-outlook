@@ -68,7 +68,7 @@ export class MicrosoftSubscriptionService {
         {
           logger: this.logger,
           resourceName: 'get active subscriptions',
-          maxRetries: 3,
+          maxRetries: 7,
         }
       );
 
@@ -128,7 +128,7 @@ export class MicrosoftSubscriptionService {
         {
           logger: this.logger,
           resourceName: `delete subscription ${subscriptionId}`,
-          maxRetries: 3,
+          maxRetries: 7,
           return404AsNull: true,
         }
       );

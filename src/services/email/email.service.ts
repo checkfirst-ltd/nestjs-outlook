@@ -59,7 +59,7 @@ export class EmailService {
         {
           logger: this.logger,
           resourceName: `send email for user ${externalUserId}`,
-          maxRetries: 3,
+          maxRetries: 7,
         }
       ) as Message;
 
@@ -130,7 +130,7 @@ export class EmailService {
         {
           logger: this.logger,
           resourceName: `create email webhook subscription for user ${internalUserId}`,
-          maxRetries: 3,
+          maxRetries: 7,
         }
       );
 
@@ -214,7 +214,7 @@ export class EmailService {
         {
           logger: this.logger,
           resourceName: `delete email webhook subscription ${subscriptionId} for user ${internalUserId}`,
-          maxRetries: 3,
+          maxRetries: 7,
           return404AsNull: true,
         }
       );
@@ -377,7 +377,7 @@ export class EmailService {
               {
                 logger: this.logger,
                 resourceName: `email message details for ${messageId}`,
-                maxRetries: 3,
+                maxRetries: 7,
               }
             ) as Record<string, unknown>;
               

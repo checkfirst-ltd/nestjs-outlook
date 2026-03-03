@@ -133,7 +133,7 @@ export class CalendarService {
         {
           logger: this.logger,
           resourceName: `me/calendar for user ${externalUserId}`,
-          maxRetries: 3,
+          maxRetries: 7,
         }
       );
 
@@ -186,7 +186,7 @@ export class CalendarService {
         {
           logger: this.logger,
           resourceName: `create event in calendar ${calendarId} for user ${externalUserId}`,
-          maxRetries: 3,
+          maxRetries: 7,
           rateLimiter: this.rateLimiter,
           userId: externalUserId,
         }
@@ -242,7 +242,7 @@ export class CalendarService {
         {
           logger: this.logger,
           resourceName: `update event ${eventId} in calendar ${calendarId} for user ${externalUserId}`,
-          maxRetries: 3,
+          maxRetries: 7,
           rateLimiter: this.rateLimiter,
           userId: externalUserId,
         }
@@ -288,7 +288,7 @@ export class CalendarService {
         {
           logger: this.logger,
           resourceName: `delete event ${event.id} from calendar ${calendarId} for user ${externalUserId}`,
-          maxRetries: 3,
+          maxRetries: 7,
           rateLimiter: this.rateLimiter,
           userId: externalUserId,
           return404AsNull: true,
@@ -391,7 +391,7 @@ export class CalendarService {
             {
               logger: this.logger,
               resourceName: `batch create ${batchEvents.length} events for user ${externalUserId}`,
-              maxRetries: 3,
+              maxRetries: 7,
             }
           );
 
@@ -538,7 +538,7 @@ export class CalendarService {
             {
               logger: this.logger,
               resourceName: `batch update ${batchUpdates.length} events for user ${externalUserId}`,
-              maxRetries: 3,
+              maxRetries: 7,
             }
           );
 
@@ -665,7 +665,7 @@ export class CalendarService {
             {
               logger: this.logger,
               resourceName: `batch delete ${batchEventIds.length} events for user ${externalUserId}`,
-              maxRetries: 3,
+              maxRetries: 7,
             }
           );
 
@@ -810,7 +810,7 @@ export class CalendarService {
         {
           logger: this.logger,
           resourceName: `create webhook subscription for user ${internalUserId}`,
-          maxRetries: 3,
+          maxRetries: 7,
         }
       );
 
@@ -944,7 +944,7 @@ export class CalendarService {
         {
           logger: this.logger,
           resourceName: `renew webhook subscription ${subscriptionId} for user ${internalUserId}`,
-          maxRetries: 3,
+          maxRetries: 7,
         }
       );
 
@@ -1502,7 +1502,7 @@ export class CalendarService {
         {
           logger: this.logger,
           resourceName: `event details for ${resource}`,
-          maxRetries: 3,
+          maxRetries: 7,
           return404AsNull: true,
         }
       );
@@ -1610,7 +1610,7 @@ export class CalendarService {
           }
         ),
         {
-          maxRetries: 3,
+          maxRetries: 7,
           retryDelayMs: 1000,
           logger: this.logger,
           resourceName: `batch events (user: ${externalUserId})`,

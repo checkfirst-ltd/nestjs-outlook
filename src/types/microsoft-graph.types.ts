@@ -62,4 +62,20 @@ export interface BatchRequestPayload {
  */
 export interface BatchResponsePayload<T = unknown> {
   responses: BatchResponse<T>[];
+}
+
+/**
+ * Microsoft Graph API error structure
+ * @see https://learn.microsoft.com/en-us/graph/errors
+ */
+export interface GraphApiError {
+  error: {
+    code: string;
+    message: string;
+    innerError?: {
+      date?: string;
+      'request-id'?: string;
+      'client-request-id'?: string;
+    };
+  };
 } 
