@@ -1,5 +1,16 @@
 # Changelog
 
+## [7.0.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v6.3.0...v7.0.0) (2026-03-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* use immutable ids ([#109](https://github.com/checkfirst-ltd/nestjs-outlook/issues/109))
+
+### Features
+
+* use immutable ids ([#109](https://github.com/checkfirst-ltd/nestjs-outlook/issues/109)) ([b299c87](https://github.com/checkfirst-ltd/nestjs-outlook/commit/b299c87166b0182fe0987676dbc7392a0a79212f))
+
 ## [6.3.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v6.2.1...v6.3.0) (2026-03-03)
 
 
