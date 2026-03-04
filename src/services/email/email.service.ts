@@ -55,7 +55,9 @@ export class EmailService {
 
       // Send the email with retry and rate limiting
       const sentMessage = await executeGraphApiCall(
-        () => client.api('/me/sendMail').post({ message }),
+        () => client.api('/me/sendMail')
+          .header('Prefer', 'IdType="ImmutableId"')
+          .post({ message }),
         {
           logger: this.logger,
           resourceName: `send email for user ${externalUserId}`,
@@ -124,6 +126,7 @@ export class EmailService {
             headers: {
               Authorization: `Bearer ${accessToken}`,
               'Content-Type': 'application/json',
+              'Prefer': 'IdType="ImmutableId"',
             },
           }
         ),
@@ -208,6 +211,7 @@ export class EmailService {
             headers: {
               Authorization: `Bearer ${accessToken}`,
               "Content-Type": "application/json",
+              "Prefer": 'IdType="ImmutableId"',
             },
           }
         ),

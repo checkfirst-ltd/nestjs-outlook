@@ -127,6 +127,7 @@ export class CalendarService {
             headers: {
               Authorization: `Bearer ${accessToken}`,
               "Content-Type": "application/json",
+              "Prefer": 'IdType="ImmutableId"',
             },
           }
         ),
@@ -182,7 +183,9 @@ export class CalendarService {
 
       // Create the event with retry and rate limiting
       const createdEvent = (await executeGraphApiCall(
-        () => client.api(`/me/calendars/${calendarId}/events`).post(event),
+        () => client.api(`/me/calendars/${calendarId}/events`)
+          .header('Prefer', 'IdType="ImmutableId"')
+          .post(event),
         {
           logger: this.logger,
           resourceName: `create event in calendar ${calendarId} for user ${externalUserId}`,
@@ -238,7 +241,9 @@ export class CalendarService {
 
       // PATCH the existing event with retry and rate limiting
       const updatedEvent = (await executeGraphApiCall(
-        () => client.api(`/me/calendars/${calendarId}/events/${eventId}`).patch(updates),
+        () => client.api(`/me/calendars/${calendarId}/events/${eventId}`)
+          .header('Prefer', 'IdType="ImmutableId"')
+          .patch(updates),
         {
           logger: this.logger,
           resourceName: `update event ${eventId} in calendar ${calendarId} for user ${externalUserId}`,
@@ -291,7 +296,9 @@ export class CalendarService {
 
       // GET the event with retry and rate limiting
       const event = (await executeGraphApiCall(
-        () => client.api(`/me/events/${eventId}`).get(),
+        () => client.api(`/me/events/${eventId}`)
+          .header('Prefer', 'IdType="ImmutableId"')
+          .get(),
         {
           logger: this.logger,
           resourceName: `get event ${eventId} for user ${externalUserId}`,
@@ -336,7 +343,9 @@ export class CalendarService {
 
       // Delete the event with retry and rate limiting
       await executeGraphApiCall(
-        () => client.api(`/me/calendars/${calendarId}/events/${event.id}`).delete(),
+        () => client.api(`/me/calendars/${calendarId}/events/${event.id}`)
+          .header('Prefer', 'IdType="ImmutableId"')
+          .delete(),
         {
           logger: this.logger,
           resourceName: `delete event ${event.id} from calendar ${calendarId} for user ${externalUserId}`,
@@ -437,6 +446,7 @@ export class CalendarService {
                 headers: {
                   Authorization: `Bearer ${accessToken}`,
                   'Content-Type': 'application/json',
+                  'Prefer': 'IdType="ImmutableId"',
                 },
               }
             ),
@@ -584,6 +594,7 @@ export class CalendarService {
                 headers: {
                   Authorization: `Bearer ${accessToken}`,
                   'Content-Type': 'application/json',
+                  'Prefer': 'IdType="ImmutableId"',
                 },
               }
             ),
@@ -711,6 +722,7 @@ export class CalendarService {
                 headers: {
                   Authorization: `Bearer ${accessToken}`,
                   'Content-Type': 'application/json',
+                  'Prefer': 'IdType="ImmutableId"',
                 },
               }
             ),
@@ -856,6 +868,7 @@ export class CalendarService {
             headers: {
               Authorization: `Bearer ${accessToken}`,
               "Content-Type": "application/json",
+              "Prefer": 'IdType="ImmutableId"',
             },
           }
         ),
@@ -990,6 +1003,7 @@ export class CalendarService {
             headers: {
               Authorization: `Bearer ${accessToken}`,
               "Content-Type": "application/json",
+              "Prefer": 'IdType="ImmutableId"',
             },
           }
         ),
@@ -1548,6 +1562,7 @@ export class CalendarService {
           {
             headers: {
               Authorization: `Bearer ${accessToken}`,
+              "Prefer": 'IdType="ImmutableId"',
             },
           }
         ),
@@ -1658,6 +1673,7 @@ export class CalendarService {
             headers: {
               Authorization: `Bearer ${accessToken}`,
               'Content-Type': 'application/json',
+              'Prefer': 'IdType="ImmutableId"',
             },
           }
         ),
@@ -1865,7 +1881,9 @@ export class CalendarService {
 
         // Fetch with retry logic and rate limiting
         const response = (await executeGraphApiCall(
-          () => client.api(nextLink as string).get(),
+          () => client.api(nextLink as string)
+            .header('Prefer', 'IdType="ImmutableId"')
+            .get(),
           {
             logger: this.logger,
             resourceName: `calendarView for user ${externalUserId}`,
@@ -1995,7 +2013,9 @@ export class CalendarService {
 
       while (nextLink) {
         const response = (await executeGraphApiCall(
-          () => client.api(nextLink as string).get(),
+          () => client.api(nextLink as string)
+            .header('Prefer', 'IdType="ImmutableId"')
+            .get(),
           {
             logger: this.logger,
             resourceName: `recurring event instances for series ${seriesMasterId}`,

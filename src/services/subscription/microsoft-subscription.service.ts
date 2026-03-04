@@ -62,6 +62,7 @@ export class MicrosoftSubscriptionService {
           headers: {
             Authorization: `Bearer ${accessToken}`,
             'Content-Type': 'application/json',
+            'Prefer': 'IdType="ImmutableId"',
           },
           timeout: 10000,
         }),
@@ -122,6 +123,7 @@ export class MicrosoftSubscriptionService {
         () => axios.delete(`${this.graphApiBaseUrl}/subscriptions/${subscriptionId}`, {
           headers: {
             Authorization: `Bearer ${accessToken}`,
+            'Prefer': 'IdType="ImmutableId"',
           },
           timeout: 10000,
         }),

@@ -175,7 +175,9 @@ export class DeltaSyncService {
         chunk.map((item) =>
           item["@removed"]
             ? Promise.resolve(item)
-            : (client.api(`/me/events/${item.id}`).get() as Promise<DeltaItem>)
+            : (client.api(`/me/events/${item.id}`)
+                .header('Prefer', 'IdType="ImmutableId"')
+                .get() as Promise<DeltaItem>)
         )
       );
 
@@ -232,7 +234,9 @@ export class DeltaSyncService {
       // Note: executeGraphApiCall handles 429 errors with Retry-After header
       // The rate limiter above helps prevent hitting 429 in the first place
       const response = (await executeGraphApiCall(
-        () => client.api(currentUrl).get(),
+        () => client.api(currentUrl)
+          .header('Prefer', 'IdType="ImmutableId"')
+          .get(),
         {
           maxRetries: this.MAX_RETRIES,
           retryDelayMs: this.RETRY_DELAY_MS,
