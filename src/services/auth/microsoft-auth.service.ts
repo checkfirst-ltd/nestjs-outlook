@@ -669,12 +669,12 @@ export class MicrosoftAuthService {
       if (!internalUser) {
         throw new Error(`No user found with ID ${String(internalUserId)}`);
       }
-      
+
       const scopeString = internalUser.scopes;
       this.logger.debug(`Using saved scopes from database: ${scopeString}`);
 
       this.logger.debug(`Refreshing token for user ID ${String(internalUserId)} with scopes: ${scopeString}`);
-      
+
       // Prepare parameters as specified in Microsoft documentation
       const payload = new URLSearchParams({
         client_id: this.clientId,
@@ -683,7 +683,7 @@ export class MicrosoftAuthService {
         grant_type: 'refresh_token',
         scope: scopeString,
       });
-      
+
       try {
         const response = await axios.post<MicrosoftTokenApiResponse>(
           this.tokenEndpoint,
@@ -708,7 +708,7 @@ export class MicrosoftAuthService {
         internalUser.accessToken = newAccessToken;
         internalUser.refreshToken = newRefreshToken;
         internalUser.tokenExpiry = new Date(Date.now() + response.data.expires_in * 1000);
-        
+
         await this.microsoftUserRepository.save(internalUser);
 
         // Return just the access token
@@ -719,7 +719,7 @@ export class MicrosoftAuthService {
           this.logger.error(
             `Microsoft API error refreshing token for user ID ${String(internalUserId)}: Status: ${String(error.response.status)}, Response: ${JSON.stringify(error.response.data)}`
           );
-          
+
           // Check for specific error conditions from Microsoft
           const errorData = error.response.data as { error?: string };
           if (errorData.error === 'invalid_grant') {
