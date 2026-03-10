@@ -429,6 +429,7 @@ export class CalendarService {
               body: event,
               headers: {
                 'Content-Type': 'application/json',
+                'Prefer': 'IdType="ImmutableId"',
               },
             })),
           };
@@ -576,6 +577,7 @@ export class CalendarService {
             body: update.updates,
             headers: {
               'Content-Type': 'application/json',
+              'Prefer': 'IdType="ImmutableId"',
             },
           })),
         };
@@ -705,6 +707,9 @@ export class CalendarService {
             id: `${index}`,
             method: 'DELETE',
             url: `/me/calendars/${calendarId}/events/${eventId}`,
+            headers: {
+              'Prefer': 'IdType="ImmutableId"',
+            },
           })),
         };
 
