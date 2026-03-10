@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.0.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.0.0...v7.0.1) (2026-03-10)
+
+
+### Bug Fixes
+
+* populate immutable id preference over all batching endpoints ([#111](https://github.com/checkfirst-ltd/nestjs-outlook/issues/111)) ([e1bcca6](https://github.com/checkfirst-ltd/nestjs-outlook/commit/e1bcca6654b4b6e57834438c70305d94543ccd1b))
+
 ## [7.0.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v6.3.0...v7.0.0) (2026-03-04)
 
 
