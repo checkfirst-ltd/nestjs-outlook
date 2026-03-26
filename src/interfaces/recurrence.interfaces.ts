@@ -76,8 +76,6 @@ export interface ExpansionWindow {
 export interface ExpandRecurringSeriesOptions {
   /** Currently stored occurrence external IDs (for stale detection) */
   existingExternalIds?: string[];
-  /** Current expansion window end date (for window advancement) */
-  existingWindowEnd?: Date;
 }
 
 /**

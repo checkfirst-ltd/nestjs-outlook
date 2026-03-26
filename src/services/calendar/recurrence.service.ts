@@ -99,7 +99,6 @@ export class RecurrenceService {
     // 2. Calculate expansion window
     const expansionWindow = this.calculateExpansionWindow(
       seriesMaster.recurrenceRule,
-      options?.existingWindowEnd,
     );
 
     this.logger.log(
@@ -154,14 +153,10 @@ export class RecurrenceService {
    *
    * Strategy:
    * - Start date: always 1 month before now
-   * - End date depends on series type:
-   *   - Finite series (endDate range): use the series end date, capped at 5 years
-   *   - Advancing existing window: extend 6 months from current window end
-   *   - New infinite series: 6 months from now
+   * - End date: always 5 years ahead, capped by series end date if finite
    */
   calculateExpansionWindow(
     recurrenceRule?: RecurrenceRule,
-    existingWindowEnd?: Date,
   ): ExpansionWindow {
     const now = new Date();
 
@@ -170,23 +165,19 @@ export class RecurrenceService {
 
     let endDate: Date;
 
+    // Always expand 5 years ahead
+    endDate = new Date(now);
+    endDate.setFullYear(endDate.getFullYear() + 5);
+
+    // If the series has a defined end before our 5-year window, use it
     if (
       recurrenceRule?.range.type === 'endDate' &&
       recurrenceRule.range.endDate
     ) {
-      // Series has a defined end — use it, capped at 5 years
       const seriesEnd = new Date(recurrenceRule.range.endDate);
-      const maxEnd = new Date(now);
-      maxEnd.setFullYear(maxEnd.getFullYear() + 5);
-      endDate = seriesEnd < maxEnd ? seriesEnd : maxEnd;
-    } else if (existingWindowEnd) {
-      // Advancing an existing window — extend 6 months from current end
-      endDate = new Date(existingWindowEnd);
-      endDate.setMonth(endDate.getMonth() + 6);
-    } else {
-      // New infinite series — start with 6 months ahead
-      endDate = new Date(now);
-      endDate.setMonth(endDate.getMonth() + 6);
+      if (seriesEnd < endDate) {
+        endDate = seriesEnd;
+      }
     }
 
     return { startDate, endDate };
