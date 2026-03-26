@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.0.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.0.1...v7.0.2) (2026-03-26)
+
+
+### Bug Fixes
+
+* recurrence minimal notification default handling ([#113](https://github.com/checkfirst-ltd/nestjs-outlook/issues/113)) ([32ab44c](https://github.com/checkfirst-ltd/nestjs-outlook/commit/32ab44cc7712f745c3f4b5b59c348c8ec9ac4033))
+
 ## [7.0.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.0.0...v7.0.1) (2026-03-10)
 
 
