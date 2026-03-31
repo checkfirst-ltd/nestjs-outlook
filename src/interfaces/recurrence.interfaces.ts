@@ -72,23 +72,14 @@ export interface ExpansionWindow {
   endDate: Date;
 }
 
-/** Options for expandRecurringSeries() */
-export interface ExpandRecurringSeriesOptions {
-  /** Currently stored occurrence external IDs (for stale detection) */
-  existingExternalIds?: string[];
-}
-
 /**
  * Full output of expanding a recurring series.
  *
  * Returned by RecurrenceService.expandRecurringSeries() — gives calendar-hub
- * everything it needs to persist the series master, upsert instances,
- * and clean up stale occurrences in a single orchestrated call.
+ * everything it needs to persist the series master and upsert instances.
  */
 export interface RecurringEventExpansionResult {
   seriesMaster: ProcessedOutlookEvent;
   instances: ProcessedOutlookEvent[];
   expansionWindow: ExpansionWindow;
-  /** External IDs that existed before but were not returned by this expansion */
-  staleExternalIds: string[];
 }
