@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.0.3](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.0.2...v7.0.3) (2026-03-31)
+
+
+### Bug Fixes
+
+* recurrent events fetching window ([#115](https://github.com/checkfirst-ltd/nestjs-outlook/issues/115)) ([6e5874d](https://github.com/checkfirst-ltd/nestjs-outlook/commit/6e5874d0b59ad42bb3365259b511d995f1da0217))
+
 ## [7.0.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.0.1...v7.0.2) (2026-03-26)
 
 
