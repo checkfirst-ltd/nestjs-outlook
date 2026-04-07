@@ -73,6 +73,12 @@ export class OutlookResourceData {
   @IsOptional()
   data?: Record<string, unknown>;
 
+  /**
+   * Correlation ID for tracing a webhook notification through all downstream operations.
+   * Generated at the webhook entry point and propagated through the processing chain.
+   */
+  webhookTraceId?: string;
+
   // We don't add API decorators for the index signature
   [key: string]: unknown;
 }

@@ -24,4 +24,7 @@ export enum OutlookEventTypes {
   LIFECYCLE_REAUTHORIZATION_REQUIRED = 'outlook.lifecycle.reauthorization_required',
   LIFECYCLE_SUBSCRIPTION_REMOVED = 'outlook.lifecycle.subscription_removed',
   LIFECYCLE_MISSED = 'outlook.lifecycle.missed',
+
+  // Error events
+  SUBSCRIPTION_CREATION_FAILED = 'outlook.subscription.creation_failed',
 }
