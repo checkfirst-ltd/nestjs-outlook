@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.1.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.0.3...v7.1.0) (2026-04-07)
+
+
+### Features
+
+* elevate observability by emitting events ([#117](https://github.com/checkfirst-ltd/nestjs-outlook/issues/117)) ([74bb280](https://github.com/checkfirst-ltd/nestjs-outlook/commit/74bb280e74f2fae8b91dbae7757767fb67614b9a))
+
 ## [7.0.3](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.0.2...v7.0.3) (2026-03-31)
 
 
