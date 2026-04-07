@@ -1299,7 +1299,8 @@ export class CalendarService {
    */
   async handleOutlookWebhook(
     notificationItem: ChangeNotification,
-    useStreaming: boolean = false
+    useStreaming: boolean = false,
+    webhookTraceId?: string,
   ): Promise<{ success: boolean; message: string }> {
     try {
       // Extract necessary information from the notification
@@ -1307,7 +1308,7 @@ export class CalendarService {
         notificationItem;
 
       this.logger.debug(
-        `Received webhook notification for subscription: ${subscriptionId || "unknown"}`
+        `Received webhook notification for subscription: ${subscriptionId || "unknown"}${webhookTraceId ? `, webhookTraceId=${webhookTraceId}` : ''}`
       );
       this.logger.debug(
         `Resource: ${resource || "unknown"}, ChangeType: ${String(changeType || "unknown")}`
@@ -1324,17 +1325,23 @@ export class CalendarService {
         return { success: false, message: message || 'Unknown error' };
       }
 
+      this.logger.log(
+        `[WEBHOOK_IDENTIFIED] webhookTraceId=${webhookTraceId || 'none'}, internalUserId=${internalUserId}, subscriptionId=${subscriptionId || 'unknown'}`
+      );
+
       // Process changes using appropriate strategy (passed as parameter)
       const totalProcessed = useStreaming
         ? await this.processChangesStreaming(
             internalUserId,
             String(subscriptionId || ''),
-            resource || ''
+            resource || '',
+            webhookTraceId
           )
         : await this.processChangesBuffering(
             internalUserId,
             String(subscriptionId || ''),
-            resource || ''
+            resource || '',
+            webhookTraceId
           );
 
       return { success: true, message: `Processed ${totalProcessed} events` };
@@ -1943,6 +1950,7 @@ export class CalendarService {
 
   async handleOutlookWebhookV2(
     notificationItem: ChangeNotification,
+    webhookTraceId?: string,
   ) {
     if (!notificationItem.subscriptionId) {
       this.logger.error(`Subscription ID is required`);
@@ -1957,12 +1965,17 @@ export class CalendarService {
         return { success: false, message: `Subscription not found for subscriptionId: ${notificationItem.subscriptionId}` };
       }
 
+      this.logger.log(
+        `[WEBHOOK_IDENTIFIED] webhookTraceId=${webhookTraceId || 'none'}, userId=${subscription.userId}, subscriptionId=${subscription.subscriptionId}`
+      );
+
       this.eventEmitter.emit(OutlookEventTypes.EVENT_NOTIFICATION, {
         userId: subscription.userId,
         subscriptionId: subscription.subscriptionId,
         clientState: subscription.clientState,
         resource: notificationItem,
         changeType: notificationItem.changeType,
+        webhookTraceId,
       });
 
       return { success: true, message: 'Notification processed' };
@@ -2119,13 +2132,14 @@ export class CalendarService {
   private async processChangesStreaming(
     internalUserId: number,
     subscriptionId: string,
-    resource: string
+    resource: string,
+    webhookTraceId?: string,
   ): Promise<number> {
     let totalProcessed = 0;
     let batchCount = 0;
 
     const externalUserId = await this.userIdConverter.internalToExternal(internalUserId);
-    this.logger.log(`[processChangesStreaming] Using STREAMING mode for user ${internalUserId}`);
+    this.logger.log(`[processChangesStreaming] Using STREAMING mode for user ${internalUserId}, webhookTraceId=${webhookTraceId || 'none'}`);
 
     for await (const changeBatch of this.streamCalendarChanges(externalUserId)) {
       batchCount++;
@@ -2142,7 +2156,8 @@ export class CalendarService {
           change,
           internalUserId,
           subscriptionId,
-          resource
+          resource,
+          webhookTraceId
         );
         totalProcessed++;
       }
@@ -2166,11 +2181,12 @@ export class CalendarService {
   private async processChangesBuffering(
     internalUserId: number,
     subscriptionId: string,
-    resource: string
+    resource: string,
+    webhookTraceId?: string,
   ): Promise<number> {
     const externalUserId = await this.userIdConverter.internalToExternal(internalUserId);
 
-    this.logger.log(`[processChangesBuffering] Using BUFFERING mode for user ${internalUserId}`);
+    this.logger.log(`[processChangesBuffering] Using BUFFERING mode for user ${internalUserId}, webhookTraceId=${webhookTraceId || 'none'}`);
 
     const allChanges = await this.fetchAndSortChanges(externalUserId);
 
@@ -2189,7 +2205,8 @@ export class CalendarService {
         change,
         internalUserId,
         subscriptionId,
-        resource
+        resource,
+        webhookTraceId
       );
       totalProcessed++;
     }
@@ -2209,12 +2226,13 @@ export class CalendarService {
     change: Event,
     internalUserId: number,
     subscriptionId: string,
-    resource: string
+    resource: string,
+    webhookTraceId?: string,
   ): void {
     const eventType = detectEventType(change);
 
     this.logger.debug(
-      `[processDeltaEventChange] Event ${change.id || "unknown"}: created=${change.createdDateTime}, modified=${change.lastModifiedDateTime}, type=${eventType}`
+      `[processDeltaEventChange] Event ${change.id || "unknown"}: created=${change.createdDateTime}, modified=${change.lastModifiedDateTime}, type=${eventType}, webhookTraceId=${webhookTraceId || 'none'}`
     );
 
     const resourceData: OutlookResourceData = {
@@ -2224,13 +2242,14 @@ export class CalendarService {
       resource,
       changeType: EVENT_TYPE_TO_CHANGE_TYPE[eventType],
       data: change as unknown as Record<string, unknown>,
+      webhookTraceId,
     };
 
     // Emit the event
     this.eventEmitter.emit(eventType, resourceData);
 
     this.logger.log(
-      `[processDeltaEventChange] Emitted ${eventType} for event ID: ${change.id || "unknown"}`
+      `[processDeltaEventChange] Emitted ${eventType} for event ID: ${change.id || "unknown"}, webhookTraceId=${webhookTraceId || 'none'}`
     );
   }
 

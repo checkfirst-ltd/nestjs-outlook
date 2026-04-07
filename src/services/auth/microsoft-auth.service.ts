@@ -583,6 +583,12 @@ export class MicrosoftAuthService {
           const errorMsg = `Failed to create calendar webhook subscription after retries: ${calendarError instanceof Error ? calendarError.message : 'Unknown error'}`;
           this.logger.error(`[${correlationId}] ${errorMsg}`);
           errors.push(errorMsg);
+
+          this.eventEmitter.emit(OutlookEventTypes.SUBSCRIPTION_CREATION_FAILED, {
+            userId: externalUserId,
+            subscriptionType: 'calendar',
+            error: errorMsg,
+          });
         }
       }
 
@@ -604,6 +610,12 @@ export class MicrosoftAuthService {
           const errorMsg = `Failed to create email webhook subscription after retries: ${emailError instanceof Error ? emailError.message : 'Unknown error'}`;
           this.logger.error(`[${correlationId}] ${errorMsg}`);
           errors.push(errorMsg);
+
+          this.eventEmitter.emit(OutlookEventTypes.SUBSCRIPTION_CREATION_FAILED, {
+            userId: externalUserId,
+            subscriptionType: 'email',
+            error: errorMsg,
+          });
         }
       }
 

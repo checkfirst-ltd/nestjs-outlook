@@ -1,6 +1,7 @@
 import { Controller, Post, HttpCode, Query, Res, Req, Injectable, Body, Logger } from '@nestjs/common';
 import { ApiTags, ApiResponse, ApiBody, ApiQuery } from '@nestjs/swagger';
 import { Response, Request } from 'express';
+import { randomUUID } from 'crypto';
 import { CalendarService } from '../services/calendar/calendar.service';
 import { ChangeNotification, ChangeType } from '@microsoft/microsoft-graph-types';
 import { OutlookWebhookNotificationDto } from '../dto/outlook-webhook-notification.dto';
@@ -74,6 +75,8 @@ export class CalendarController {
 
     // Process notification
     try {
+      const webhookTraceId = randomUUID();
+      this.logger.log(`[WEBHOOK_RECEIVED] webhookTraceId=${webhookTraceId}, endpoint=notification, notificationCount=${notificationBody.value?.length ?? 0}`);
       this.logger.debug(`Received webhook notification: ${JSON.stringify(notificationBody)}`);
 
       // Early response with 202 Accepted if we have multiple notifications
@@ -95,7 +98,7 @@ export class CalendarController {
               resourceData: item.resourceData,
               clientState: item.clientState,
               tenantId: item.tenantId,
-            });
+            }, webhookTraceId);
           }
           res.json({
             success: true,
@@ -116,7 +119,7 @@ export class CalendarController {
             resourceData: item.resourceData,
             clientState: item.clientState,
             tenantId: item.tenantId,
-          });
+          }, webhookTraceId);
         }
         res.json({
           success: true,
@@ -198,6 +201,8 @@ export class CalendarController {
 
     // Process notification
     try {
+      const webhookTraceId = randomUUID();
+      this.logger.log(`[WEBHOOK_RECEIVED] webhookTraceId=${webhookTraceId}, endpoint=webhook, notificationCount=${notificationBody.value?.length ?? 0}`);
       this.logger.debug(`Received webhook notification: ${JSON.stringify(notificationBody)}`);
 
       // Early response with 202 Accepted if we have multiple notifications
@@ -210,7 +215,7 @@ export class CalendarController {
         });
 
         // Process notifications asynchronously after sending the response
-        this.processCalendarNotificationBatch(notificationBody).catch((error: unknown) => {
+        this.processCalendarNotificationBatch(notificationBody, webhookTraceId).catch((error: unknown) => {
           const errorMessage = error instanceof Error ? error.message : String(error);
           this.logger.error(`Error processing notification batch: ${errorMessage}`);
         });
@@ -219,7 +224,7 @@ export class CalendarController {
 
       // For smaller batches, process synchronously
       if (Array.isArray(notificationBody.value) && notificationBody.value.length > 0) {
-        const results = await this.processCalendarNotificationBatch(notificationBody);
+        const results = await this.processCalendarNotificationBatch(notificationBody, webhookTraceId);
         res.json({
           success: true,
           message: `Processed ${results.successCount.toString()} out of ${notificationBody.value.length.toString()} notifications`,
@@ -243,14 +248,16 @@ export class CalendarController {
       });
     }
   }
-  
+
   /**
    * Process a batch of calendar notifications asynchronously
    * @param notificationBody The batch of notifications to process
+   * @param webhookTraceId Correlation ID for tracing this webhook through downstream operations
    * @returns Results of the processing operation
    */
   private async processCalendarNotificationBatch(
     notificationBody: OutlookWebhookNotificationDto,
+    webhookTraceId: string,
   ): Promise<{ successCount: number; failureCount: number }> {
     // Track processing results
     let successCount = 0;
@@ -324,10 +331,10 @@ export class CalendarController {
           tenantId: item.tenantId,
         };
 
-        const result = await this.calendarService.handleOutlookWebhook(changeNotification);
+        const result = await this.calendarService.handleOutlookWebhook(changeNotification, false, webhookTraceId);
 
         if (result.success) {
-          this.logger.log(`Successfully processed ${item.changeType} event for resource ID: ${resourceData.id || 'unknown'}`);
+          this.logger.log(`Successfully processed ${item.changeType} event for resource ID: ${resourceData.id || 'unknown'}, webhookTraceId=${webhookTraceId}`);
           successCount++;
         } else {
           this.logger.warn(`Failed to process event: ${result.message}`);
