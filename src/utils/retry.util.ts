@@ -23,6 +23,14 @@ function isGraphErrorWithStatus(error: unknown, statusCode: number): boolean {
     return error.statusCode === statusCode;
   }
 
+  // Check for axios error format (error.response.status)
+  if ('response' in error && error.response && typeof error.response === 'object') {
+    const response = error.response as { status?: number };
+    if (typeof response.status === 'number') {
+      return response.status === statusCode;
+    }
+  }
+
   // Check for nested error in stack array (Microsoft Graph SDK format)
   if ('stack' in error && Array.isArray(error.stack) && error.stack.length > 0) {
     const firstError: unknown = error.stack[0];
@@ -113,6 +121,14 @@ export function isServerError(error: unknown): boolean {
   // Check for Microsoft Graph SDK error format
   if ('statusCode' in error && typeof error.statusCode === 'number') {
     return error.statusCode >= 500 && error.statusCode < 600;
+  }
+
+  // Check for axios error format (error.response.status)
+  if ('response' in error && error.response && typeof error.response === 'object') {
+    const response = error.response as { status?: number };
+    if (typeof response.status === 'number') {
+      return response.status >= 500 && response.status < 600;
+    }
   }
 
   // Check for nested error in stack array (Microsoft Graph SDK format)
@@ -272,6 +288,20 @@ function extractErrorInfo(error: unknown): {
       message: body,
       type: statusCode === -1 ? 'network_error' : 'graph_api_error',
     };
+  }
+
+  // Check for axios error format (error.response.status)
+  if ('response' in error && error.response && typeof error.response === 'object') {
+    const response = error.response as { status?: number; data?: { error?: { code?: string; message?: string } } };
+    if (typeof response.status === 'number') {
+      const errorData = response.data?.error;
+      return {
+        statusCode: response.status,
+        code: errorData?.code ?? 'N/A',
+        message: errorData?.message ?? 'N/A',
+        type: 'axios_api_error',
+      };
+    }
   }
 
   // Check for nested error in stack array
