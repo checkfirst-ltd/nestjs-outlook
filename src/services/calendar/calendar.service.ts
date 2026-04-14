@@ -22,6 +22,7 @@ import { executeGraphApiCall } from "../../utils/outlook-api-executor.util";
 import { OutlookWebhookSubscription } from "../../entities/outlook-webhook-subscription.entity";
 import { GraphRateLimiterService } from "../shared/graph-rate-limiter.service";
 import { extractRetryAfterSeconds } from "../../utils/retry.util";
+import { TtlCache } from "../../utils/ttl-cache.util";
 
 // Event type constants
 const OUTLOOK_EVENT_CREATED = OutlookEventTypes.EVENT_CREATED;
@@ -68,7 +69,8 @@ function detectEventType(change: Event): OutlookEventTypes {
 @Injectable()
 export class CalendarService {
   private readonly logger = new Logger(CalendarService.name);
-  private readonly syncLocks = new Map<string, Promise<void>>();
+  // Calendar IDs are immutable per user — cache for an hour.
+  private readonly defaultCalendarIdCache = new TtlCache<string, string>(60 * 60 * 1000);
 
   constructor(
     @Inject(forwardRef(() => MicrosoftAuthService))
@@ -94,19 +96,25 @@ export class CalendarService {
    */
   async getDefaultCalendarId(externalUserId: string): Promise<string> {
     try {
-      // Check if we have the calendar ID cached in the database
+      // In-memory hit wins — calendar IDs are immutable per user.
+      const memHit = this.defaultCalendarIdCache.get(externalUserId);
+      if (memHit) {
+        this.logger.debug(`Using in-memory cached calendar ID for user ${externalUserId}`);
+        return memHit;
+      }
+
       const user = await this.microsoftUserRepository.findOne({
         where: { externalUserId, isActive: true },
-        cache: true,
       });
 
       if (!user) {
         throw new Error(`No Microsoft user found for external user ID ${externalUserId}`);
       }
 
-      // Return cached calendar ID if available
+      // Fall back to the persisted value so restarts stay fast.
       if (user.defaultCalendarId) {
-        this.logger.debug(`Using cached calendar ID for user ${externalUserId}`);
+        this.logger.debug(`Using persisted calendar ID for user ${externalUserId}`);
+        this.defaultCalendarIdCache.set(externalUserId, user.defaultCalendarId);
         return user.defaultCalendarId;
       }
 
@@ -144,9 +152,10 @@ export class CalendarService {
 
       const calendarId = response.data.id;
 
-      // Cache the calendar ID in the database
+      // Persist so subsequent processes / restarts don't need to re-fetch.
       user.defaultCalendarId = calendarId;
       await this.microsoftUserRepository.save(user);
+      this.defaultCalendarIdCache.set(externalUserId, calendarId);
 
       this.logger.log(`Cached calendar ID for user ${externalUserId}`);
 

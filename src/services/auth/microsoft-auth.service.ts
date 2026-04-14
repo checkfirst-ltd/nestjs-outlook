@@ -17,6 +17,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, Repository } from 'typeorm';
 import { MicrosoftUser } from '../../entities/microsoft-user.entity';
 import { retryWithBackoff } from '../../utils/retry.util';
+import { TtlCache } from '../../utils/ttl-cache.util';
 
 /**
  * Important terminology:
@@ -52,6 +53,8 @@ export class MicrosoftAuthService {
   private readonly CSRF_TOKEN_EXPIRY = 30 * 60 * 1000;
   // Map to track subscription creation in progress for a user (keyed by external user ID)
   private subscriptionInProgress = new Map<string, boolean>();
+  // In-memory cache for MicrosoftUser lookups (keyed by `${idKind}:${idValue}:${activeScope}`)
+  private readonly microsoftUserCache = new TtlCache<string, MicrosoftUser>(30000);
 
   constructor(
     private readonly eventEmitter: EventEmitter2,
@@ -316,6 +319,7 @@ export class MicrosoftAuthService {
     user.isActive = true; // Reactivate if previously inactive
 
     await this.microsoftUserRepository.save(user);
+    this.invalidateUserCache(user);
   }
 
   /**
@@ -330,6 +334,12 @@ export class MicrosoftAuthService {
 
     if (!internalUserId && !externalUserId) {
       throw new Error('Either internalUserId or externalUserId must be provided');
+    }
+
+    const cacheKey = this.buildUserCacheKey({ internalUserId, externalUserId, includeInactive });
+    if (cache) {
+      const cached = this.microsoftUserCache.get(cacheKey);
+      if (cached !== undefined) return cached;
     }
 
     const whereCondition: FindOptionsWhere<MicrosoftUser> = {};
@@ -347,10 +357,28 @@ export class MicrosoftAuthService {
       whereCondition.externalUserId = externalUserId;
     }
 
-    return await this.microsoftUserRepository.findOne({
+    const user = await this.microsoftUserRepository.findOne({
       where: whereCondition,
-      cache,
     });
+
+    if (cache && user) {
+      this.microsoftUserCache.set(cacheKey, user);
+    }
+
+    return user;
+  }
+
+  private buildUserCacheKey(params: { internalUserId?: number; externalUserId?: string; includeInactive: boolean }): string {
+    const scope = params.includeInactive ? 'any' : 'active';
+    if (params.internalUserId !== undefined) return `int:${String(params.internalUserId)}:${scope}`;
+    return `ext:${params.externalUserId ?? ''}:${scope}`;
+  }
+
+  private invalidateUserCache(user: MicrosoftUser): void {
+    for (const scope of ['active', 'any']) {
+      this.microsoftUserCache.delete(`int:${String(user.id)}:${scope}`);
+      this.microsoftUserCache.delete(`ext:${user.externalUserId}:${scope}`);
+    }
   }
 
   /**
@@ -722,6 +750,7 @@ export class MicrosoftAuthService {
         internalUser.tokenExpiry = new Date(Date.now() + response.data.expires_in * 1000);
 
         await this.microsoftUserRepository.save(internalUser);
+        this.invalidateUserCache(internalUser);
 
         // Return just the access token
         return newAccessToken;

@@ -3,13 +3,20 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { OutlookDeltaLink } from '../entities/delta-link.entity';
 import { ResourceType } from '../enums/resource-type.enum';
+import { TtlCache } from '../utils/ttl-cache.util';
 
 @Injectable()
 export class OutlookDeltaLinkRepository {
+  private readonly deltaLinkCache = new TtlCache<string, string>(30000);
+
   constructor(
     @InjectRepository(OutlookDeltaLink)
     private readonly repository: Repository<OutlookDeltaLink>,
   ) {}
+
+  private cacheKey(internalUserId: number, resourceType: ResourceType): string {
+    return `${String(internalUserId)}:${resourceType}`;
+  }
 
   /**
    * Save or update a delta link for a Microsoft user
@@ -37,7 +44,9 @@ export class OutlookDeltaLinkRepository {
     // Update the delta link
     deltaLinkEntity.deltaLink = deltaLink;
 
-    return this.repository.save(deltaLinkEntity);
+    const saved = await this.repository.save(deltaLinkEntity);
+    this.deltaLinkCache.set(this.cacheKey(internalUserId, resourceType), deltaLink);
+    return saved;
   }
 
   /**
@@ -50,12 +59,17 @@ export class OutlookDeltaLinkRepository {
     internalUserId: number,
     resourceType: ResourceType,
   ): Promise<string | null> {
+    const key = this.cacheKey(internalUserId, resourceType);
+    const cached = this.deltaLinkCache.get(key);
+    if (cached !== undefined) return cached;
+
     const deltaLinkEntity = await this.repository.findOne({
       where: { userId: internalUserId, resourceType },
-      cache: 30000,
     });
 
-    return deltaLinkEntity?.deltaLink || null;
+    const value = deltaLinkEntity?.deltaLink || null;
+    if (value) this.deltaLinkCache.set(key, value);
+    return value;
   }
 
   /**
@@ -68,5 +82,6 @@ export class OutlookDeltaLinkRepository {
     resourceType: ResourceType,
   ): Promise<void> {
     await this.repository.delete({ userId: internalUserId, resourceType });
+    this.deltaLinkCache.delete(this.cacheKey(internalUserId, resourceType));
   }
 }
