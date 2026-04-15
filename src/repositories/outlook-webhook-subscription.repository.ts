@@ -2,13 +2,22 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, LessThan, MoreThan } from 'typeorm';
 import { OutlookWebhookSubscription } from '../entities/outlook-webhook-subscription.entity';
+import { TtlCache } from '../utils/ttl-cache.util';
 
 @Injectable()
 export class OutlookWebhookSubscriptionRepository {
+  private readonly bySubscriptionId = new TtlCache<string, OutlookWebhookSubscription>(60000);
+  private readonly byUserId = new TtlCache<number, OutlookWebhookSubscription>(60000);
+
   constructor(
     @InjectRepository(OutlookWebhookSubscription)
     private readonly repository: Repository<OutlookWebhookSubscription>,
   ) {}
+
+  private invalidate(subscription?: Partial<OutlookWebhookSubscription> | null): void {
+    if (subscription?.subscriptionId) this.bySubscriptionId.delete(subscription.subscriptionId);
+    if (subscription?.userId !== undefined) this.byUserId.delete(subscription.userId);
+  }
 
   async saveSubscription(
     subscription: Partial<OutlookWebhookSubscription>,
@@ -24,7 +33,9 @@ export class OutlookWebhookSubscriptionRepository {
         const originalId = existingSubscription.id;
         Object.assign(existingSubscription, subscription);
         existingSubscription.id = originalId; // Ensure ID doesn't get overwritten
-        return this.repository.save(existingSubscription);
+        const saved = await this.repository.save(existingSubscription);
+        this.invalidate(saved);
+        return saved;
       }
     }
 
@@ -33,12 +44,19 @@ export class OutlookWebhookSubscriptionRepository {
     const subscriptionWithoutId = { ...subscription };
     delete subscriptionWithoutId.id;
     const newSubscription = this.repository.create(subscriptionWithoutId);
-    
-    return this.repository.save(newSubscription);
+
+    const saved = await this.repository.save(newSubscription);
+    this.invalidate(saved);
+    return saved;
   }
 
   async findBySubscriptionId(subscriptionId: string): Promise<OutlookWebhookSubscription | null> {
-    return this.repository.findOne({ where: { subscriptionId, isActive: true }, cache: true });
+    const cached = this.bySubscriptionId.get(subscriptionId);
+    if (cached !== undefined) return cached;
+
+    const result = await this.repository.findOne({ where: { subscriptionId, isActive: true } });
+    if (result) this.bySubscriptionId.set(subscriptionId, result);
+    return result;
   }
 
   async updateSubscriptionExpiration(
@@ -51,10 +69,15 @@ export class OutlookWebhookSubscriptionRepository {
     };
 
     await this.repository.update({ subscriptionId, isActive: true }, update);
+    this.bySubscriptionId.delete(subscriptionId);
+    // userId unknown here; clear conservatively
+    this.byUserId.clear();
   }
 
   async deactivateSubscription(subscriptionId: string): Promise<void> {
     await this.repository.update({ subscriptionId }, { isActive: false, updatedAt: new Date() });
+    this.bySubscriptionId.delete(subscriptionId);
+    this.byUserId.clear();
   }
 
   async findSubscriptionsNeedingRenewal(
@@ -82,10 +105,14 @@ export class OutlookWebhookSubscriptionRepository {
   }
 
   async findActiveByUserId(userId: number): Promise<OutlookWebhookSubscription | null> {
-    return this.repository.findOne({
+    const cached = this.byUserId.get(userId);
+    if (cached !== undefined) return cached;
+
+    const result = await this.repository.findOne({
       where: { userId, isActive: true },
-      cache: true,
     });
+    if (result) this.byUserId.set(userId, result);
+    return result;
   }
 
   async count(options: Parameters<Repository<OutlookWebhookSubscription>['count']>[0]): Promise<number> {

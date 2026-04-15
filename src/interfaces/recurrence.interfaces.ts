@@ -81,5 +81,12 @@ export interface ExpansionWindow {
 export interface RecurringEventExpansionResult {
   seriesMaster: ProcessedOutlookEvent;
   instances: ProcessedOutlookEvent[];
-  expansionWindow: ExpansionWindow;
+  expansionWindow: ExpansionWindow[];
+  staleExternalIds: string[];
+}
+
+/** Options for expandRecurringSeries */
+export interface ExpandRecurringSeriesOptions {
+  /** Existing external IDs to compare against for stale-occurrence detection */
+  existingExternalIds?: string[];
 }

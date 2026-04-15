@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { MicrosoftUser } from '../../entities/microsoft-user.entity';
+import { TtlCache } from '../../utils/ttl-cache.util';
 
 /**
  * Service for converting between external user IDs and internal database IDs
@@ -13,6 +14,8 @@ import { MicrosoftUser } from '../../entities/microsoft-user.entity';
 @Injectable()
 export class UserIdConverterService {
   private readonly logger = new Logger(UserIdConverterService.name);
+  private readonly externalToInternalCache = new TtlCache<string, number>(5000);
+  private readonly internalToExternalCache = new TtlCache<number, string>(3000);
 
   constructor(
     @InjectRepository(MicrosoftUser)
@@ -51,9 +54,13 @@ export class UserIdConverterService {
    * ```
    */
   async externalToInternal(externalUserId: string, {cache = true}: {cache?: boolean} = {}): Promise<number> {
+    if (cache) {
+      const cached = this.externalToInternalCache.get(externalUserId);
+      if (cached !== undefined) return cached;
+    }
+
     const user = await this.microsoftUserRepository.findOne({
       where: { externalUserId },
-      cache: cache ? 5000 : false,
     });
 
     if (!user) {
@@ -65,6 +72,7 @@ export class UserIdConverterService {
       );
     }
 
+    if (cache) this.externalToInternalCache.set(externalUserId, user.id);
     return user.id;
   }
 
@@ -83,9 +91,13 @@ export class UserIdConverterService {
    * ```
    */
   async internalToExternal(internalUserId: number, {cache = true}: {cache?: boolean} = {}): Promise<string> {
+    if (cache) {
+      const cached = this.internalToExternalCache.get(internalUserId);
+      if (cached !== undefined) return cached;
+    }
+
     const user = await this.microsoftUserRepository.findOne({
       where: { id: internalUserId },
-      cache: cache ? 3000 : false,
     });
 
     if (!user) {
@@ -97,6 +109,7 @@ export class UserIdConverterService {
       );
     }
 
+    if (cache) this.internalToExternalCache.set(internalUserId, user.externalUserId);
     return user.externalUserId;
   }
 }

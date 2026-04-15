@@ -7,6 +7,7 @@ import {
   OutlookEventType,
   ProcessedOutlookEvent,
   ExpansionWindow,
+  ExpandRecurringSeriesOptions,
   RecurringEventExpansionResult,
 } from '../../interfaces/recurrence.interfaces';
 
@@ -69,10 +70,12 @@ export class RecurrenceService {
    * - seriesMaster (with recurrenceRule for metadata storage)
    * - instances (enriched occurrences/exceptions)
    * - expansionWindow (for tracking how far ahead we've expanded)
+   * - staleExternalIds (occurrences to soft-delete)
    */
   async expandRecurringSeries(
     seriesMasterId: string,
     externalUserId: string,
+    options?: ExpandRecurringSeriesOptions,
   ): Promise<RecurringEventExpansionResult> {
     this.logger.log(
       `[expandRecurringSeries] Expanding series ${seriesMasterId} for user ${externalUserId}`,
@@ -92,29 +95,31 @@ export class RecurrenceService {
 
     const seriesMaster = this.processEvent(masterEvents[0]);
 
-    // 2. Calculate expansion window
-    const expansionWindow = this.calculateExpansionWindow(
+    // 2. Calculate expansion windows (past + future halves)
+    const expansionWindows = this.calculateExpansionWindow(
       seriesMaster.recurrenceRule,
     );
 
-    this.logger.log(
-      `[expandRecurringSeries] Window: ${expansionWindow.startDate.toISOString()} → ${expansionWindow.endDate.toISOString()}`,
-    );
-
-    // 3. Fetch and process all instances within the window
+    // 3. Fetch and process all instances within each window
     const instances: ProcessedOutlookEvent[] = [];
 
-    for await (const batch of this.calendarService.getRecurringEventInstances(
-      seriesMasterId,
-      externalUserId,
-      {
-        startDate: expansionWindow.startDate,
-        endDate: expansionWindow.endDate,
-        batchSize: 100,
-      },
-    )) {
-      for (const event of batch) {
-        instances.push(this.processEvent(event));
+    for (const window of expansionWindows) {
+      this.logger.log(
+        `[expandRecurringSeries] Window: ${window.startDate.toISOString()} → ${window.endDate.toISOString()}`,
+      );
+
+      for await (const batch of this.calendarService.getRecurringEventInstances(
+        seriesMasterId,
+        externalUserId,
+        {
+          startDate: window.startDate,
+          endDate: window.endDate,
+          batchSize: 100,
+        },
+      )) {
+        for (const event of batch) {
+          instances.push(this.processEvent(event));
+        }
       }
     }
 
@@ -122,48 +127,90 @@ export class RecurrenceService {
       `[expandRecurringSeries] Fetched ${instances.length} instances for series ${seriesMasterId}`,
     );
 
+    // 4. Detect stale occurrences
+    const staleExternalIds = options?.existingExternalIds
+      ? this.detectStaleOccurrences(
+          instances.map((i) => i.externalId),
+          options.existingExternalIds,
+        )
+      : [];
+
+    if (staleExternalIds.length > 0) {
+      this.logger.log(
+        `[expandRecurringSeries] Detected ${staleExternalIds.length} stale occurrences`,
+      );
+    }
+
     return {
       seriesMaster,
       instances,
-      expansionWindow,
+      expansionWindow: expansionWindows,
+      staleExternalIds,
     };
   }
 
   /**
-   * Calculate the date range for expanding recurring event instances.
+   * Calculate the date ranges for expanding recurring event instances.
    *
-   * Strategy:
-   * - Start date: always 1 month before now
-   * - End date: always 5 years ahead, capped by series end date if finite
+   * Graph's calendarView caps a single expansion request at a 5-year span,
+   * so we split the work into two halves — past (now-5y → now) and future
+   * (now → now+5y) — each clamped by the series' own range when known.
+   *
+   * A 2-day safety margin is subtracted from the far edges to stay inside
+   * Outlook's hard 5-year limit.
    */
   calculateExpansionWindow(
     recurrenceRule?: RecurrenceRule,
-  ): ExpansionWindow {
+  ): ExpansionWindow[] {
     const now = new Date();
 
-    const startDate = new Date(now);
-    startDate.setMonth(startDate.getMonth());
+    const fiveYearsAgo = new Date(now);
+    fiveYearsAgo.setFullYear(fiveYearsAgo.getFullYear() - 5);
+    fiveYearsAgo.setDate(fiveYearsAgo.getDate() + 2);
 
-    let endDate: Date;
+    const fiveYearsAhead = new Date(now);
+    fiveYearsAhead.setFullYear(fiveYearsAhead.getFullYear() + 5);
+    fiveYearsAhead.setDate(fiveYearsAhead.getDate() - 2);
 
-    // Expand up to 5 years from the start date, minus 2 days
-    // to stay within Outlook's maximum allowed range of 5 years
-    endDate = new Date(startDate);
-    endDate.setFullYear(endDate.getFullYear() + 5);
-    endDate.setDate(endDate.getDate() - 2);
+    const seriesStart = recurrenceRule?.range.startDate
+      ? new Date(recurrenceRule.range.startDate)
+      : undefined;
+    const seriesEnd =
+      recurrenceRule?.range.type === 'endDate' && recurrenceRule.range.endDate
+        ? new Date(recurrenceRule.range.endDate)
+        : undefined;
 
-    // If the series has a defined end before our 5-year window, use it
-    if (
-      recurrenceRule?.range.type === 'endDate' &&
-      recurrenceRule.range.endDate
-    ) {
-      const seriesEnd = new Date(recurrenceRule.range.endDate);
-      if (seriesEnd < endDate) {
-        endDate = seriesEnd;
-      }
+    const windows: ExpansionWindow[] = [];
+
+    // Past half: max(now-5y, seriesStart) → now
+    const pastStart =
+      seriesStart && seriesStart > fiveYearsAgo ? seriesStart : fiveYearsAgo;
+    if (pastStart < now) {
+      windows.push({ startDate: pastStart, endDate: new Date(now) });
     }
 
-    return { startDate, endDate };
+    // Future half: now → min(now+5y, seriesEnd)
+    const futureEnd =
+      seriesEnd && seriesEnd < fiveYearsAhead ? seriesEnd : fiveYearsAhead;
+    const futureStart =
+      seriesStart && seriesStart > now ? seriesStart : new Date(now);
+    if (futureEnd > futureStart) {
+      windows.push({ startDate: futureStart, endDate: futureEnd });
+    }
+
+    return windows;
+  }
+
+  /**
+   * Return existing external IDs that were NOT returned by the latest expansion.
+   * These represent deleted or removed occurrences that should be soft-deleted.
+   */
+  detectStaleOccurrences(
+    fetchedExternalIds: string[],
+    existingExternalIds: string[],
+  ): string[] {
+    const fetchedSet = new Set(fetchedExternalIds);
+    return existingExternalIds.filter((id) => !fetchedSet.has(id));
   }
 
   /**

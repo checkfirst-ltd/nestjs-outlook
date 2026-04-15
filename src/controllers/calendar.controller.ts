@@ -76,7 +76,7 @@ export class CalendarController {
     // Process notification
     try {
       const webhookTraceId = randomUUID();
-      this.logger.log(`[WEBHOOK_RECEIVED] webhookTraceId=${webhookTraceId}, endpoint=notification, notificationCount=${notificationBody.value?.length ?? 0}`);
+      this.logger.log(`[WEBHOOK_RECEIVED] webhookTraceId=${webhookTraceId}, endpoint=notification, notificationCount=${notificationBody.value.length}`);
       this.logger.debug(`Received webhook notification: ${JSON.stringify(notificationBody)}`);
 
       // Early response with 202 Accepted if we have multiple notifications
@@ -202,7 +202,7 @@ export class CalendarController {
     // Process notification
     try {
       const webhookTraceId = randomUUID();
-      this.logger.log(`[WEBHOOK_RECEIVED] webhookTraceId=${webhookTraceId}, endpoint=webhook, notificationCount=${notificationBody.value?.length ?? 0}`);
+      this.logger.log(`[WEBHOOK_RECEIVED] webhookTraceId=${webhookTraceId}, endpoint=webhook, notificationCount=${notificationBody.value.length}`);
       this.logger.debug(`Received webhook notification: ${JSON.stringify(notificationBody)}`);
 
       // Early response with 202 Accepted if we have multiple notifications
