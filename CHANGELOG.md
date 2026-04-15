@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.1.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.1.0...v7.1.1) (2026-04-15)
+
+
+### Bug Fixes
+
+* dummy change to correct github action ([#120](https://github.com/checkfirst-ltd/nestjs-outlook/issues/120)) ([20b4d83](https://github.com/checkfirst-ltd/nestjs-outlook/commit/20b4d831f2ccd8bf1b901c4e5b17c5c649352a6c))
+
 ## [7.1.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.0.3...v7.1.0) (2026-04-07)
 
 
