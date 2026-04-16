@@ -2,6 +2,7 @@ import { Controller, Get, Query, Logger, Res, HttpStatus } from '@nestjs/common'
 import { Response } from 'express';
 import { ApiTags, ApiResponse, ApiQuery, ApiOperation, ApiProduces } from '@nestjs/swagger';
 import { MicrosoftAuthService } from '../services/auth/microsoft-auth.service';
+import { MailboxInactiveError } from '../errors/mailbox-inactive.error';
 
 @ApiTags('Microsoft Auth')
 @Controller('auth/microsoft')
@@ -96,6 +97,27 @@ export class MicrosoftAuthController {
       `);
     } catch (error) {
       this.logger.error('Error handling OAuth callback:', error);
+
+      if (error instanceof MailboxInactiveError) {
+        return res.status(HttpStatus.OK).send(`
+          <h1>Calendar Connection Failed</h1>
+          <p>Your Microsoft account was authenticated, but we couldn't access your mailbox.</p>
+          <p>This usually means your mailbox is either:</p>
+          <ul>
+            <li>Hosted on an on-premise Exchange server (not Exchange Online)</li>
+            <li>Inactive or has been soft-deleted</li>
+            <li>Missing an Exchange Online license</li>
+          </ul>
+          <p>Please contact your IT administrator to ensure your mailbox is hosted in Exchange Online (Microsoft 365).</p>
+          <p>You can close this tab now.</p>
+          <script>
+            if (window.opener) {
+              window.opener.postMessage({ type: 'microsoft-auth-failed', error: 'Your mailbox is not supported. It may be inactive, soft-deleted, or hosted on-premise. Please contact your IT administrator.' }, '*');
+            }
+          </script>
+        `);
+      }
+
       return res
         .status(HttpStatus.INTERNAL_SERVER_ERROR)
         .send('An error occurred during authentication');

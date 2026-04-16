@@ -4,7 +4,7 @@ import axios from 'axios';
 import { TokenResponse } from '../../interfaces/outlook/token-response.interface';
 import { CalendarService } from '../calendar/calendar.service';
 import { EmailService } from '../email/email.service';
-import { MICROSOFT_CONFIG } from '../../constants';
+import { GRAPH_ERROR_CODES, MICROSOFT_CONFIG } from '../../constants';
 import { MicrosoftOutlookConfig } from '../../interfaces/config/outlook-config.interface';
 import { OutlookEventTypes } from '../../enums/event-types.enum';
 import * as crypto from 'crypto';
@@ -18,6 +18,7 @@ import { FindOptionsWhere, Repository } from 'typeorm';
 import { MicrosoftUser } from '../../entities/microsoft-user.entity';
 import { retryWithBackoff } from '../../utils/retry.util';
 import { TtlCache } from '../../utils/ttl-cache.util';
+import { MailboxInactiveError } from '../../errors/mailbox-inactive.error';
 
 /**
  * Important terminology:
@@ -535,6 +536,10 @@ export class MicrosoftAuthService {
         scopeString // Store the exact Microsoft scopes used
       );
 
+      // Validate mailbox is accessible before proceeding with calendar setup
+      this.logger.log(`[${correlationId}] Validating mailbox access`);
+      await this.validateMailboxAccess(tokenData.access_token, correlationId);
+
       // Emit event that the user has been authenticated
       this.logger.log(`[${correlationId}] Emitting USER_AUTHENTICATED event`);
       await Promise.resolve(
@@ -551,6 +556,11 @@ export class MicrosoftAuthService {
       this.logger.log(`[${correlationId}] Token exchange completed successfully`);
       return tokenData;
     } catch (error) {
+      if (error instanceof MailboxInactiveError) {
+        // Deactivate the saved Microsoft user since their mailbox isn't usable
+        await this.deactivateMicrosoftUser(stateData.userId, correlationId);
+        throw error; // Let controller handle with user-friendly message
+      }
       if (axios.isAxiosError(error)) {
         this.logger.error(
           `[${correlationId}] Microsoft token exchange failed:`,
@@ -568,7 +578,59 @@ export class MicrosoftAuthService {
       throw new Error('Failed to exchange code for token');
     }
   }
-  
+
+  /**
+   * Validates that the user's mailbox is accessible via Microsoft Graph.
+   * Catches inactive, soft-deleted, or on-premise mailboxes early — before
+   * calendar import is attempted.
+   */
+  private isMailboxDisabledError(code?: string, message?: string): boolean {
+    return (
+      code === GRAPH_ERROR_CODES.MAILBOX_NOT_ENABLED ||
+      /inactive|soft-deleted|on-premise/i.test(message ?? '')
+    );
+  }
+
+  private async validateMailboxAccess(accessToken: string, correlationId: string): Promise<void> {
+    try {
+      await axios.get('https://graph.microsoft.com/v1.0/me/mailboxSettings', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const responseData = error.response?.data as { error?: { code?: string; message?: string } } | undefined;
+        const graphError = responseData?.error;
+        const code: string | undefined = graphError?.code;
+        const message: string = graphError?.message || error.message;
+        if (this.isMailboxDisabledError(code, message)) {
+          this.logger.warn(`[${correlationId}] Mailbox validation failed: ${code} — ${message}`);
+          throw new MailboxInactiveError(message);
+        }
+      }
+      // Non-mailbox errors (network, transient) — don't block auth
+      this.logger.warn(
+        `[${correlationId}] Mailbox validation call failed (non-blocking): ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  /**
+   * Deactivates a Microsoft user record when their mailbox turns out to be unusable.
+   */
+  private async deactivateMicrosoftUser(externalUserId: string, correlationId: string): Promise<void> {
+    try {
+      await this.microsoftUserRepository.update(
+        { externalUserId } as FindOptionsWhere<MicrosoftUser>,
+        { isActive: false },
+      );
+      this.logger.log(`[${correlationId}] Deactivated Microsoft user ${externalUserId} due to unusable mailbox`);
+    } catch (err) {
+      this.logger.warn(
+        `[${correlationId}] Failed to deactivate Microsoft user ${externalUserId}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
   /**
    * Setup webhook subscriptions for a user based on requested scopes
    * @param externalUserId - External user ID from the host application

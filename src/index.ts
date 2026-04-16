@@ -25,6 +25,9 @@ export * from './enums/show-as-type.enum';
 // Export constants
 export * from './constants';
 
+// Export errors
+export * from './errors/mailbox-inactive.error';
+
 // Export controllers
 export * from './controllers/calendar.controller';
 export * from './controllers/microsoft-auth.controller';
