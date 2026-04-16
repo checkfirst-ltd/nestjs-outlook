@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.1.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.1.1...v7.1.2) (2026-04-16)
+
+
+### Bug Fixes
+
+* some mailboxes not supporting REST API ([#122](https://github.com/checkfirst-ltd/nestjs-outlook/issues/122)) ([7bd8c7d](https://github.com/checkfirst-ltd/nestjs-outlook/commit/7bd8c7dee1d1c394ad5badd81b194a4733077092))
+
 ## [7.1.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.1.0...v7.1.1) (2026-04-15)
 
 
