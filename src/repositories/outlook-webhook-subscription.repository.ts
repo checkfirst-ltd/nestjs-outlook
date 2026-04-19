@@ -82,9 +82,21 @@ export class OutlookWebhookSubscriptionRepository {
 
   async findSubscriptionsNeedingRenewal(
     hoursUntilExpiration: number,
+    options?: { skipLocked?: boolean },
   ): Promise<OutlookWebhookSubscription[]> {
     const expirationThreshold = new Date();
     expirationThreshold.setHours(expirationThreshold.getHours() + hoursUntilExpiration);
+
+    // When skipLocked is true, use FOR UPDATE SKIP LOCKED to prevent
+    // multiple instances from renewing the same subscription concurrently
+    if (options?.skipLocked) {
+      return this.repository
+        .createQueryBuilder('sub')
+        .setLock('pessimistic_write_or_fail')
+        .where('sub.isActive = :active', { active: true })
+        .andWhere('sub.expirationDateTime < :threshold', { threshold: expirationThreshold })
+        .getMany();
+    }
 
     return this.repository.find({
       where: {
@@ -113,6 +125,29 @@ export class OutlookWebhookSubscriptionRepository {
     });
     if (result) this.byUserId.set(userId, result);
     return result;
+  }
+
+  async updateLastNotificationAt(subscriptionId: string): Promise<void> {
+    await this.repository.update(
+      { subscriptionId, isActive: true },
+      { lastNotificationAt: new Date() },
+    );
+    this.bySubscriptionId.delete(subscriptionId);
+  }
+
+  async findStaleSubscriptions(staleThresholdHours: number): Promise<OutlookWebhookSubscription[]> {
+    const threshold = new Date();
+    threshold.setHours(threshold.getHours() - staleThresholdHours);
+
+    return this.repository
+      .createQueryBuilder('sub')
+      .where('sub.isActive = :active', { active: true })
+      .andWhere('sub.expirationDateTime > :now', { now: new Date() })
+      .andWhere(
+        '(sub.lastNotificationAt IS NULL OR sub.lastNotificationAt < :threshold)',
+        { threshold },
+      )
+      .getMany();
   }
 
   async count(options: Parameters<Repository<OutlookWebhookSubscription>['count']>[0]): Promise<number> {

@@ -4,6 +4,7 @@ import { LifecycleEventType } from '../../enums/lifecycle-event-types.enum';
 import { OutlookEventTypes } from '../../enums/event-types.enum';
 import { OutlookWebhookSubscriptionRepository } from '../../repositories/outlook-webhook-subscription.repository';
 import { CalendarService } from './calendar.service';
+import { MicrosoftSubscriptionService } from '../subscription/microsoft-subscription.service';
 import { OutlookWebhookNotificationItemDto } from '../../dto/outlook-webhook-notification.dto';
 import { UserIdConverterService } from '../shared/user-id-converter.service';
 
@@ -22,6 +23,7 @@ export class LifecycleEventHandlerService {
   constructor(
     @Inject(forwardRef(() => CalendarService))
     private readonly calendarService: CalendarService,
+    private readonly subscriptionService: MicrosoftSubscriptionService,
     private readonly subscriptionRepository: OutlookWebhookSubscriptionRepository,
     private readonly eventEmitter: EventEmitter2,
     private readonly userIdConverter: UserIdConverterService,
@@ -129,7 +131,7 @@ export class LifecycleEventHandlerService {
       );
 
       const renewedSubscription =
-        await this.calendarService.renewWebhookSubscription(
+        await this.subscriptionService.renewWebhookSubscription(
           subscriptionId,
           subscription.userId,
         );
@@ -215,17 +217,57 @@ export class LifecycleEventHandlerService {
         `[SUBSCRIPTION_REMOVED] Deactivated subscription ${subscriptionId} in database`,
       );
 
-      // Emit event for application-level notification
+      // Attempt to re-create the subscription automatically
+      const externalUserId = await this.userIdConverter.internalToExternal(subscription.userId);
+      let recreated = false;
+
+      try {
+        this.logger.log(
+          `[SUBSCRIPTION_REMOVED] Attempting to re-create subscription for user ${subscription.userId}`,
+        );
+
+        await this.subscriptionService.createWebhookSubscription(externalUserId);
+        recreated = true;
+
+        this.logger.log(
+          `[SUBSCRIPTION_REMOVED] Successfully re-created subscription for user ${subscription.userId}`,
+        );
+
+        this.eventEmitter.emit(OutlookEventTypes.SUBSCRIPTION_RECREATED, {
+          subscriptionId,
+          tenantId,
+          userId: subscription.userId,
+          reason: 'subscription_removed',
+        });
+      } catch (recreateError) {
+        const recreateMsg = recreateError instanceof Error ? recreateError.message : 'Unknown error';
+        this.logger.error(
+          `[SUBSCRIPTION_REMOVED] Failed to re-create subscription for user ${subscription.userId}: ${recreateMsg}`,
+        );
+
+        this.eventEmitter.emit(OutlookEventTypes.SUBSCRIPTION_RECREATION_FAILED, {
+          subscriptionId,
+          tenantId,
+          userId: subscription.userId,
+          reason: 'subscription_removed',
+          error: recreateMsg,
+        });
+      }
+
+      // Emit the original lifecycle event
       this.eventEmitter.emit(OutlookEventTypes.LIFECYCLE_SUBSCRIPTION_REMOVED, {
         subscriptionId,
         tenantId,
         userId: subscription.userId,
         resource: subscription.resource,
+        recreated,
       });
 
       return {
         success: true,
-        message: 'Subscription marked as inactive',
+        message: recreated
+          ? 'Subscription removed and re-created successfully'
+          : 'Subscription marked as inactive (re-creation failed)',
       };
     } catch (error) {
       const errorMessage =
@@ -270,20 +312,17 @@ export class LifecycleEventHandlerService {
         };
       }
 
-      // Trigger delta sync to catch up on missed changes
+      // Trigger delta sync to catch up on missed changes AND process them
       this.logger.log(
         `[MISSED] Starting delta sync for user ${subscription.userId} to recover missed changes`,
       );
 
       const externalUserId = await this.userIdConverter.internalToExternal(subscription.userId);
 
-      // Use streaming mode for better performance
-      const changes = await this.calendarService.fetchAndSortChanges(
+      const changesCount = await this.calendarService.syncDeltaChanges(
         externalUserId,
-        false, // Don't force reset, use existing delta link
+        subscriptionId,
       );
-
-      const changesCount = changes.length;
 
       this.logger.log(
         `[MISSED] Delta sync completed. Found ${changesCount} changes for subscription ${subscriptionId}`,

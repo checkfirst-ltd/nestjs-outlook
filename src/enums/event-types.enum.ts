@@ -25,6 +25,11 @@ export enum OutlookEventTypes {
   LIFECYCLE_SUBSCRIPTION_REMOVED = 'outlook.lifecycle.subscription_removed',
   LIFECYCLE_MISSED = 'outlook.lifecycle.missed',
 
+  // Subscription lifecycle events
+  SUBSCRIPTION_RECREATED = 'outlook.subscription.recreated',
+  SUBSCRIPTION_RECREATION_FAILED = 'outlook.subscription.recreation_failed',
+  SUBSCRIPTION_AUTH_FAILED = 'outlook.subscription.auth_failed',
+
   // Error events
   SUBSCRIPTION_CREATION_FAILED = 'outlook.subscription.creation_failed',
 }
