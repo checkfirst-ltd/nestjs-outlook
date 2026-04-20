@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThan, MoreThan } from 'typeorm';
+import { Repository, MoreThan } from 'typeorm';
 import { OutlookWebhookSubscription } from '../entities/outlook-webhook-subscription.entity';
 import { TtlCache } from '../utils/ttl-cache.util';
 
@@ -78,32 +78,6 @@ export class OutlookWebhookSubscriptionRepository {
     await this.repository.update({ subscriptionId }, { isActive: false, updatedAt: new Date() });
     this.bySubscriptionId.delete(subscriptionId);
     this.byUserId.clear();
-  }
-
-  async findSubscriptionsNeedingRenewal(
-    hoursUntilExpiration: number,
-    options?: { skipLocked?: boolean },
-  ): Promise<OutlookWebhookSubscription[]> {
-    const expirationThreshold = new Date();
-    expirationThreshold.setHours(expirationThreshold.getHours() + hoursUntilExpiration);
-
-    // When skipLocked is true, use FOR UPDATE SKIP LOCKED to prevent
-    // multiple instances from renewing the same subscription concurrently
-    if (options?.skipLocked) {
-      return this.repository
-        .createQueryBuilder('sub')
-        .setLock('pessimistic_write_or_fail')
-        .where('sub.isActive = :active', { active: true })
-        .andWhere('sub.expirationDateTime < :threshold', { threshold: expirationThreshold })
-        .getMany();
-    }
-
-    return this.repository.find({
-      where: {
-        isActive: true,
-        expirationDateTime: LessThan(expirationThreshold),
-      },
-    });
   }
 
   async findActiveSubscriptions(): Promise<OutlookWebhookSubscription[]> {

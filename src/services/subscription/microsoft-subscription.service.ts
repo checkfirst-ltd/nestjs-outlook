@@ -1,11 +1,11 @@
 import { randomUUID } from "crypto";
 import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Cron } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not } from 'typeorm';
+import { Repository, Not, In } from 'typeorm';
 import axios from 'axios';
-import { Subscription } from '../../types';
+import { Subscription, BatchRequestPayload, BatchResponsePayload, BatchResponse } from '../../types';
 import { MicrosoftAuthService } from '../auth/microsoft-auth.service';
 import { OutlookWebhookSubscriptionRepository } from '../../repositories/outlook-webhook-subscription.repository';
 import { OutlookWebhookSubscription } from '../../entities/outlook-webhook-subscription.entity';
@@ -13,7 +13,9 @@ import { MicrosoftUser } from '../../entities/microsoft-user.entity';
 import { MICROSOFT_CONFIG } from '../../constants';
 import { MicrosoftOutlookConfig } from '../../interfaces/config/outlook-config.interface';
 import { OutlookEventTypes } from '../../enums/event-types.enum';
+import { MicrosoftUserStatus } from '../../enums/microsoft-user-status.enum';
 import { UserIdConverterService } from '../shared/user-id-converter.service';
+import { GraphRateLimiterService } from '../shared/graph-rate-limiter.service';
 import { executeGraphApiCall } from '../../utils/outlook-api-executor.util';
 
 /**
@@ -53,6 +55,28 @@ export interface SubscriptionCleanupResult {
   errors: Array<{ subscriptionId: string; error: string }>;
 }
 
+// ─── Health-check tuning constants ──────────────────────────────────
+/** Microsoft Graph batch API allows at most 20 inner requests per /$batch call. */
+const GRAPH_BATCH_SIZE = 20;
+/** Only subs expiring within this window get a Graph /subscriptions/{id} verification call. */
+const HEALTH_CHECK_WINDOW_HOURS = 24;
+/** A sub expiring within this window is force-renewed during the health check. */
+const FORCE_RENEWAL_WINDOW_HOURS = 12;
+/** A sub with no notifications in this window is treated as stale. */
+const STALE_NOTIFICATION_THRESHOLD_HOURS = 24;
+
+/**
+ * Per-pass counters for the health check. Helpers return a freshly-allocated
+ * instance and the orchestrator sums them — no shared mutable state.
+ */
+interface HealthCheckCounters {
+  verified: number;
+  recreated: number;
+  renewed: number;
+  staleDetected: number;
+  failed: number;
+}
+
 /**
  * Centralized service for managing Microsoft Graph API subscriptions
  * Handles creation, renewal, deletion, health checks, and cleanup of
@@ -74,6 +98,7 @@ export class MicrosoftSubscriptionService {
     @InjectRepository(MicrosoftUser)
     private readonly microsoftUserRepository: Repository<MicrosoftUser>,
     private readonly userIdConverter: UserIdConverterService,
+    private readonly rateLimiter: GraphRateLimiterService,
   ) {}
 
   // ─── Microsoft Graph API subscription queries ───────────────────────
@@ -409,46 +434,16 @@ export class MicrosoftSubscriptionService {
 
         // Subscription no longer exists at Microsoft — deactivate and attempt re-creation
         if (statusCode === 404) {
-          this.logger.warn(
-            `[${correlationId}] Subscription ${subscriptionId} not found at Microsoft. ` +
-            `Deactivating and attempting re-creation.`
+          const outcome = await this.handleSubscriptionNotFoundAtMicrosoft(
+            subscriptionId,
+            internalUserId,
+            'renewal_404',
+            correlationId,
           );
-
-          await this.webhookSubscriptionRepository.deactivateSubscription(
-            subscriptionId
-          );
-
-          // Attempt to re-create the subscription
-          try {
-            const externalUserId = await this.userIdConverter.internalToExternal(internalUserId);
-            await this.createWebhookSubscription(externalUserId);
-
-            this.logger.log(
-              `[${correlationId}] Successfully re-created subscription for user ${internalUserId} after 404`
-            );
-
-            this.eventEmitter.emit(OutlookEventTypes.SUBSCRIPTION_RECREATED, {
-              subscriptionId,
-              userId: internalUserId,
-              reason: 'renewal_404',
-            });
-
-            // Return early — the old subscription is replaced
+          if (outcome === 'recreated') {
+            // The old subscription has been replaced by a fresh one.
             return {} as Subscription;
-          } catch (recreateError) {
-            const recreateMsg = recreateError instanceof Error ? recreateError.message : 'Unknown error';
-            this.logger.error(
-              `[${correlationId}] Failed to re-create subscription for user ${internalUserId}: ${recreateMsg}`
-            );
-
-            this.eventEmitter.emit(OutlookEventTypes.SUBSCRIPTION_RECREATION_FAILED, {
-              subscriptionId,
-              userId: internalUserId,
-              reason: 'renewal_404',
-              error: recreateMsg,
-            });
           }
-
           throw new Error(
             `Subscription ${subscriptionId} not found at Microsoft. ` +
             `Subscription has been deactivated and re-creation failed.`
@@ -622,6 +617,19 @@ export class MicrosoftSubscriptionService {
     try {
       // Convert external to internal ID
       const internalUserId = await this.userIdConverter.externalToInternal(externalUserId, {cache: false});
+
+      // A CORRUPTED user needs to re-authenticate — report as not connected so
+      // the UI prompts a fresh OAuth flow instead of offering "Disconnect".
+      const user = await this.microsoftUserRepository.findOne({
+        select: ['id', 'status'],
+        where: { id: internalUserId },
+      });
+      if (!user || user.status === MicrosoftUserStatus.CORRUPTED) {
+        this.logger.debug(
+          `[getActiveSubscriptionForUser] User ${externalUserId} is missing or CORRUPTED — reporting as not connected`
+        );
+        return null;
+      }
 
       this.logger.log(`[getActiveSubscriptionForUser] Getting active subscription for user ${externalUserId} (internalUserId: ${internalUserId})`);
       const subscription = await this.webhookSubscriptionRepository.findActiveByUserId(internalUserId);
@@ -812,199 +820,356 @@ export class MicrosoftSubscriptionService {
   // ─── Scheduled jobs ─────────────────────────────────────────────────
 
   /**
-   * Scheduled job that checks for webhook subscriptions that will expire soon
-   * and renews them
-   */
-  @Cron(CronExpression.EVERY_HOUR)
-  async renewSubscriptions(): Promise<void> {
-    try {
-      // Use skipLocked to prevent multiple instances from renewing the same
-      // subscription concurrently (safe across ECS tasks)
-      const expiringSubscriptions =
-        await this.webhookSubscriptionRepository.findSubscriptionsNeedingRenewal(
-          24, // hours until expiration
-          { skipLocked: true }
-        );
-
-      if (expiringSubscriptions.length === 0) {
-        this.logger.debug("No subscriptions need renewal");
-        return;
-      }
-
-      this.logger.log(
-        `Found ${String(expiringSubscriptions.length)} subscriptions that need renewal`
-      );
-
-      // Renew each subscription
-      for (const subscription of expiringSubscriptions) {
-        try {
-          // Renew the subscription using the internal userId to get a fresh token
-          await this.renewWebhookSubscription(
-            subscription.subscriptionId,
-            subscription.userId
-          );
-        } catch (error) {
-          this.logger.error(
-            `Failed to renew subscription ${subscription.subscriptionId}:`,
-            error
-          );
-          // Continue with the next subscription even if this one failed
-        }
-      }
-    } catch (error) {
-      this.logger.error("Error in subscription renewal job:", error);
-    }
-  }
-
-  /**
    * Scheduled job that verifies active subscriptions still exist at Microsoft
    * and detects stale subscriptions that stopped receiving notifications.
    *
-   * Runs every 6 hours. For each active subscription:
-   * - Verifies it exists at Microsoft (GET /subscriptions/{id})
-   * - If 404: the subscription is dead — attempts re-creation
-   * - If expiring within 12h: forces immediate renewal
-   * - If no notification received in 24h: emits LIFECYCLE_MISSED event for delta sync recovery
+   * Runs every 6 hours. Work is split into two passes:
+   * 1. Stale-notification pass (in-memory, no Graph calls) — emits LIFECYCLE_MISSED
+   *    for any sub whose lastNotificationAt is older than 24 h.
+   * 2. Graph-verify pass (only subs expiring within 24 h) — grouped by user, batched
+   *    via /$batch (20 per call), rate-limited per user. Handles 404 re-creation and
+   *    "<12 h to expiry" forced renewal.
    */
   @Cron('0 */6 * * *')
   async verifySubscriptionHealth(): Promise<void> {
     const correlationId = `health-check-${Date.now()}`;
 
     try {
-      const activeSubscriptions =
-        await this.webhookSubscriptionRepository.findActiveSubscriptions();
+      const allActiveSubs = await this.webhookSubscriptionRepository.findActiveSubscriptions();
 
-      if (activeSubscriptions.length === 0) {
+      if (allActiveSubs.length === 0) {
         this.logger.debug(`[${correlationId}] No active subscriptions to verify`);
         return;
       }
 
+      // Skip subs whose owning user is CORRUPTED — any outbound Graph work for
+      // them would just trigger the same invalid_grant and we've already signalled
+      // the host app to prompt re-auth.
+      const corruptedUserIds = await this.findCorruptedUserIds(allActiveSubs);
+      const activeSubs = corruptedUserIds.size > 0
+        ? allActiveSubs.filter((sub) => !corruptedUserIds.has(sub.userId))
+        : allActiveSubs;
+
+      const skipped = allActiveSubs.length - activeSubs.length;
+      if (skipped > 0) {
+        this.logger.log(
+          `[${correlationId}] Skipping ${skipped} sub(s) owned by ${corruptedUserIds.size} CORRUPTED user(s)`
+        );
+      }
+
+      const expiringSoon = this.filterExpiringSoon(activeSubs, HEALTH_CHECK_WINDOW_HOURS);
+
       this.logger.log(
-        `[${correlationId}] Verifying health of ${String(activeSubscriptions.length)} active subscriptions`
+        `[${correlationId}] Health check: ${activeSubs.length} active, ${expiringSoon.length} expiring within ${HEALTH_CHECK_WINDOW_HOURS}h`
       );
 
-      let verified = 0;
-      let recreated = 0;
-      let staleDetected = 0;
-      let failed = 0;
+      const counters: HealthCheckCounters = { verified: 0, recreated: 0, renewed: 0, staleDetected: 0, failed: 0 };
 
-      for (const subscription of activeSubscriptions) {
-        try {
-          const accessToken = await this.microsoftAuthService.getUserAccessToken({
-            internalUserId: subscription.userId,
-          });
+      counters.staleDetected = this.detectStaleSubscriptions(activeSubs, correlationId);
 
-          // Verify subscription exists at Microsoft
-          const response = await executeGraphApiCall(
-            () => axios.get<Subscription>(
-              `${this.graphApiBaseUrl}/subscriptions/${subscription.subscriptionId}`,
-              {
-                headers: {
-                  Authorization: `Bearer ${accessToken}`,
-                  "Prefer": 'IdType="ImmutableId"',
-                },
-              }
-            ),
-            {
-              logger: this.logger,
-              resourceName: `verify subscription ${subscription.subscriptionId}`,
-              maxRetries: 2,
-              return404AsNull: true,
-            }
-          );
-
-          if (!response) {
-            // Subscription doesn't exist at Microsoft — attempt re-creation
-            this.logger.warn(
-              `[${correlationId}] Subscription ${subscription.subscriptionId} not found at Microsoft. Attempting re-creation.`
-            );
-
-            await this.webhookSubscriptionRepository.deactivateSubscription(
-              subscription.subscriptionId
-            );
-
-            try {
-              const externalUserId = await this.userIdConverter.internalToExternal(subscription.userId);
-              await this.createWebhookSubscription(externalUserId);
-              recreated++;
-
-              this.eventEmitter.emit(OutlookEventTypes.SUBSCRIPTION_RECREATED, {
-                subscriptionId: subscription.subscriptionId,
-                userId: subscription.userId,
-                reason: 'health_check_404',
-              });
-            } catch (recreateError) {
-              failed++;
-              this.logger.error(
-                `[${correlationId}] Failed to re-create subscription for user ${String(subscription.userId)}: ${
-                  recreateError instanceof Error ? recreateError.message : 'Unknown error'
-                }`
-              );
-
-              this.eventEmitter.emit(OutlookEventTypes.SUBSCRIPTION_RECREATION_FAILED, {
-                subscriptionId: subscription.subscriptionId,
-                userId: subscription.userId,
-                reason: 'health_check_404',
-                error: recreateError instanceof Error ? recreateError.message : 'Unknown error',
-              });
-            }
-
-            continue;
-          }
-
-          verified++;
-
-          // Check if expiring within 12 hours — force immediate renewal
-          if (response.data.expirationDateTime) {
-            const expiration = new Date(response.data.expirationDateTime);
-            const twelveHoursFromNow = new Date();
-            twelveHoursFromNow.setHours(twelveHoursFromNow.getHours() + 12);
-
-            if (expiration < twelveHoursFromNow) {
-              this.logger.log(
-                `[${correlationId}] Subscription ${subscription.subscriptionId} expires within 12h. Forcing renewal.`
-              );
-              await this.renewWebhookSubscription(
-                subscription.subscriptionId,
-                subscription.userId
-              );
-            }
-          }
-
-          // Check for staleness: no notification in 24+ hours
-          if (subscription.lastNotificationAt) {
-            const twentyFourHoursAgo = new Date();
-            twentyFourHoursAgo.setHours(twentyFourHoursAgo.getHours() - 24);
-
-            if (subscription.lastNotificationAt < twentyFourHoursAgo) {
-              this.logger.warn(
-                `[${correlationId}] Subscription ${subscription.subscriptionId} has not received notifications since ${subscription.lastNotificationAt.toISOString()}. Emitting LIFECYCLE_MISSED for delta sync.`
-              );
-
-              staleDetected++;
-
-              // Emit a lifecycle missed event so the calendar layer can trigger delta sync
-              this.eventEmitter.emit(OutlookEventTypes.LIFECYCLE_MISSED, {
-                subscriptionId: subscription.subscriptionId,
-                userId: subscription.userId,
-                reason: 'health_check_stale',
-              });
-            }
-          }
-        } catch (error) {
-          failed++;
-          this.logger.error(
-            `[${correlationId}] Health check failed for subscription ${subscription.subscriptionId}:`,
-            error
-          );
+      if (expiringSoon.length > 0) {
+        const byUser = this.groupByUserId(expiringSoon);
+        for (const [userId, userSubs] of byUser) {
+          const perUser = await this.verifySubscriptionsForUser(userId, userSubs, correlationId);
+          counters.verified += perUser.verified;
+          counters.recreated += perUser.recreated;
+          counters.renewed += perUser.renewed;
+          counters.failed += perUser.failed;
         }
       }
 
       this.logger.log(
-        `[${correlationId}] Health check complete: ${String(verified)} verified, ${String(recreated)} recreated, ${String(staleDetected)} stale-detected, ${String(failed)} failed`
+        `[${correlationId}] Health check complete: ${counters.verified} verified, ${counters.recreated} recreated, ${counters.renewed} renewed, ${counters.staleDetected} stale-detected, ${counters.failed} failed`
       );
     } catch (error) {
       this.logger.error(`[${correlationId}] Subscription health check job failed:`, error);
+    }
+  }
+
+  /**
+   * Return the set of user IDs whose MicrosoftUser.status === CORRUPTED among
+   * the owners of the given subs. One indexed query, no N+1.
+   */
+  private async findCorruptedUserIds(
+    subs: OutlookWebhookSubscription[],
+  ): Promise<Set<number>> {
+    const userIds = Array.from(new Set(subs.map((s) => s.userId)));
+    if (userIds.length === 0) return new Set();
+
+    const rows = await this.microsoftUserRepository.find({
+      select: ['id'],
+      where: { id: In(userIds), status: MicrosoftUserStatus.CORRUPTED },
+    });
+    return new Set(rows.map((u) => u.id));
+  }
+
+  // ─── Health check helpers ───────────────────────────────────────────
+
+  /**
+   * Pure filter: returns subs whose expirationDateTime is within `hoursAhead` of now.
+   */
+  private filterExpiringSoon(
+    subs: OutlookWebhookSubscription[],
+    hoursAhead: number,
+  ): OutlookWebhookSubscription[] {
+    const threshold = new Date(Date.now() + hoursAhead * 3600 * 1000);
+    return subs.filter((sub) => sub.expirationDateTime < threshold);
+  }
+
+  /**
+   * Pure grouping: bucket subscriptions by their internal userId.
+   */
+  private groupByUserId(
+    subs: OutlookWebhookSubscription[],
+  ): Map<number, OutlookWebhookSubscription[]> {
+    const byUser = new Map<number, OutlookWebhookSubscription[]>();
+    for (const sub of subs) {
+      const bucket = byUser.get(sub.userId);
+      if (bucket) bucket.push(sub);
+      else byUser.set(sub.userId, [sub]);
+    }
+    return byUser;
+  }
+
+  /**
+   * Emit LIFECYCLE_MISSED for every sub whose last notification is older than 24 h.
+   * Returns the count of stale subs detected. No Graph calls.
+   */
+  private detectStaleSubscriptions(
+    subs: OutlookWebhookSubscription[],
+    correlationId: string,
+  ): number {
+    const staleThreshold = new Date(Date.now() - STALE_NOTIFICATION_THRESHOLD_HOURS * 3600 * 1000);
+    let staleDetected = 0;
+
+    for (const sub of subs) {
+      if (!sub.lastNotificationAt || sub.lastNotificationAt >= staleThreshold) continue;
+
+      this.logger.warn(
+        `[${correlationId}] Subscription ${sub.subscriptionId} has not received notifications since ${sub.lastNotificationAt.toISOString()}. Emitting LIFECYCLE_MISSED for delta sync.`
+      );
+
+      this.eventEmitter.emit(OutlookEventTypes.LIFECYCLE_MISSED, {
+        subscriptionId: sub.subscriptionId,
+        userId: sub.userId,
+        reason: 'health_check_stale',
+      });
+
+      staleDetected++;
+    }
+
+    return staleDetected;
+  }
+
+  /**
+   * Resolve one token for this user, then verify their subs in /$batch chunks of 20.
+   * A failure to obtain the token counts every sub for this user as failed.
+   */
+  private async verifySubscriptionsForUser(
+    userId: number,
+    userSubs: OutlookWebhookSubscription[],
+    correlationId: string,
+  ): Promise<HealthCheckCounters> {
+    const totals: HealthCheckCounters = { verified: 0, recreated: 0, renewed: 0, staleDetected: 0, failed: 0 };
+
+    let externalUserId: string;
+    let accessToken: string;
+    try {
+      externalUserId = await this.userIdConverter.internalToExternal(userId);
+      accessToken = await this.microsoftAuthService.getUserAccessToken({ internalUserId: userId });
+    } catch (error) {
+      totals.failed += userSubs.length;
+      this.logger.error(
+        `[${correlationId}] Token fetch failed for user ${userId}; skipping ${userSubs.length} sub(s):`,
+        error
+      );
+      return totals;
+    }
+
+    for (let offset = 0; offset < userSubs.length; offset += GRAPH_BATCH_SIZE) {
+      const chunk = userSubs.slice(offset, offset + GRAPH_BATCH_SIZE);
+      const chunkTotals = await this.verifySubscriptionsBatch(chunk, userId, externalUserId, accessToken, correlationId);
+      totals.verified += chunkTotals.verified;
+      totals.recreated += chunkTotals.recreated;
+      totals.renewed += chunkTotals.renewed;
+      totals.failed += chunkTotals.failed;
+    }
+
+    return totals;
+  }
+
+  /**
+   * Issue one /$batch POST for up to 20 subs belonging to the same user.
+   * Dispatches each inner response to `handleBatchResponseItem`.
+   */
+  private async verifySubscriptionsBatch(
+    chunk: OutlookWebhookSubscription[],
+    userId: number,
+    externalUserId: string,
+    accessToken: string,
+    correlationId: string,
+  ): Promise<HealthCheckCounters> {
+    const totals: HealthCheckCounters = { verified: 0, recreated: 0, renewed: 0, staleDetected: 0, failed: 0 };
+
+    await this.rateLimiter.acquirePermit(externalUserId);
+
+    const batchPayload: BatchRequestPayload = {
+      requests: chunk.map((sub, index) => ({
+        id: String(index),
+        method: 'GET',
+        url: `/subscriptions/${sub.subscriptionId}`,
+        headers: { 'Prefer': 'IdType="ImmutableId"' },
+      })),
+    };
+
+    try {
+      const response = await executeGraphApiCall(
+        () => axios.post<BatchResponsePayload<Subscription>>(
+          `${this.graphApiBaseUrl}/$batch`,
+          batchPayload,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              'Content-Type': 'application/json',
+            },
+          }
+        ),
+        {
+          logger: this.logger,
+          resourceName: `verify batch (user ${userId}, ${chunk.length} subs)`,
+          maxRetries: 2,
+        }
+      );
+
+      if (!response?.data) {
+        totals.failed += chunk.length;
+        this.logger.error(`[${correlationId}] Batch verify returned null for user ${userId}`);
+        return totals;
+      }
+
+      for (const item of response.data.responses) {
+        const sub = chunk[parseInt(item.id, 10)] as OutlookWebhookSubscription | undefined;
+        if (!sub) continue;
+        const itemTotals = await this.handleBatchResponseItem(sub, item, correlationId);
+        totals.verified += itemTotals.verified;
+        totals.recreated += itemTotals.recreated;
+        totals.renewed += itemTotals.renewed;
+        totals.failed += itemTotals.failed;
+      }
+    } catch (error) {
+      totals.failed += chunk.length;
+      this.logger.error(
+        `[${correlationId}] Batch verify failed for user ${userId} (${chunk.length} subs):`,
+        error
+      );
+    }
+
+    return totals;
+  }
+
+  /**
+   * Branch on one inner /$batch response: 200 (possibly renew), 404 (re-create), other (log).
+   */
+  private async handleBatchResponseItem(
+    sub: OutlookWebhookSubscription,
+    item: BatchResponse<Subscription>,
+    correlationId: string,
+  ): Promise<HealthCheckCounters> {
+    const totals: HealthCheckCounters = { verified: 0, recreated: 0, renewed: 0, staleDetected: 0, failed: 0 };
+
+    if (item.status === 200) {
+      totals.verified = 1;
+      if (await this.maybeRenewIfExpiringSoon(sub, item.body, correlationId)) {
+        totals.renewed = 1;
+      }
+      return totals;
+    }
+
+    if (item.status === 404) {
+      const result = await this.handleSubscriptionNotFoundAtMicrosoft(sub.subscriptionId, sub.userId, 'health_check_404', correlationId);
+      if (result === 'recreated') totals.recreated = 1;
+      else totals.failed = 1;
+      return totals;
+    }
+
+    totals.failed = 1;
+    this.logger.error(
+      `[${correlationId}] Unexpected status ${item.status} for sub ${sub.subscriptionId}: ${JSON.stringify(item.body)}`
+    );
+    return totals;
+  }
+
+  /**
+   * If the Graph-side expirationDateTime is within 12 h, trigger a renewal.
+   * Returns true iff a renewal was attempted.
+   */
+  private async maybeRenewIfExpiringSoon(
+    sub: OutlookWebhookSubscription,
+    graphSub: Subscription,
+    correlationId: string,
+  ): Promise<boolean> {
+    if (!graphSub.expirationDateTime) return false;
+
+    const expiration = new Date(graphSub.expirationDateTime);
+    const renewalThreshold = new Date(Date.now() + FORCE_RENEWAL_WINDOW_HOURS * 3600 * 1000);
+    if (expiration >= renewalThreshold) return false;
+
+    this.logger.log(
+      `[${correlationId}] Subscription ${sub.subscriptionId} expires within ${FORCE_RENEWAL_WINDOW_HOURS}h. Forcing renewal.`
+    );
+    try {
+      await this.renewWebhookSubscription(sub.subscriptionId, sub.userId);
+    } catch (error) {
+      // Swallow — renewWebhookSubscription already logs + emits events on failure.
+      this.logger.warn(
+        `[${correlationId}] Forced renewal of ${sub.subscriptionId} failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+    return true;
+  }
+
+  /**
+   * Deactivate locally and attempt re-create. Emits SUBSCRIPTION_RECREATED or
+   * SUBSCRIPTION_RECREATION_FAILED. Used by both the renewal 404 handler and the
+   * health-check batch response handler.
+   */
+  private async handleSubscriptionNotFoundAtMicrosoft(
+    subscriptionId: string,
+    internalUserId: number,
+    reason: 'renewal_404' | 'health_check_404',
+    correlationId: string,
+  ): Promise<'recreated' | 'failed'> {
+    this.logger.warn(
+      `[${correlationId}] Subscription ${subscriptionId} not found at Microsoft. Deactivating and attempting re-creation.`
+    );
+
+    await this.webhookSubscriptionRepository.deactivateSubscription(subscriptionId);
+
+    try {
+      const externalUserId = await this.userIdConverter.internalToExternal(internalUserId);
+      await this.createWebhookSubscription(externalUserId);
+
+      this.logger.log(
+        `[${correlationId}] Successfully re-created subscription for user ${internalUserId} after 404`
+      );
+      this.eventEmitter.emit(OutlookEventTypes.SUBSCRIPTION_RECREATED, {
+        subscriptionId,
+        userId: internalUserId,
+        reason,
+      });
+      return 'recreated';
+    } catch (recreateError) {
+      const recreateMsg = recreateError instanceof Error ? recreateError.message : 'Unknown error';
+      this.logger.error(
+        `[${correlationId}] Failed to re-create subscription for user ${internalUserId}: ${recreateMsg}`
+      );
+      this.eventEmitter.emit(OutlookEventTypes.SUBSCRIPTION_RECREATION_FAILED, {
+        subscriptionId,
+        userId: internalUserId,
+        reason,
+        error: recreateMsg,
+      });
+      return 'failed';
     }
   }
 }

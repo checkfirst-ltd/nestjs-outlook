@@ -19,6 +19,8 @@ import { MicrosoftUser } from '../../entities/microsoft-user.entity';
 import { retryWithBackoff } from '../../utils/retry.util';
 import { TtlCache } from '../../utils/ttl-cache.util';
 import { MailboxInactiveError } from '../../errors/mailbox-inactive.error';
+import { MicrosoftRefreshTokenInvalidError } from '../../errors/microsoft-refresh-token-invalid.error';
+import { MicrosoftUserStatus } from '../../enums/microsoft-user-status.enum';
 
 /**
  * Important terminology:
@@ -318,6 +320,7 @@ export class MicrosoftAuthService {
     user.tokenExpiry = new Date(Date.now() + expiresIn * 1000);
     user.scopes = scopes;
     user.isActive = true; // Reactivate if previously inactive
+    user.status = MicrosoftUserStatus.ACTIVE; // Clear CORRUPTED on successful re-auth
 
     await this.microsoftUserRepository.save(user);
     this.invalidateUserCache(user);
@@ -826,12 +829,24 @@ export class MicrosoftAuthService {
           // Check for specific error conditions from Microsoft
           const errorData = error.response.data as { error?: string };
           if (errorData.error === 'invalid_grant') {
-            throw new Error('Microsoft refresh token is invalid or expired');
+            // Persist CORRUPTED so the host app can prompt the user to re-authenticate.
+            // A fresh successful saveMicrosoftUser will flip this back to ACTIVE.
+            try {
+              internalUser.status = MicrosoftUserStatus.CORRUPTED;
+              await this.microsoftUserRepository.save(internalUser);
+              this.invalidateUserCache(internalUser);
+            } catch (dbErr) {
+              this.logger.error(
+                `Failed to mark user ${String(internalUserId)} as CORRUPTED: ${dbErr instanceof Error ? dbErr.message : 'unknown'}`,
+              );
+            }
+            throw new MicrosoftRefreshTokenInvalidError(internalUserId);
           }
         }
         throw error; // Re-throw for the outer catch to handle
       }
     } catch (error) {
+      if (error instanceof MicrosoftRefreshTokenInvalidError) throw error;
       this.logger.error(`Error refreshing access token for user ID ${String(internalUserId)}:`, error);
       throw new Error('Failed to refresh access token from Microsoft');
     }

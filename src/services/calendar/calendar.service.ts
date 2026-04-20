@@ -1498,6 +1498,9 @@ export class CalendarService {
         `[WEBHOOK_IDENTIFIED] webhookTraceId=${webhookTraceId || 'none'}, userId=${subscription.userId}, subscriptionId=${subscription.subscriptionId}`
       );
 
+      // Track notification arrival so verifySubscriptionHealth can detect stale subscriptions.
+      this.subscriptionService.trackNotificationReceived(subscription.subscriptionId);
+
       this.eventEmitter.emit(OutlookEventTypes.EVENT_NOTIFICATION, {
         userId: subscription.userId,
         subscriptionId: subscription.subscriptionId,

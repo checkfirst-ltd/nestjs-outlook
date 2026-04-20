@@ -6,6 +6,7 @@ import {
   UpdateDateColumn,
   Index,
 } from 'typeorm';
+import { MicrosoftUserStatus } from '../enums/microsoft-user-status.enum';
 
 /**
  * Entity for storing Microsoft user information including OAuth tokens
@@ -35,6 +36,14 @@ export class MicrosoftUser {
 
   @Column({ name: 'is_active', default: true })
   isActive: boolean = true;
+
+  @Column({
+    name: 'status',
+    type: 'varchar',
+    length: 32,
+    default: MicrosoftUserStatus.ACTIVE,
+  })
+  status: MicrosoftUserStatus = MicrosoftUserStatus.ACTIVE;
 
   @Column({ name: 'default_calendar_id', type: 'varchar', length: 255, nullable: true })
   defaultCalendarId: string | null = null;
