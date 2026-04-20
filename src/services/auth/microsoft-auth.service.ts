@@ -23,6 +23,19 @@ import { MicrosoftRefreshTokenInvalidError } from '../../errors/microsoft-refres
 import { MicrosoftUserStatus } from '../../enums/microsoft-user-status.enum';
 
 /**
+ * OAuth2 `error` values from Microsoft's token endpoint that explicitly mean
+ * "the user must re-authenticate." Transient errors (network, 5xx, rate limits)
+ * and caller-side bugs (invalid_client, invalid_request) are intentionally excluded —
+ * marking a user CORRUPTED for those would force an unnecessary re-auth.
+ */
+const CORRUPTED_TRIGGER_ERROR_CODES: ReadonlySet<string> = new Set([
+  'invalid_grant',          // refresh token expired / revoked / consent withdrawn
+  'interaction_required',   // conditional access / MFA challenge
+  'consent_required',       // admin consent lapsed or new permissions needed
+  'login_required',         // session forgotten
+]);
+
+/**
  * Important terminology:
  *
  * - externalUserId (string): The ID of the user in the host application that uses this library.
@@ -426,6 +439,9 @@ export class MicrosoftAuthService {
 
     // Error handling
     catch (error) {
+      // Preserve typed error so callers can discriminate "user needs re-auth"
+      // from generic token failures.
+      if (error instanceof MicrosoftRefreshTokenInvalidError) throw error;
       const identifier = params.internalUserId
         ? `internal user ID ${String(params.internalUserId)}`
         : `external user ID ${params.externalUserId}`;
@@ -826,20 +842,12 @@ export class MicrosoftAuthService {
             `Microsoft API error refreshing token for user ID ${String(internalUserId)}: Status: ${String(error.response.status)}, Response: ${JSON.stringify(error.response.data)}`
           );
 
-          // Check for specific error conditions from Microsoft
-          const errorData = error.response.data as { error?: string };
-          if (errorData.error === 'invalid_grant') {
-            // Persist CORRUPTED so the host app can prompt the user to re-authenticate.
-            // A fresh successful saveMicrosoftUser will flip this back to ACTIVE.
-            try {
-              internalUser.status = MicrosoftUserStatus.CORRUPTED;
-              await this.microsoftUserRepository.save(internalUser);
-              this.invalidateUserCache(internalUser);
-            } catch (dbErr) {
-              this.logger.error(
-                `Failed to mark user ${String(internalUserId)} as CORRUPTED: ${dbErr instanceof Error ? dbErr.message : 'unknown'}`,
-              );
-            }
+          // Any OAuth2 `error` code that means "user must re-authenticate" flips
+          // the user to CORRUPTED. Transient errors (no error field, server_error)
+          // fall through unchanged so Microsoft outages don't mass-mark users.
+          const errorCode = (error.response.data as { error?: string }).error;
+          if (errorCode && CORRUPTED_TRIGGER_ERROR_CODES.has(errorCode)) {
+            await this.markUserAsCorrupted(internalUser, errorCode);
             throw new MicrosoftRefreshTokenInvalidError(internalUserId);
           }
         }
@@ -849,6 +857,27 @@ export class MicrosoftAuthService {
       if (error instanceof MicrosoftRefreshTokenInvalidError) throw error;
       this.logger.error(`Error refreshing access token for user ID ${String(internalUserId)}:`, error);
       throw new Error('Failed to refresh access token from Microsoft');
+    }
+  }
+
+  /**
+   * Flip a user to CORRUPTED so the host app can prompt re-authentication.
+   * A subsequent successful saveMicrosoftUser flips it back to ACTIVE.
+   * Fail-open: DB errors are logged, never thrown.
+   */
+  private async markUserAsCorrupted(
+    user: MicrosoftUser,
+    reason: string,
+  ): Promise<void> {
+    try {
+      user.status = MicrosoftUserStatus.CORRUPTED;
+      await this.microsoftUserRepository.save(user);
+      this.invalidateUserCache(user);
+      this.logger.warn(`User ${String(user.id)} marked CORRUPTED (reason: ${reason})`);
+    } catch (dbErr) {
+      this.logger.error(
+        `Failed to mark user ${String(user.id)} as CORRUPTED: ${dbErr instanceof Error ? dbErr.message : 'unknown'}`,
+      );
     }
   }
 
