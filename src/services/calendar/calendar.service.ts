@@ -2,10 +2,8 @@ import { Injectable, Logger, Inject, forwardRef } from "@nestjs/common";
 import { EventEmitter2 } from "@nestjs/event-emitter";
 import { Client } from "@microsoft/microsoft-graph-client";
 import axios from "axios";
-import { Event, Calendar, Subscription, ChangeNotification, BatchRequestPayload, BatchResponsePayload } from "../../types";
+import { Event, Calendar, ChangeNotification, BatchRequestPayload, BatchResponsePayload } from "../../types";
 import { MicrosoftAuthService } from "../auth/microsoft-auth.service";
-import { Cron, CronExpression } from "@nestjs/schedule";
-import { OutlookWebhookSubscriptionRepository } from "../../repositories/outlook-webhook-subscription.repository";
 import { OutlookDeltaLinkRepository } from "../../repositories/outlook-delta-link.repository";
 import { OutlookResourceData } from "../../dto/outlook-webhook-notification.dto";
 import { MICROSOFT_CONFIG } from "../../constants";
@@ -13,13 +11,12 @@ import { MicrosoftOutlookConfig } from "../../interfaces/config/outlook-config.i
 import { OutlookEventTypes } from "../../enums/event-types.enum";
 import { InjectRepository } from "@nestjs/typeorm";
 import { MicrosoftUser } from "../../entities/microsoft-user.entity";
-import { Repository, Not } from "typeorm";
+import { Repository } from "typeorm";
 import { DeltaSyncService } from "../shared/delta-sync.service";
 import { UserIdConverterService } from "../shared/user-id-converter.service";
 import { ResourceType } from "../../enums/resource-type.enum";
 import { MicrosoftSubscriptionService } from "../subscription/microsoft-subscription.service";
 import { executeGraphApiCall } from "../../utils/outlook-api-executor.util";
-import { OutlookWebhookSubscription } from "../../entities/outlook-webhook-subscription.entity";
 import { GraphRateLimiterService } from "../shared/graph-rate-limiter.service";
 import { extractRetryAfterSeconds } from "../../utils/retry.util";
 import { TtlCache } from "../../utils/ttl-cache.util";
@@ -75,7 +72,6 @@ export class CalendarService {
   constructor(
     @Inject(forwardRef(() => MicrosoftAuthService))
     private readonly microsoftAuthService: MicrosoftAuthService,
-    private readonly webhookSubscriptionRepository: OutlookWebhookSubscriptionRepository,
     private readonly eventEmitter: EventEmitter2,
     @Inject(MICROSOFT_CONFIG)
     private readonly microsoftConfig: MicrosoftOutlookConfig,
@@ -820,487 +816,6 @@ export class CalendarService {
   }
 
   /**
-   * Create a webhook subscription to receive notifications for calendar events
-   * @param externalUserId - External user ID
-   * @returns The created subscription data
-   */
-  async createWebhookSubscription(
-    externalUserId: string
-  ): Promise<Subscription> {
-    // Convert external user ID to internal database ID
-    const internalUserId = await this.userIdConverter.externalToInternal(externalUserId, {cache: false});
-
-    const correlationId = `webhook-${internalUserId}-${Date.now()}`;
-    this.logger.log(`[${correlationId}] Starting webhook subscription creation for user ${internalUserId}`);
-
-    try {
-      // Get a valid access token for this user
-      this.logger.log(`[${correlationId}] Fetching access token for user ${internalUserId}`);
-
-      const accessToken =
-        await this.microsoftAuthService.getUserAccessToken({internalUserId, cache: false});
-
-      this.logger.log(`[${correlationId}] Successfully obtained access token`);
-
-      // Set expiration date (max 3 days as per Microsoft documentation)
-      const expirationDateTime = new Date();
-      expirationDateTime.setHours(expirationDateTime.getHours() + 72); // 3 days from now
-
-      const appUrl =
-        this.microsoftConfig.backendBaseUrl || "http://localhost:3000";
-      const basePath = this.microsoftConfig.basePath;
-      const basePathUrl = basePath ? `${appUrl}/${basePath}` : appUrl;
-
-      const webhookPath = this.microsoftConfig.calendarWebhookPath || '/calendar/webhook';
-      const notificationUrl = `${basePathUrl}${webhookPath}`;
-
-      // Create subscription payload
-      const subscriptionData = {
-        changeType: "created,updated,deleted",
-        notificationUrl,
-        // Add lifecycleNotificationUrl for increased reliability
-        lifecycleNotificationUrl: notificationUrl,
-        resource: "/me/events",
-        expirationDateTime: expirationDateTime.toISOString(),
-        clientState: `user_${internalUserId}_${Math.random().toString(36).substring(2, 15)}`,
-      };
-
-      this.logger.log(
-        `[${correlationId}] Creating webhook subscription with notificationUrl: ${notificationUrl}`
-      );
-
-      this.logger.debug(
-        `[${correlationId}] Subscription data: ${JSON.stringify(subscriptionData)}`
-      );
-      // Create the subscription with Microsoft Graph API
-      this.logger.log(`[${correlationId}] Sending POST request to Microsoft Graph API`);
-      const response = await executeGraphApiCall(
-        () => axios.post<Subscription>(
-          "https://graph.microsoft.com/v1.0/subscriptions",
-          subscriptionData,
-          {
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              "Content-Type": "application/json",
-              "Prefer": 'IdType="ImmutableId"',
-            },
-          }
-        ),
-        {
-          logger: this.logger,
-          resourceName: `create webhook subscription for user ${internalUserId}`,
-          maxRetries: 7,
-        }
-      );
-
-      if (!response?.data) {
-        throw new Error('Subscription creation returned null response');
-      }
-
-      this.logger.log(
-        `[${correlationId}] Created webhook subscription ${response.data.id || "unknown"} for user ${internalUserId}`
-      );
-
-      // Save the subscription to the database
-      this.logger.log(`[${correlationId}] Saving subscription to database (internalUserId: ${internalUserId}, externalUserId: ${externalUserId})`);
-      await this.webhookSubscriptionRepository.saveSubscription({
-        subscriptionId: response.data.id,
-        userId: internalUserId,
-        resource: response.data.resource,
-        changeType: response.data.changeType,
-        clientState: response.data.clientState || "",
-        notificationUrl: response.data.notificationUrl,
-        expirationDateTime: response.data.expirationDateTime
-          ? new Date(response.data.expirationDateTime)
-          : new Date(),
-      });
-
-      this.logger.log(`[${correlationId}] Successfully stored subscription in database`);
-      this.logger.log(`[${correlationId}] Webhook subscription creation completed successfully`);
-
-      return response.data;
-    } catch (error) {
-      if (axios.isAxiosError(error)) {
-        this.logger.error(
-          `[${correlationId}] Microsoft Graph API error: Status ${error.response?.status}, ` +
-          `Message: ${JSON.stringify(error.response?.data)}`
-        );
-      } else {
-        this.logger.error(`[${correlationId}] Failed to create webhook subscription:`, error);
-      }
-      throw new Error(`Failed to create webhook subscription: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  }
-
-  /**
-   * Renew an existing webhook subscription
-   *
-   * This method validates the user exists before attempting renewal, and automatically
-   * deactivates the subscription if the user is not found or inactive.
-   *
-   * @param subscriptionId - ID of the subscription to renew at Microsoft
-   * @param internalUserId - Internal database user ID (MicrosoftUser.id primary key)
-   * @returns The renewed subscription data from Microsoft Graph API
-   * @throws Error if user not found (after deactivating subscription) or renewal fails
-   *
-   * @example
-   * ```typescript
-   * const renewed = await calendarService.renewWebhookSubscription(
-   *   'sub-456-xyz',
-   *   102  // Internal user ID from database
-   * );
-   * ```
-   */
-  async renewWebhookSubscription(
-    subscriptionId: string,
-    internalUserId: number
-  ): Promise<Subscription> {
-    const correlationId = `renew-${subscriptionId}-${Date.now()}`;
-
-    try {
-      this.logger.log(
-        `[${correlationId}] Attempting to renew subscription ${subscriptionId} for user ${internalUserId}`
-      );
-
-      // GUARD: Validate user exists and is active
-      const user = await this.microsoftUserRepository.findOne({
-        where: { id: internalUserId, isActive: true }
-      });
-
-      if (!user) {
-        // User doesn't exist or inactive - deactivate subscription to prevent future errors
-        this.logger.warn(
-          `[${correlationId}] User ${internalUserId} not found or inactive. ` +
-          `Deactivating subscription ${subscriptionId}`
-        );
-
-        await this.webhookSubscriptionRepository.deactivateSubscription(
-          subscriptionId
-        );
-
-        throw new Error(
-          `Cannot renew subscription ${subscriptionId}: ` +
-          `User ${internalUserId} not found or inactive. ` +
-          `Subscription has been automatically deactivated.`
-        );
-      }
-
-      this.logger.debug(
-        `[${correlationId}] User ${internalUserId} validated successfully`
-      );
-
-      // Get access token (handles refresh automatically via getUserAccessToken)
-      const accessToken = await this.microsoftAuthService.getUserAccessToken({
-        internalUserId
-      });
-
-      this.logger.debug(`[${correlationId}] Access token obtained`);
-
-      // Set new expiration date (max 3 days from now per Microsoft limits)
-      const expirationDateTime = new Date();
-      expirationDateTime.setHours(expirationDateTime.getHours() + 72);
-
-      const renewalData = {
-        expirationDateTime: expirationDateTime.toISOString(),
-      };
-
-      this.logger.debug(
-        `[${correlationId}] Calling Microsoft Graph API to renew subscription`
-      );
-
-      // Make the request to Microsoft Graph API to renew the subscription with retry
-      const response = await executeGraphApiCall(
-        () => axios.patch<Subscription>(
-          `https://graph.microsoft.com/v1.0/subscriptions/${subscriptionId}`,
-          renewalData,
-          {
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              "Content-Type": "application/json",
-              "Prefer": 'IdType="ImmutableId"',
-            },
-          }
-        ),
-        {
-          logger: this.logger,
-          resourceName: `renew webhook subscription ${subscriptionId} for user ${internalUserId}`,
-          maxRetries: 7,
-        }
-      );
-
-      if (!response?.data) {
-        throw new Error('Subscription renewal returned null response');
-      }
-
-      this.logger.debug(
-        `[${correlationId}] Microsoft Graph API returned status: ${response.status}`
-      );
-
-      // Update the expiration date in our local database
-      if (response.data.expirationDateTime) {
-        await this.webhookSubscriptionRepository.updateSubscriptionExpiration(
-          subscriptionId,
-          new Date(response.data.expirationDateTime)
-        );
-
-        this.logger.debug(
-          `[${correlationId}] Updated local database with new expiration: ${response.data.expirationDateTime}`
-        );
-      }
-
-      this.logger.log(
-        `[${correlationId}] Successfully renewed subscription ${subscriptionId}. ` +
-        `New expiration: ${response.data.expirationDateTime}`
-      );
-
-      return response.data;
-
-    } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : "Unknown error";
-
-      // Special handling for Microsoft API errors
-      if (axios.isAxiosError(error)) {
-        const statusCode = error.response?.status;
-
-        // Subscription no longer exists at Microsoft
-        if (statusCode === 404) {
-          this.logger.warn(
-            `[${correlationId}] Subscription ${subscriptionId} not found at Microsoft. ` +
-            `Deactivating in local database.`
-          );
-
-          await this.webhookSubscriptionRepository.deactivateSubscription(
-            subscriptionId
-          );
-
-          throw new Error(
-            `Subscription ${subscriptionId} not found at Microsoft. ` +
-            `Subscription has been automatically deactivated.`
-          );
-        }
-
-        // User token issues (401, 403)
-        if (statusCode === 401 || statusCode === 403) {
-          this.logger.error(
-            `[${correlationId}] Authentication failed for subscription ${subscriptionId}. ` +
-            `Status: ${statusCode}, Response: ${JSON.stringify(error.response?.data)}`
-          );
-        }
-
-        // Rate limiting (429)
-        if (statusCode === 429) {
-          this.logger.warn(
-            `[${correlationId}] Rate limited by Microsoft Graph API for subscription ${subscriptionId}`
-          );
-        }
-      }
-
-      this.logger.error(
-        `[${correlationId}] Failed to renew subscription ${subscriptionId}: ${errorMessage}`
-      );
-
-      throw new Error(`Failed to renew webhook subscription: ${errorMessage}`);
-    }
-  }
-
-  async getSubscription(subscriptionId: string): Promise<OutlookWebhookSubscription | null> {
-    const subscription = await this.webhookSubscriptionRepository.findBySubscriptionId(subscriptionId);
-
-    if (!subscription) {
-      return null;
-    }
-
-    return subscription;
-  }
-
-
-  /**
-   * Delete a calendar webhook subscription
-   *
-   * Deletes the subscription at Microsoft Graph API and deactivates it locally.
-   * Supports both external user IDs (from host app) and internal database IDs.
-   *
-   * @param subscriptionId - ID of the subscription to delete at Microsoft
-   * @param userId - User ID (can be external string or internal number)
-   * @returns True if deletion was successful
-   * @throws Error if user not found or deletion fails (except 404)
-   *
-   * @example
-   * // Using external ID (common in public API)
-   * await calendarService.deleteWebhookSubscription('sub-456', 'user-7');
-   *
-   * // Using internal ID (common in cleanup flows)
-   * await calendarService.deleteWebhookSubscription('sub-456', 102);
-   */
-  async deleteWebhookSubscription(
-    subscriptionId: string,
-    userId: string | number
-  ): Promise<boolean> {
-    const correlationId = `delete-sub-${subscriptionId}-${Date.now()}`;
-
-    try {
-      this.logger.log(
-        `[${correlationId}] Deleting calendar subscription ${subscriptionId} for user ${userId}`
-      );
-
-      const internalUserId = await this.userIdConverter.toInternalUserId(userId);
-
-      // Get access token (including inactive users since we need to clean up their subscriptions)
-      const accessToken = await this.microsoftAuthService.getUserAccessToken({
-        internalUserId,
-        includeInactive: true
-      });
-
-      this.logger.debug(`[${correlationId}] Access token obtained`);
-
-      // Delegate to MicrosoftSubscriptionService for subscription deletion
-      this.logger.debug(
-        `[${correlationId}] Calling MicrosoftSubscriptionService to delete subscription`
-      );
-
-      this.logger.log(`Deleted webhook subscription: ${subscriptionId}`);
-      await this.subscriptionService.deleteSubscription(subscriptionId, accessToken);
-
-      this.logger.log(
-        `[${correlationId}] Successfully deleted subscription at Microsoft`
-      );
-
-      // Remove the subscription from our database (soft delete)
-      await this.webhookSubscriptionRepository.deactivateSubscription(
-        subscriptionId
-      );
-
-      this.logger.debug(
-        `[${correlationId}] Deactivated subscription in local database`
-      );
-
-      // Check if user has OTHER active subscriptions before marking inactive
-      const otherActiveSubscriptions = await this.webhookSubscriptionRepository.count({
-        where: {
-          userId: internalUserId,
-          isActive: true,
-          subscriptionId: Not(subscriptionId)
-        }
-      });
-
-      // Only mark user inactive if this was the LAST subscription
-      if (otherActiveSubscriptions === 0) {
-        const updateCriteria = typeof userId === 'string' ? { externalUserId: userId } : { id: userId };
-        await this.microsoftUserRepository.update(
-          updateCriteria,
-          { isActive: false }
-        );
-
-        this.logger.debug(
-          `[${correlationId}] Marked Microsoft user as inactive - no other subscriptions remain`
-        );
-      } else {
-        this.logger.debug(
-          `[${correlationId}] User still has ${otherActiveSubscriptions} other active subscription(s), keeping user active`
-        );
-      }
-
-      this.logger.log(
-        `[${correlationId}] Successfully deleted calendar subscription ${subscriptionId}`
-      );
-
-      return true;
-
-    } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : "Unknown error";
-
-      // If we get a 404, the subscription doesn't exist anymore at Microsoft,
-      // so we should still remove it from our database
-      if (axios.isAxiosError(error) && error.response?.status === 404) {
-        this.logger.log(
-          `[${correlationId}] Subscription ${subscriptionId} not found at Microsoft, ` +
-          `cleaning up local database`
-        );
-
-        await this.webhookSubscriptionRepository.deactivateSubscription(
-          subscriptionId
-        );
-
-        this.logger.log(
-          `[${correlationId}] Successfully cleaned up orphaned subscription ${subscriptionId}`
-        );
-
-        return true;
-      }
-
-      this.logger.error(
-        `[${correlationId}] Failed to delete subscription ${subscriptionId}: ${errorMessage}`
-      );
-
-      throw new Error(`Failed to delete webhook subscription: ${errorMessage}`);
-    }
-  }
-
-  /**
-   * Get active webhook subscription for a user
-   * @param externalUserId - External user ID from host application
-   * @returns Subscription ID if active subscription exists, null otherwise
-   */
-  async getActiveSubscription(externalUserId: string): Promise<string | null> {
-    try {
-      // Convert external to internal ID
-      const internalUserId = await this.userIdConverter.externalToInternal(externalUserId, {cache: false});
-
-      this.logger.log(`[getActiveSubscription] Getting active subscription for user ${externalUserId} (internalUserId: ${internalUserId})`);
-      const subscription = await this.webhookSubscriptionRepository.findActiveByUserId(internalUserId);
-      this.logger.log(`[getActiveSubscription] Found subscription: ${subscription?.subscriptionId}`);
-      return subscription?.subscriptionId ?? null;
-    } catch {
-      // User may not have connected Microsoft account yet - this is not an error
-      this.logger.debug(`No active subscription for user ${externalUserId}`);
-      return null;
-    }
-  }
-
-  /**
-   * Scheduled job that checks for webhook subscriptions that will expire soon
-   * and renews them
-   */
-  @Cron(CronExpression.EVERY_HOUR)
-  async renewSubscriptions(): Promise<void> {
-    try {
-      // Get subscriptions that expire within the next 24 hours
-      const expiringSubscriptions =
-        await this.webhookSubscriptionRepository.findSubscriptionsNeedingRenewal(
-          24 // hours until expiration
-        );
-
-      if (expiringSubscriptions.length === 0) {
-        this.logger.debug("No subscriptions need renewal");
-        return;
-      }
-
-      this.logger.log(
-        `Found ${String(expiringSubscriptions.length)} subscriptions that need renewal`
-      );
-
-      // Renew each subscription
-      for (const subscription of expiringSubscriptions) {
-        try {
-          // Renew the subscription using the internal userId to get a fresh token
-          await this.renewWebhookSubscription(
-            subscription.subscriptionId,
-            subscription.userId
-          );
-        } catch (error) {
-          this.logger.error(
-            `Failed to renew subscription ${subscription.subscriptionId}:`,
-            error
-          );
-          // Continue with the next subscription even if this one failed
-        }
-      }
-    } catch (error) {
-      this.logger.error("Error in subscription renewal job:", error);
-    }
-  }
-
-  /**
    * Handle a webhook notification from Microsoft
    * @param notificationItem - The notification data from Microsoft
    * @param useStreaming - Whether to use streaming mode (default: false for buffering)
@@ -1352,6 +867,11 @@ export class CalendarService {
             resource || '',
             webhookTraceId
           );
+
+      // Track when this subscription last received a notification (for staleness detection)
+      if (subscriptionId) {
+        this.subscriptionService.trackNotificationReceived(String(subscriptionId));
+      }
 
       return { success: true, message: `Processed ${totalProcessed} events` };
     } catch (error: unknown) {
@@ -1967,7 +1487,7 @@ export class CalendarService {
     }
 
     try {
-      const subscription = await this.getSubscription(notificationItem.subscriptionId);
+      const subscription = await this.subscriptionService.getSubscription(notificationItem.subscriptionId);
 
       if (!subscription) {
         this.logger.error(`Subscription not found for subscriptionId: ${notificationItem.subscriptionId}`);
@@ -2130,6 +1650,50 @@ export class CalendarService {
   }
 
   /**
+   * Fetch and process all pending delta changes for a user.
+   *
+   * Public entry point for on-demand delta sync (e.g. missed lifecycle events,
+   * health-check recovery). Fetches changes via the delta API and emits
+   * domain events for each change so downstream listeners can react.
+   *
+   * @param externalUserId - External user ID from the host application
+   * @param subscriptionId - Optional subscription ID for event correlation
+   * @returns Number of changes processed
+   */
+  async syncDeltaChanges(
+    externalUserId: string,
+    subscriptionId?: string,
+  ): Promise<number> {
+    const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
+
+    const allChanges = await this.fetchAndSortChanges(externalUserId);
+
+    if (allChanges.length === 0) {
+      this.logger.debug(`[syncDeltaChanges] No pending changes for user ${externalUserId}`);
+      return 0;
+    }
+
+    this.logger.log(
+      `[syncDeltaChanges] Processing ${allChanges.length} delta changes for user ${externalUserId}`
+    );
+
+    for (const change of allChanges) {
+      this.processDeltaEventChange(
+        change,
+        internalUserId,
+        subscriptionId || '',
+        '/me/events',
+      );
+    }
+
+    this.logger.log(
+      `[syncDeltaChanges] Completed: ${allChanges.length} changes processed for user ${externalUserId}`
+    );
+
+    return allChanges.length;
+  }
+
+  /**
    * Process delta changes using streaming mode (page-by-page)
    * Lower memory footprint, processes each page immediately as it arrives
    *
@@ -2274,7 +1838,7 @@ export class CalendarService {
   ): Promise<{ success: boolean; internalUserId?: number; message?: string }> {
     // Find the subscription in our database to verify it's legitimate
     const subscription =
-      await this.webhookSubscriptionRepository.findBySubscriptionId(
+      await this.subscriptionService.getSubscription(
         subscriptionId || ""
       );
 

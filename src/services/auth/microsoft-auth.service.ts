@@ -2,8 +2,8 @@ import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import axios from 'axios';
 import { TokenResponse } from '../../interfaces/outlook/token-response.interface';
-import { CalendarService } from '../calendar/calendar.service';
 import { EmailService } from '../email/email.service';
+import { MicrosoftSubscriptionService } from '../subscription/microsoft-subscription.service';
 import { GRAPH_ERROR_CODES, MICROSOFT_CONFIG } from '../../constants';
 import { MicrosoftOutlookConfig } from '../../interfaces/config/outlook-config.interface';
 import { OutlookEventTypes } from '../../enums/event-types.enum';
@@ -59,10 +59,10 @@ export class MicrosoftAuthService {
 
   constructor(
     private readonly eventEmitter: EventEmitter2,
-    @Inject(forwardRef(() => CalendarService))
-    private readonly calendarService: CalendarService,
     @Inject(forwardRef(() => EmailService))
     private readonly emailService: EmailService,
+    @Inject(forwardRef(() => MicrosoftSubscriptionService))
+    private readonly subscriptionService: MicrosoftSubscriptionService,
     @Inject(MICROSOFT_CONFIG)
     private readonly microsoftConfig: MicrosoftOutlookConfig,
     private readonly csrfTokenRepository: MicrosoftCsrfTokenRepository,
@@ -661,7 +661,7 @@ export class MicrosoftAuthService {
         try {
           this.logger.log(`[${correlationId}] Creating calendar webhook subscription with retry logic`);
           await retryWithBackoff(
-            () => this.calendarService.createWebhookSubscription(externalUserId),
+            () => this.subscriptionService.createWebhookSubscription(externalUserId),
             {
               maxRetries: 7,
               retryDelayMs: 1000

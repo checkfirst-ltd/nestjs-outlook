@@ -35,6 +35,9 @@ export class OutlookWebhookSubscription {
   @Column({ name: 'is_active', default: true })
   isActive: boolean = true;
 
+  @Column({ name: 'last_notification_at', type: 'datetime', nullable: true })
+  lastNotificationAt: Date | null = null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date = new Date();
 
