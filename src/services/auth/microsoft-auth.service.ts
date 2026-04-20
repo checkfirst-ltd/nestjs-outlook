@@ -19,6 +19,21 @@ import { MicrosoftUser } from '../../entities/microsoft-user.entity';
 import { retryWithBackoff } from '../../utils/retry.util';
 import { TtlCache } from '../../utils/ttl-cache.util';
 import { MailboxInactiveError } from '../../errors/mailbox-inactive.error';
+import { MicrosoftRefreshTokenInvalidError } from '../../errors/microsoft-refresh-token-invalid.error';
+import { MicrosoftUserStatus } from '../../enums/microsoft-user-status.enum';
+
+/**
+ * OAuth2 `error` values from Microsoft's token endpoint that explicitly mean
+ * "the user must re-authenticate." Transient errors (network, 5xx, rate limits)
+ * and caller-side bugs (invalid_client, invalid_request) are intentionally excluded —
+ * marking a user CORRUPTED for those would force an unnecessary re-auth.
+ */
+const CORRUPTED_TRIGGER_ERROR_CODES: ReadonlySet<string> = new Set([
+  'invalid_grant',          // refresh token expired / revoked / consent withdrawn
+  'interaction_required',   // conditional access / MFA challenge
+  'consent_required',       // admin consent lapsed or new permissions needed
+  'login_required',         // session forgotten
+]);
 
 /**
  * Important terminology:
@@ -318,6 +333,7 @@ export class MicrosoftAuthService {
     user.tokenExpiry = new Date(Date.now() + expiresIn * 1000);
     user.scopes = scopes;
     user.isActive = true; // Reactivate if previously inactive
+    user.status = MicrosoftUserStatus.ACTIVE; // Clear CORRUPTED on successful re-auth
 
     await this.microsoftUserRepository.save(user);
     this.invalidateUserCache(user);
@@ -423,6 +439,9 @@ export class MicrosoftAuthService {
 
     // Error handling
     catch (error) {
+      // Preserve typed error so callers can discriminate "user needs re-auth"
+      // from generic token failures.
+      if (error instanceof MicrosoftRefreshTokenInvalidError) throw error;
       const identifier = params.internalUserId
         ? `internal user ID ${String(params.internalUserId)}`
         : `external user ID ${params.externalUserId}`;
@@ -823,17 +842,42 @@ export class MicrosoftAuthService {
             `Microsoft API error refreshing token for user ID ${String(internalUserId)}: Status: ${String(error.response.status)}, Response: ${JSON.stringify(error.response.data)}`
           );
 
-          // Check for specific error conditions from Microsoft
-          const errorData = error.response.data as { error?: string };
-          if (errorData.error === 'invalid_grant') {
-            throw new Error('Microsoft refresh token is invalid or expired');
+          // Any OAuth2 `error` code that means "user must re-authenticate" flips
+          // the user to CORRUPTED. Transient errors (no error field, server_error)
+          // fall through unchanged so Microsoft outages don't mass-mark users.
+          const errorCode = (error.response.data as { error?: string }).error;
+          if (errorCode && CORRUPTED_TRIGGER_ERROR_CODES.has(errorCode)) {
+            await this.markUserAsCorrupted(internalUser, errorCode);
+            throw new MicrosoftRefreshTokenInvalidError(internalUserId);
           }
         }
         throw error; // Re-throw for the outer catch to handle
       }
     } catch (error) {
+      if (error instanceof MicrosoftRefreshTokenInvalidError) throw error;
       this.logger.error(`Error refreshing access token for user ID ${String(internalUserId)}:`, error);
       throw new Error('Failed to refresh access token from Microsoft');
+    }
+  }
+
+  /**
+   * Flip a user to CORRUPTED so the host app can prompt re-authentication.
+   * A subsequent successful saveMicrosoftUser flips it back to ACTIVE.
+   * Fail-open: DB errors are logged, never thrown.
+   */
+  private async markUserAsCorrupted(
+    user: MicrosoftUser,
+    reason: string,
+  ): Promise<void> {
+    try {
+      user.status = MicrosoftUserStatus.CORRUPTED;
+      await this.microsoftUserRepository.save(user);
+      this.invalidateUserCache(user);
+      this.logger.warn(`User ${String(user.id)} marked CORRUPTED (reason: ${reason})`);
+    } catch (dbErr) {
+      this.logger.error(
+        `Failed to mark user ${String(user.id)} as CORRUPTED: ${dbErr instanceof Error ? dbErr.message : 'unknown'}`,
+      );
     }
   }
 

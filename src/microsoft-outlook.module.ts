@@ -6,6 +6,7 @@ import { MicrosoftAuthService } from "./services/auth/microsoft-auth.service";
 import { MicrosoftAuthController } from "./controllers/microsoft-auth.controller";
 import { CalendarController } from "./controllers/calendar.controller";
 import { EmailController } from "./controllers/email.controller";
+import { SubscriptionAdminController } from "./controllers/subscription-admin.controller";
 import { OutlookWebhookSubscription } from "./entities/outlook-webhook-subscription.entity";
 import { OutlookWebhookSubscriptionRepository } from "./repositories/outlook-webhook-subscription.repository";
 import { MICROSOFT_CONFIG } from "./constants";
@@ -44,7 +45,7 @@ export const { ConfigurableModuleClass, MODULE_OPTIONS_TOKEN } =
     ]),
     EventEmitterModule.forRoot(),
   ],
-  controllers: [MicrosoftAuthController, CalendarController, EmailController],
+  controllers: [MicrosoftAuthController, CalendarController, EmailController, SubscriptionAdminController],
   providers: [
     {
       provide: MICROSOFT_CONFIG,
