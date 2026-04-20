@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.1.3](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.1.2...v7.1.3) (2026-04-20)
+
+
+### Bug Fixes
+
+* subscription lifecycle edge cases ([#124](https://github.com/checkfirst-ltd/nestjs-outlook/issues/124)) ([ecc48ef](https://github.com/checkfirst-ltd/nestjs-outlook/commit/ecc48ef0f42b3096b6fe8d7bf650542a56436a7a))
+
 ## [7.1.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.1.1...v7.1.2) (2026-04-16)
 
 
