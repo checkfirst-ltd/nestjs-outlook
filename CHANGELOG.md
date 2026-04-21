@@ -1,5 +1,13 @@
 # Changelog
 
+## [7.1.5](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.1.4...v7.1.5) (2026-04-21)
+
+
+### Bug Fixes
+
+* removing unused endpoint from the last patch ([#129](https://github.com/checkfirst-ltd/nestjs-outlook/issues/129)) ([5db33c2](https://github.com/checkfirst-ltd/nestjs-outlook/commit/5db33c202f424c0b0aa659a7265901c52ddf4e41))
+* reset subscirptions on fresh login ([#131](https://github.com/checkfirst-ltd/nestjs-outlook/issues/131)) ([7658a5c](https://github.com/checkfirst-ltd/nestjs-outlook/commit/7658a5ccb6a99052538011c234a1c4d475eb7da2))
+
 ## [7.1.4](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.1.3...v7.1.4) (2026-04-20)
 
 
