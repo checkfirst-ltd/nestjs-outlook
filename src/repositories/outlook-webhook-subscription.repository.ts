@@ -101,6 +101,15 @@ export class OutlookWebhookSubscriptionRepository {
     return result;
   }
 
+  async findAllActiveByUserIdAndResource(
+    userId: number,
+    resource: string,
+  ): Promise<OutlookWebhookSubscription[]> {
+    return this.repository.find({
+      where: { userId, resource, isActive: true },
+    });
+  }
+
   async updateLastNotificationAt(subscriptionId: string): Promise<void> {
     await this.repository.update(
       { subscriptionId, isActive: true },
