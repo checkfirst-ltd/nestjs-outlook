@@ -1,5 +1,13 @@
 # Changelog
 
+## [7.1.4](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.1.3...v7.1.4) (2026-04-20)
+
+
+### Bug Fixes
+
+* invalid refresh token ([#126](https://github.com/checkfirst-ltd/nestjs-outlook/issues/126)) ([a15ca97](https://github.com/checkfirst-ltd/nestjs-outlook/commit/a15ca971fd64fd9fbf2e617e24b842f0ee0e08c7))
+* remove ungrauded endpoint ([#128](https://github.com/checkfirst-ltd/nestjs-outlook/issues/128)) ([b534b1e](https://github.com/checkfirst-ltd/nestjs-outlook/commit/b534b1e32983f95e01cf5e6b463a8a304741e733))
+
 ## [7.1.3](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.1.2...v7.1.3) (2026-04-20)
 
 
