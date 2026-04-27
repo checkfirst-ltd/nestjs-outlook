@@ -54,6 +54,19 @@ export class GraphRateLimiterService implements OnModuleInit {
   private totalWaitTime = 0;
   private cooldownCount = 0;
 
+  // Circuit breaker configuration (service-level, not per-user)
+  private readonly CB_FAILURE_THRESHOLD = 5;       // consecutive 503s to trip
+  private readonly CB_FAILURE_WINDOW_MS = 60_000;  // 503s must occur within 60s
+  private readonly CB_COOLDOWN_MS = 60_000;        // how long to stay open
+  private readonly CB_HALF_OPEN_MAX = 1;           // requests allowed in half-open
+
+  // Circuit breaker state
+  private cbState: 'closed' | 'open' | 'half-open' = 'closed';
+  private cbFailureTimestamps: number[] = [];
+  private cbOpenedAt: number | null = null;
+  private cbHalfOpenInFlight = 0;
+  private cbTotalTrips = 0;
+
   onModuleInit() {
     this.logger.log(
       `GraphRateLimiterService initialized - Limits: ${this.MAX_REQUESTS_PER_SECOND} req/sec, ` +
@@ -68,6 +81,9 @@ export class GraphRateLimiterService implements OnModuleInit {
    * @param userId - External user ID
    */
   async acquirePermit(userId: string): Promise<void> {
+    // Service-level circuit breaker check (blocks if Microsoft Graph is down)
+    await this.waitForCircuitBreaker();
+
     // Initialize limiter if needed
     if (!this.userLimiters.has(userId)) {
       this.initializeLimiter(userId);
@@ -249,11 +265,117 @@ export class GraphRateLimiterService implements OnModuleInit {
       }
     }
 
+    // Prune stale circuit breaker failure timestamps
+    this.cbFailureTimestamps = this.cbFailureTimestamps.filter(
+      t => now - t < this.CB_FAILURE_WINDOW_MS
+    );
+
     if (cleaned > 0) {
       this.logger.log(
         `[cleanupInactiveUsers] Cleaned up ${cleaned} inactive users ` +
         `(${this.userLimiters.size} active limiters remaining)`
       );
+    }
+  }
+
+  /**
+   * Record a 503 Service Unavailable failure (service-level circuit breaker).
+   * When consecutive failures exceed threshold within the window, circuit opens.
+   */
+  record503Failure(): void {
+    const now = Date.now();
+
+    this.cbFailureTimestamps.push(now);
+    this.cbFailureTimestamps = this.cbFailureTimestamps.filter(
+      t => now - t < this.CB_FAILURE_WINDOW_MS
+    );
+
+    if (this.cbState === 'half-open') {
+      // Probe failed — re-open circuit
+      this.cbState = 'open';
+      this.cbOpenedAt = now;
+      this.cbHalfOpenInFlight = 0;
+      this.logger.warn(
+        `[CircuitBreaker] Half-open probe failed (503), re-opening circuit for ${this.CB_COOLDOWN_MS / 1000}s`
+      );
+      return;
+    }
+
+    if (
+      this.cbState === 'closed' &&
+      this.cbFailureTimestamps.length >= this.CB_FAILURE_THRESHOLD
+    ) {
+      this.cbState = 'open';
+      this.cbOpenedAt = now;
+      this.cbTotalTrips++;
+      this.logger.warn(
+        `[CircuitBreaker] OPEN — ${this.cbFailureTimestamps.length} 503 errors ` +
+        `within ${this.CB_FAILURE_WINDOW_MS / 1000}s window. ` +
+        `Blocking requests for ${this.CB_COOLDOWN_MS / 1000}s`
+      );
+    }
+  }
+
+  /**
+   * Record a successful Graph API response (resets circuit breaker).
+   */
+  recordSuccess(): void {
+    if (this.cbState === 'half-open') {
+      this.logger.log('[CircuitBreaker] CLOSED — half-open probe succeeded');
+      this.cbState = 'closed';
+      this.cbFailureTimestamps = [];
+      this.cbHalfOpenInFlight = 0;
+      this.cbOpenedAt = null;
+      return;
+    }
+
+    if (this.cbState === 'closed') {
+      // Reset consecutive failure tracking on success
+      this.cbFailureTimestamps = [];
+    }
+  }
+
+  /**
+   * Check circuit breaker state and wait if open.
+   * Transitions open -> half-open after cooldown expires.
+   */
+  private async waitForCircuitBreaker(): Promise<void> {
+    if (this.cbState === 'closed') return;
+
+    const now = Date.now();
+
+    if (this.cbState === 'open') {
+      const elapsed = now - (this.cbOpenedAt ?? now);
+      if (elapsed >= this.CB_COOLDOWN_MS) {
+        this.cbState = 'half-open';
+        this.cbHalfOpenInFlight = 0;
+        this.logger.log('[CircuitBreaker] HALF-OPEN — cooldown expired, allowing probe request');
+      } else {
+        const remaining = this.CB_COOLDOWN_MS - elapsed;
+        this.logger.warn(
+          `[CircuitBreaker] Circuit OPEN, waiting ${Math.round(remaining / 1000)}s before retry`
+        );
+        await delay(remaining);
+        this.cbState = 'half-open';
+        this.cbHalfOpenInFlight = 0;
+        this.logger.log('[CircuitBreaker] HALF-OPEN — cooldown expired after wait');
+      }
+    }
+
+    // Re-read state (may have changed asynchronously via recordSuccess/record503Failure)
+    const currentState = this.cbState as 'closed' | 'open' | 'half-open';
+    if (currentState === 'half-open') {
+      // Only allow CB_HALF_OPEN_MAX concurrent probe requests
+      while (this.cbHalfOpenInFlight >= this.CB_HALF_OPEN_MAX) {
+        await delay(500);
+        // State may change asynchronously via recordSuccess/record503Failure
+        const stateAfterWait: string = this.cbState;
+        if (stateAfterWait === 'closed') return;
+        if (stateAfterWait === 'open') {
+          return this.waitForCircuitBreaker();
+        }
+      }
+      this.cbHalfOpenInFlight++;
     }
   }
 
@@ -269,6 +391,12 @@ export class GraphRateLimiterService implements OnModuleInit {
         ? Math.round(this.totalWaitTime / this.totalPermitsAcquired)
         : 0,
       cooldownCount: this.cooldownCount,
+      circuitBreaker: {
+        state: this.cbState,
+        recentFailures: this.cbFailureTimestamps.length,
+        totalTrips: this.cbTotalTrips,
+        openedAt: this.cbOpenedAt ? new Date(this.cbOpenedAt).toISOString() : null,
+      },
     };
   }
 

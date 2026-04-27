@@ -2,6 +2,7 @@ import {
   delay,
   is404Error,
   is429Error,
+  is503Error,
   extractRetryAfterSeconds,
   retryWithBackoff,
 } from './retry.util';
@@ -94,7 +95,14 @@ export async function executeGraphApiCall<T>(
         }
 
         try {
-          return await operation();
+          const result = await operation();
+
+          // Notify circuit breaker of successful request
+          if (rateLimiter) {
+            rateLimiter.recordSuccess();
+          }
+
+          return result;
         } catch (error) {
           // Special handling for 429 rate limit errors with Retry-After header
           // This takes precedence over standard exponential backoff
@@ -114,6 +122,22 @@ export async function executeGraphApiCall<T>(
               );
 
               await delay(delayMs);
+            }
+          }
+
+          // Special handling for 503 Service Unavailable with Retry-After header
+          if (is503Error(error)) {
+            // Notify circuit breaker about 503 failure
+            if (rateLimiter) {
+              rateLimiter.record503Failure();
+            }
+
+            const retryAfterSeconds = extractRetryAfterSeconds(error);
+            if (retryAfterSeconds !== null) {
+              logger.warn(
+                `Service unavailable (503) on ${resourceName}, waiting ${retryAfterSeconds}s as per Retry-After header`
+              );
+              await delay(retryAfterSeconds * 1000);
             }
           }
 
