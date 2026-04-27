@@ -761,6 +761,49 @@ export class MicrosoftSubscriptionService {
   }
 
   /**
+   * Cleanup all active subscriptions for a user + resource, at Microsoft Graph
+   * and in the local DB. Leaves subs for other resources untouched.
+   *
+   * @param externalUserId - External user ID from the host application
+   * @param resource - Graph resource string (e.g. '/me/events', '/me/messages')
+   * @returns Result summary from the Graph-side cleanup pass
+   */
+  async cleanupSubscriptionsForUserAndResource(
+    externalUserId: string,
+    resource: string,
+  ): Promise<SubscriptionCleanupResult> {
+    const internalUserId = await this.userIdConverter.externalToInternal(
+      externalUserId,
+      { cache: false },
+    );
+    const accessToken = await this.microsoftAuthService.getUserAccessToken({
+      internalUserId,
+      cache: false,
+    });
+
+    this.logger.log(
+      `🧹 Cleaning up ${resource} subscriptions for user ${internalUserId}`,
+    );
+
+    const result = await this.cleanupSubscriptions({
+      accessToken,
+      filter: (sub) =>
+        sub.resource === resource &&
+        (sub.clientState?.includes(`user_${internalUserId}_`) || false),
+    });
+
+    const dbRows = await this.webhookSubscriptionRepository
+      .findAllActiveByUserIdAndResource(internalUserId, resource);
+    for (const row of dbRows) {
+      await this.webhookSubscriptionRepository.deactivateSubscription(
+        row.subscriptionId,
+      );
+    }
+
+    return result;
+  }
+
+  /**
    * Revoke Microsoft OAuth tokens
    * @param refreshToken - The refresh token to revoke
    */

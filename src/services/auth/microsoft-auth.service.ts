@@ -676,6 +676,19 @@ export class MicrosoftAuthService {
 
       // Check if calendar.read permissions were requested
       if (this.hasCalendarSubscriptionPermission(scopes)) {
+        try {
+          this.logger.log(`[${correlationId}] Cleaning up existing calendar subscriptions before recreate`);
+          const cleanup = await this.subscriptionService
+            .cleanupSubscriptionsForUserAndResource(externalUserId, '/me/events');
+          this.logger.log(
+            `[${correlationId}] Calendar cleanup: found=${cleanup.totalFound}, deleted=${cleanup.successfullyDeleted}, failed=${cleanup.failedToDelete}`
+          );
+        } catch (cleanupError) {
+          this.logger.warn(
+            `[${correlationId}] Calendar cleanup failed, proceeding with creation: ${cleanupError instanceof Error ? cleanupError.message : 'Unknown error'}`
+          );
+        }
+
         // Create webhook subscription for the user's calendar with retry
         try {
           this.logger.log(`[${correlationId}] Creating calendar webhook subscription with retry logic`);
@@ -703,6 +716,19 @@ export class MicrosoftAuthService {
 
       // Check if email.read permissions were requested
       if (this.hasEmailSubscriptionPermission(scopes)) {
+        try {
+          this.logger.log(`[${correlationId}] Cleaning up existing email subscriptions before recreate`);
+          const cleanup = await this.subscriptionService
+            .cleanupSubscriptionsForUserAndResource(externalUserId, '/me/messages');
+          this.logger.log(
+            `[${correlationId}] Email cleanup: found=${cleanup.totalFound}, deleted=${cleanup.successfullyDeleted}, failed=${cleanup.failedToDelete}`
+          );
+        } catch (cleanupError) {
+          this.logger.warn(
+            `[${correlationId}] Email cleanup failed, proceeding with creation: ${cleanupError instanceof Error ? cleanupError.message : 'Unknown error'}`
+          );
+        }
+
         // Create webhook subscription for the user's email with retry
         try {
           this.logger.log(`[${correlationId}] Creating email webhook subscription with retry logic`);
