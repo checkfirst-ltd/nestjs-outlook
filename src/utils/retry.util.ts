@@ -80,6 +80,15 @@ export function is429Error(error: unknown): boolean {
 }
 
 /**
+ * Check if an error is a 503 Service Unavailable error
+ * @param error - The error to check
+ * @returns True if the error is a 503 Service Unavailable error
+ */
+export function is503Error(error: unknown): boolean {
+  return isGraphErrorWithStatus(error, 503);
+}
+
+/**
  * Check if an error is a 404 Not Found error
  * @param error - The error to check
  * @returns True if the error is a 404 Not Found error
