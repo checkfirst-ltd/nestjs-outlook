@@ -890,11 +890,17 @@ export class MicrosoftAuthService {
    * Flip a user to CORRUPTED so the host app can prompt re-authentication.
    * A subsequent successful saveMicrosoftUser flips it back to ACTIVE.
    * Fail-open: DB errors are logged, never thrown.
+   *
+   * Emits USER_REFRESH_TOKEN_INVALID exactly once per disconnection cycle:
+   * only when status transitions from non-CORRUPTED to CORRUPTED. Repeated refresh
+   * attempts on an already-corrupted user do not re-emit, so consumers can map
+   * the event 1:1 to user-facing notifications without their own dedupe.
    */
   private async markUserAsCorrupted(
     user: MicrosoftUser,
     reason: string,
   ): Promise<void> {
+    const wasAlreadyCorrupted = user.status === MicrosoftUserStatus.CORRUPTED;
     try {
       user.status = MicrosoftUserStatus.CORRUPTED;
       await this.microsoftUserRepository.save(user);
@@ -904,7 +910,22 @@ export class MicrosoftAuthService {
       this.logger.error(
         `Failed to mark user ${String(user.id)} as CORRUPTED: ${dbErr instanceof Error ? dbErr.message : 'unknown'}`,
       );
+      return;
     }
+
+    if (wasAlreadyCorrupted) return;
+
+    // Emit event that the user's refresh token is invalid
+    // usage: to handle the error in the host app
+    this.eventEmitter.emit(
+      OutlookEventTypes.USER_REFRESH_TOKEN_INVALID,
+      user.externalUserId,
+      {
+        internalUserId: user.id,
+        externalUserId: user.externalUserId,
+        errorCode: reason,
+      },
+    );
   }
 
   /**
