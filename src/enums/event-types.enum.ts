@@ -4,6 +4,7 @@
 export enum OutlookEventTypes {
   // Authentication events
   USER_AUTHENTICATED = 'microsoft.auth.user.authenticated',
+  USER_REFRESH_TOKEN_INVALID = 'microsoft.auth.user.refresh_token_invalid',
 
   // Calendar events
   EVENT_DELETED = 'outlook.event.deleted',
