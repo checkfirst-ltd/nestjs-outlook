@@ -1,5 +1,13 @@
 # Changelog
 
+## [7.2.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.1.5...v7.2.0) (2026-04-29)
+
+
+### Features
+
+* handle Outlook 503 with Retry-After and circuit breaker ([#132](https://github.com/checkfirst-ltd/nestjs-outlook/issues/132)) ([321c8f1](https://github.com/checkfirst-ltd/nestjs-outlook/commit/321c8f1de47671571954f2737b046bd5d7322c45))
+* send an event when the user refresh token revoked ([#134](https://github.com/checkfirst-ltd/nestjs-outlook/issues/134)) ([cb23921](https://github.com/checkfirst-ltd/nestjs-outlook/commit/cb23921bb8a35745110f677bfbd45ecbb3050eac))
+
 ## [7.1.5](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.1.4...v7.1.5) (2026-04-21)
 
 
