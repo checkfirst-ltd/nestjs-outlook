@@ -3,6 +3,7 @@ import { Response } from 'express';
 import { ApiTags, ApiResponse, ApiQuery, ApiOperation, ApiProduces } from '@nestjs/swagger';
 import { MicrosoftAuthService } from '../services/auth/microsoft-auth.service';
 import { MailboxInactiveError } from '../errors/mailbox-inactive.error';
+import { CsrfValidationError } from '../errors/csrf-validation.error';
 
 @ApiTags('Microsoft Auth')
 @Controller('auth/microsoft')
@@ -97,6 +98,25 @@ export class MicrosoftAuthController {
       `);
     } catch (error) {
       this.logger.error('Error handling OAuth callback:', error);
+
+      if (error instanceof CsrfValidationError) {
+        return res.status(HttpStatus.OK).send(`
+          <h1>Authorization Link Expired</h1>
+          <p>This authorization link is no longer valid. This can happen if:</p>
+          <ul>
+            <li>The link was opened after it expired</li>
+            <li>The page was refreshed after authorization completed</li>
+            <li>The browser back button was used after completing authorization</li>
+          </ul>
+          <p>Please go back to the application and start the calendar connection again.</p>
+          <p>You can close this tab now.</p>
+          <script>
+            if (window.opener) {
+              window.opener.postMessage({ type: 'microsoft-auth-failed', error: 'Authorization link expired or already used. Please try connecting your calendar again.' }, '*');
+            }
+          </script>
+        `);
+      }
 
       if (error instanceof MailboxInactiveError) {
         return res.status(HttpStatus.OK).send(`

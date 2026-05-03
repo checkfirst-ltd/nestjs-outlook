@@ -27,6 +27,7 @@ export * from './constants';
 
 // Export errors
 export * from './errors/mailbox-inactive.error';
+export * from './errors/csrf-validation.error';
 
 // Export controllers
 export * from './controllers/calendar.controller';
