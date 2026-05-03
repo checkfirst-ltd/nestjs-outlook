@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.2.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.2.0...v7.2.1) (2026-05-03)
+
+
+### Bug Fixes
+
+* csrf token handling the error ([#135](https://github.com/checkfirst-ltd/nestjs-outlook/issues/135)) ([b731a98](https://github.com/checkfirst-ltd/nestjs-outlook/commit/b731a98a9dfb88c72f19c64faf953f0e9128a756))
+
 ## [7.2.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.1.5...v7.2.0) (2026-04-29)
 
 
