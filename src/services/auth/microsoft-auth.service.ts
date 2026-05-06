@@ -19,6 +19,7 @@ import { MicrosoftUser } from '../../entities/microsoft-user.entity';
 import { retryWithBackoff } from '../../utils/retry.util';
 import { TtlCache } from '../../utils/ttl-cache.util';
 import { MailboxInactiveError } from '../../errors/mailbox-inactive.error';
+import { CsrfValidationError } from '../../errors/csrf-validation.error';
 import { MicrosoftRefreshTokenInvalidError } from '../../errors/microsoft-refresh-token-invalid.error';
 import { MicrosoftUserStatus } from '../../enums/microsoft-user-status.enum';
 
@@ -503,7 +504,7 @@ export class MicrosoftAuthService {
 
     if (csrfError) {
       this.logger.error(`[${correlationId}] CSRF validation failed for user ${String(stateData.userId)}: ${csrfError}`);
-      throw new Error(`CSRF validation failed: ${csrfError}`);
+      throw new CsrfValidationError(csrfError);
     }
 
     // Define these outside try block so they're accessible in catch
