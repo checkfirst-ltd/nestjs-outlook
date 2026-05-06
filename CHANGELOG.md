@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.2.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.2.1...v7.2.2) (2026-05-06)
+
+
+### Bug Fixes
+
+* csrf html page as main trigger for csrf expiration ([#137](https://github.com/checkfirst-ltd/nestjs-outlook/issues/137)) ([0161bf9](https://github.com/checkfirst-ltd/nestjs-outlook/commit/0161bf9638608e4d00e35a2be74ec649b0445f87))
+
 ## [7.2.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.2.0...v7.2.1) (2026-05-03)
 
 
