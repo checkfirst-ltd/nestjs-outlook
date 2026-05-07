@@ -4,6 +4,7 @@ import { ApiTags, ApiResponse, ApiQuery, ApiOperation, ApiProduces } from '@nest
 import { MicrosoftAuthService } from '../services/auth/microsoft-auth.service';
 import { MailboxInactiveError } from '../errors/mailbox-inactive.error';
 import { CsrfValidationError } from '../errors/csrf-validation.error';
+import { SubscriptionSetupError } from '../errors/subscription-setup.error';
 
 @ApiTags('Microsoft Auth')
 @Controller('auth/microsoft')
@@ -133,6 +134,21 @@ export class MicrosoftAuthController {
           <script>
             if (window.opener) {
               window.opener.postMessage({ type: 'microsoft-auth-failed', error: 'Your mailbox is not supported. It may be inactive, soft-deleted, or hosted on-premise. Please contact your IT administrator.' }, '*');
+            }
+          </script>
+        `);
+      }
+
+      if (error instanceof SubscriptionSetupError) {
+        return res.status(HttpStatus.OK).send(`
+          <h1>Calendar Subscription Failed</h1>
+          <p>Your Microsoft account was authenticated, but we couldn't set up calendar notifications.</p>
+          <p>This is usually temporary. Please try connecting your calendar again.</p>
+          <p>If the problem persists, contact your administrator.</p>
+          <p>You can close this tab now.</p>
+          <script>
+            if (window.opener) {
+              window.opener.postMessage({ type: 'microsoft-auth-failed', error: 'Calendar notification setup failed. Please try connecting again.' }, '*');
             }
           </script>
         `);

@@ -22,6 +22,7 @@ import { MailboxInactiveError } from '../../errors/mailbox-inactive.error';
 import { CsrfValidationError } from '../../errors/csrf-validation.error';
 import { MicrosoftRefreshTokenInvalidError } from '../../errors/microsoft-refresh-token-invalid.error';
 import { MicrosoftUserStatus } from '../../enums/microsoft-user-status.enum';
+import { SubscriptionSetupError } from '../../errors/subscription-setup.error';
 
 /**
  * OAuth2 `error` values from Microsoft's token endpoint that explicitly mean
@@ -569,19 +570,16 @@ export class MicrosoftAuthService {
         }),
       );
 
-      // Setup subscriptions in background (fire-and-forget)
-      // Errors are handled inside setupSubscriptions via SUBSCRIPTION_CREATION_FAILED events.
-      // The 6-hour cron health check acts as safety net for any missed subscriptions.
-      this.logger.log(`[${correlationId}] Starting subscription setup (background)`);
-      this.setupSubscriptions(stateData.userId, scopesToUse).catch((err: unknown) => {
-        this.logger.error(
-          `[${correlationId}] Background subscription setup failed: ${err instanceof Error ? err.message : String(err)}`
-        );
-      });
+      // Setup subscriptions (awaited — errors propagate to controller for user-facing HTML)
+      this.logger.log(`[${correlationId}] Starting subscription setup`);
+      await this.setupSubscriptions(stateData.userId, scopesToUse);
 
       this.logger.log(`[${correlationId}] Token exchange completed successfully`);
       return tokenData;
     } catch (error) {
+      if (error instanceof SubscriptionSetupError) {
+        throw error; // Let controller handle with user-friendly message
+      }
       if (error instanceof MailboxInactiveError) {
         // Deactivate the saved Microsoft user since their mailbox isn't usable
         await this.deactivateMicrosoftUser(stateData.userId, correlationId);
@@ -799,17 +797,23 @@ export class MicrosoftAuthService {
       }
 
       if (errors.length > 0) {
+        const combined = errors.join('; ');
         this.logger.error(
-          `[${correlationId}] Subscription setup completed with errors for user ${externalUserId}: ${errors.join('; ')}`
+          `[${correlationId}] Subscription setup completed with errors for user ${externalUserId}: ${combined}`
         );
+        throw new SubscriptionSetupError(combined);
       } else {
         this.logger.log(`[${correlationId}] All subscriptions created successfully for user ${externalUserId}`);
       }
     } catch (error) {
+      // Re-throw SubscriptionSetupError so the controller can show user-facing HTML
+      if (error instanceof SubscriptionSetupError) {
+        throw error;
+      }
       this.logger.error(
         `[${correlationId}] Unexpected error setting up subscriptions: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
-      // Continue without failing authentication
+      throw new SubscriptionSetupError('Unexpected error during subscription setup');
     } finally {
       // Mark subscription setup as complete
       this.subscriptionInProgress.set(externalUserId, false);
