@@ -16,12 +16,13 @@ import { PermissionScope } from '../../enums/permission-scope.enum';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, Repository } from 'typeorm';
 import { MicrosoftUser } from '../../entities/microsoft-user.entity';
-import { retryWithBackoff, isNonRetryableError } from '../../utils/retry.util';
+import { retryWithBackoff, isNonRetryableError, classifySubscriptionError } from '../../utils/retry.util';
 import { TtlCache } from '../../utils/ttl-cache.util';
 import { MailboxInactiveError } from '../../errors/mailbox-inactive.error';
 import { CsrfValidationError } from '../../errors/csrf-validation.error';
 import { MicrosoftRefreshTokenInvalidError } from '../../errors/microsoft-refresh-token-invalid.error';
 import { MicrosoftUserStatus } from '../../enums/microsoft-user-status.enum';
+import { SubscriptionSetupError, SubscriptionFailureReason } from '../../errors/subscription-setup.error';
 
 /**
  * OAuth2 `error` values from Microsoft's token endpoint that explicitly mean
@@ -569,19 +570,16 @@ export class MicrosoftAuthService {
         }),
       );
 
-      // Setup subscriptions in background (fire-and-forget)
-      // Errors are handled inside setupSubscriptions via SUBSCRIPTION_CREATION_FAILED events.
-      // The 6-hour cron health check acts as safety net for any missed subscriptions.
-      this.logger.log(`[${correlationId}] Starting subscription setup (background)`);
-      this.setupSubscriptions(stateData.userId, scopesToUse).catch((err: unknown) => {
-        this.logger.error(
-          `[${correlationId}] Background subscription setup failed: ${err instanceof Error ? err.message : String(err)}`
-        );
-      });
+      // Setup subscriptions (awaited — errors propagate to controller for user-facing HTML)
+      this.logger.log(`[${correlationId}] Starting subscription setup`);
+      await this.setupSubscriptions(stateData.userId, scopesToUse);
 
       this.logger.log(`[${correlationId}] Token exchange completed successfully`);
       return tokenData;
     } catch (error) {
+      if (error instanceof SubscriptionSetupError) {
+        throw error; // Let controller handle with user-friendly message
+      }
       if (error instanceof MailboxInactiveError) {
         // Deactivate the saved Microsoft user since their mailbox isn't usable
         await this.deactivateMicrosoftUser(stateData.userId, correlationId);
@@ -696,11 +694,12 @@ export class MicrosoftAuthService {
     const correlationId = `auth-${externalUserId}-${Date.now()}`;
     this.logger.log(`[${correlationId}] Starting subscription setup for user ${externalUserId}`);
 
+    const errors: string[] = [];
+    let failureReason: SubscriptionFailureReason = SubscriptionFailureReason.UNKNOWN;
+
     try {
       // Mark subscription setup as in progress
       this.subscriptionInProgress.set(externalUserId, true);
-
-      const errors: string[] = [];
 
       // Check if calendar.read permissions were requested
       if (this.hasCalendarSubscriptionPermission(scopes)) {
@@ -723,7 +722,7 @@ export class MicrosoftAuthService {
           await retryWithBackoff(
             () => this.subscriptionService.createWebhookSubscription(externalUserId),
             {
-              maxRetries: 3,
+              maxRetries: 2,
               retryDelayMs: 1000,
               logger: this.logger,
               operationName: `create webhook subscription for user ${externalUserId}`,
@@ -734,6 +733,7 @@ export class MicrosoftAuthService {
           const errorMsg = `Failed to create calendar webhook subscription after retries: ${calendarError instanceof Error ? calendarError.message : 'Unknown error'}`;
           this.logger.error(`[${correlationId}] ${errorMsg}`);
           errors.push(errorMsg);
+          failureReason = classifySubscriptionError(calendarError);
 
           const nonRetryable = isNonRetryableError(calendarError);
 
@@ -771,7 +771,7 @@ export class MicrosoftAuthService {
           await retryWithBackoff(
             () => this.emailService.createWebhookSubscription(externalUserId),
             {
-              maxRetries: 3,
+              maxRetries: 2,
               retryDelayMs: 1000,
               logger: this.logger,
               operationName: `create email subscription for user ${externalUserId}`,
@@ -782,6 +782,7 @@ export class MicrosoftAuthService {
           const errorMsg = `Failed to create email webhook subscription after retries: ${emailError instanceof Error ? emailError.message : 'Unknown error'}`;
           this.logger.error(`[${correlationId}] ${errorMsg}`);
           errors.push(errorMsg);
+          failureReason = classifySubscriptionError(emailError);
 
           const nonRetryable = isNonRetryableError(emailError);
 
@@ -799,17 +800,23 @@ export class MicrosoftAuthService {
       }
 
       if (errors.length > 0) {
+        const combined = errors.join('; ');
         this.logger.error(
-          `[${correlationId}] Subscription setup completed with errors for user ${externalUserId}: ${errors.join('; ')}`
+          `[${correlationId}] Subscription setup completed with errors for user ${externalUserId} (reason: ${failureReason}): ${combined}`
         );
+        throw new SubscriptionSetupError(combined, failureReason);
       } else {
         this.logger.log(`[${correlationId}] All subscriptions created successfully for user ${externalUserId}`);
       }
     } catch (error) {
+      // Re-throw SubscriptionSetupError so the controller can show user-facing HTML
+      if (error instanceof SubscriptionSetupError) {
+        throw error;
+      }
       this.logger.error(
         `[${correlationId}] Unexpected error setting up subscriptions: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
-      // Continue without failing authentication
+      throw new SubscriptionSetupError('Unexpected error during subscription setup');
     } finally {
       // Mark subscription setup as complete
       this.subscriptionInProgress.set(externalUserId, false);
