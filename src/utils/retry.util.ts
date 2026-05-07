@@ -1,3 +1,5 @@
+import { SubscriptionFailureReason } from '../errors/subscription-setup.error';
+
 /**
  * Delay execution for a specified number of milliseconds
  * @param ms - Milliseconds to delay
@@ -59,6 +61,19 @@ export function isNonRetryableError(error: unknown): boolean {
     isGraphErrorWithStatus(error, 404) ||
     isGraphErrorWithStatus(error, 410)
   );
+}
+
+/**
+ * Classify a subscription error into a user-facing failure reason.
+ * Used to show appropriate error messages in the OAuth callback page.
+ */
+export function classifySubscriptionError(error: unknown): SubscriptionFailureReason {
+  if (isGraphErrorWithStatus(error, 403)) return SubscriptionFailureReason.PERMISSION_DENIED;
+  if (isGraphErrorWithStatus(error, 401)) return SubscriptionFailureReason.AUTH_EXPIRED;
+  if (isGraphErrorWithStatus(error, 429)) return SubscriptionFailureReason.RATE_LIMITED;
+  if (isGraphErrorWithStatus(error, 404)) return SubscriptionFailureReason.NOT_FOUND;
+  if (isGraphErrorWithStatus(error, 503) || isServerError(error)) return SubscriptionFailureReason.SERVICE_UNAVAILABLE;
+  return SubscriptionFailureReason.UNKNOWN;
 }
 
 /**

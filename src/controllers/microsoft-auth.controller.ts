@@ -4,7 +4,7 @@ import { ApiTags, ApiResponse, ApiQuery, ApiOperation, ApiProduces } from '@nest
 import { MicrosoftAuthService } from '../services/auth/microsoft-auth.service';
 import { MailboxInactiveError } from '../errors/mailbox-inactive.error';
 import { CsrfValidationError } from '../errors/csrf-validation.error';
-import { SubscriptionSetupError } from '../errors/subscription-setup.error';
+import { SubscriptionSetupError, SubscriptionFailureReason } from '../errors/subscription-setup.error';
 
 @ApiTags('Microsoft Auth')
 @Controller('auth/microsoft')
@@ -140,15 +140,14 @@ export class MicrosoftAuthController {
       }
 
       if (error instanceof SubscriptionSetupError) {
+        const content = this.getSubscriptionErrorContent(error.reason);
         return res.status(HttpStatus.OK).send(`
-          <h1>Calendar Subscription Failed</h1>
-          <p>Your Microsoft account was authenticated, but we couldn't set up calendar notifications.</p>
-          <p>This is usually temporary. Please try connecting your calendar again.</p>
-          <p>If the problem persists, contact your administrator.</p>
+          <h1>${content.title}</h1>
+          ${content.body}
           <p>You can close this tab now.</p>
           <script>
             if (window.opener) {
-              window.opener.postMessage({ type: 'microsoft-auth-failed', error: 'Calendar notification setup failed. Please try connecting again.' }, '*');
+              window.opener.postMessage({ type: 'microsoft-auth-failed', error: ${JSON.stringify(content.userError)} }, '*');
             }
           </script>
         `);
@@ -157,6 +156,52 @@ export class MicrosoftAuthController {
       return res
         .status(HttpStatus.INTERNAL_SERVER_ERROR)
         .send('An error occurred during authentication');
+    }
+  }
+
+  private getSubscriptionErrorContent(reason: SubscriptionFailureReason): {
+    title: string;
+    body: string;
+    userError: string;
+  } {
+    switch (reason) {
+      case SubscriptionFailureReason.PERMISSION_DENIED:
+        return {
+          title: 'Calendar Connection Failed',
+          body: `
+            <p>Your Microsoft account was authenticated, but your organization's settings prevent calendar notifications.</p>
+            <p>This usually means:</p>
+            <ul>
+              <li>Your mailbox doesn't support this feature</li>
+              <li>Your IT admin has restricted calendar access</li>
+            </ul>
+            <p>Please contact your IT administrator.</p>`,
+          userError: 'Calendar setup blocked by organization policy. Please contact your IT administrator.',
+        };
+      case SubscriptionFailureReason.AUTH_EXPIRED:
+        return {
+          title: 'Authentication Error',
+          body: '<p>Your authentication session expired during calendar setup.</p><p>Please try connecting your calendar again.</p>',
+          userError: 'Authentication expired during setup. Please try again.',
+        };
+      case SubscriptionFailureReason.RATE_LIMITED:
+        return {
+          title: 'Calendar Setup Temporarily Unavailable',
+          body: `<p>Microsoft's servers are currently busy.</p><p>Please wait a few minutes and try connecting your calendar again.</p>`,
+          userError: 'Calendar setup is temporarily unavailable due to high demand. Please try again in a few minutes.',
+        };
+      case SubscriptionFailureReason.SERVICE_UNAVAILABLE:
+        return {
+          title: 'Microsoft Service Unavailable',
+          body: `<p>Microsoft's calendar service is temporarily unavailable. This is not related to your account.</p><p>Please try again later.</p>`,
+          userError: "Microsoft's service is temporarily unavailable. Please try again later.",
+        };
+      default:
+        return {
+          title: 'Calendar Subscription Failed',
+          body: `<p>Your Microsoft account was authenticated, but we couldn't set up calendar notifications.</p><p>This is usually temporary. Please try connecting your calendar again.</p><p>If the problem persists, contact your administrator.</p>`,
+          userError: 'Calendar notification setup failed. Please try connecting again.',
+        };
     }
   }
 }

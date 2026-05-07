@@ -16,13 +16,13 @@ import { PermissionScope } from '../../enums/permission-scope.enum';
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, Repository } from 'typeorm';
 import { MicrosoftUser } from '../../entities/microsoft-user.entity';
-import { retryWithBackoff, isNonRetryableError } from '../../utils/retry.util';
+import { retryWithBackoff, isNonRetryableError, classifySubscriptionError } from '../../utils/retry.util';
 import { TtlCache } from '../../utils/ttl-cache.util';
 import { MailboxInactiveError } from '../../errors/mailbox-inactive.error';
 import { CsrfValidationError } from '../../errors/csrf-validation.error';
 import { MicrosoftRefreshTokenInvalidError } from '../../errors/microsoft-refresh-token-invalid.error';
 import { MicrosoftUserStatus } from '../../enums/microsoft-user-status.enum';
-import { SubscriptionSetupError } from '../../errors/subscription-setup.error';
+import { SubscriptionSetupError, SubscriptionFailureReason } from '../../errors/subscription-setup.error';
 
 /**
  * OAuth2 `error` values from Microsoft's token endpoint that explicitly mean
@@ -694,11 +694,12 @@ export class MicrosoftAuthService {
     const correlationId = `auth-${externalUserId}-${Date.now()}`;
     this.logger.log(`[${correlationId}] Starting subscription setup for user ${externalUserId}`);
 
+    const errors: string[] = [];
+    let failureReason: SubscriptionFailureReason = SubscriptionFailureReason.UNKNOWN;
+
     try {
       // Mark subscription setup as in progress
       this.subscriptionInProgress.set(externalUserId, true);
-
-      const errors: string[] = [];
 
       // Check if calendar.read permissions were requested
       if (this.hasCalendarSubscriptionPermission(scopes)) {
@@ -721,7 +722,7 @@ export class MicrosoftAuthService {
           await retryWithBackoff(
             () => this.subscriptionService.createWebhookSubscription(externalUserId),
             {
-              maxRetries: 3,
+              maxRetries: 2,
               retryDelayMs: 1000,
               logger: this.logger,
               operationName: `create webhook subscription for user ${externalUserId}`,
@@ -732,6 +733,7 @@ export class MicrosoftAuthService {
           const errorMsg = `Failed to create calendar webhook subscription after retries: ${calendarError instanceof Error ? calendarError.message : 'Unknown error'}`;
           this.logger.error(`[${correlationId}] ${errorMsg}`);
           errors.push(errorMsg);
+          failureReason = classifySubscriptionError(calendarError);
 
           const nonRetryable = isNonRetryableError(calendarError);
 
@@ -769,7 +771,7 @@ export class MicrosoftAuthService {
           await retryWithBackoff(
             () => this.emailService.createWebhookSubscription(externalUserId),
             {
-              maxRetries: 3,
+              maxRetries: 2,
               retryDelayMs: 1000,
               logger: this.logger,
               operationName: `create email subscription for user ${externalUserId}`,
@@ -780,6 +782,7 @@ export class MicrosoftAuthService {
           const errorMsg = `Failed to create email webhook subscription after retries: ${emailError instanceof Error ? emailError.message : 'Unknown error'}`;
           this.logger.error(`[${correlationId}] ${errorMsg}`);
           errors.push(errorMsg);
+          failureReason = classifySubscriptionError(emailError);
 
           const nonRetryable = isNonRetryableError(emailError);
 
@@ -799,9 +802,9 @@ export class MicrosoftAuthService {
       if (errors.length > 0) {
         const combined = errors.join('; ');
         this.logger.error(
-          `[${correlationId}] Subscription setup completed with errors for user ${externalUserId}: ${combined}`
+          `[${correlationId}] Subscription setup completed with errors for user ${externalUserId} (reason: ${failureReason}): ${combined}`
         );
-        throw new SubscriptionSetupError(combined);
+        throw new SubscriptionSetupError(combined, failureReason);
       } else {
         this.logger.log(`[${correlationId}] All subscriptions created successfully for user ${externalUserId}`);
       }
