@@ -1,5 +1,17 @@
 # Changelog
 
+## [8.0.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.2.2...v8.0.0) (2026-05-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* subscription passing errors to the host app ([#141](https://github.com/checkfirst-ltd/nestjs-outlook/issues/141))
+
+### Bug Fixes
+
+* subscription decouple with auth ([#139](https://github.com/checkfirst-ltd/nestjs-outlook/issues/139)) ([8a62577](https://github.com/checkfirst-ltd/nestjs-outlook/commit/8a6257750b71fe3d30300d6cd0b630bd09d9c23a))
+* subscription passing errors to the host app ([#141](https://github.com/checkfirst-ltd/nestjs-outlook/issues/141)) ([f78e8e8](https://github.com/checkfirst-ltd/nestjs-outlook/commit/f78e8e896576e194c6e3af09517a60ce81d34714))
+
 ## [7.2.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.2.1...v7.2.2) (2026-05-06)
 
 
