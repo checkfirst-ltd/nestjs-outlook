@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, MoreThan } from 'typeorm';
+import { Repository, MoreThan, In, Not } from 'typeorm';
 import { OutlookWebhookSubscription } from '../entities/outlook-webhook-subscription.entity';
 import { TtlCache } from '../utils/ttl-cache.util';
 
@@ -80,10 +80,31 @@ export class OutlookWebhookSubscriptionRepository {
     this.byUserId.clear();
   }
 
-  async findActiveSubscriptions(): Promise<OutlookWebhookSubscription[]> {
+  async findActiveSubscriptions(excludeUserIds?: number[]): Promise<OutlookWebhookSubscription[]> {
+    const now = new Date();
+    if (excludeUserIds && excludeUserIds.length > 0) {
+      return this.repository.find({
+        where: {
+          isActive: true,
+          expirationDateTime: MoreThan(now),
+          userId: Not(In(excludeUserIds)),
+        },
+      });
+    }
+    return this.repository.find({
+      where: {
+        isActive: true,
+        expirationDateTime: MoreThan(now),
+      },
+    });
+  }
+
+  async findActiveByUserIds(userIds: number[]): Promise<OutlookWebhookSubscription[]> {
+    if (userIds.length === 0) return [];
     const now = new Date();
     return this.repository.find({
       where: {
+        userId: In(userIds),
         isActive: true,
         expirationDateTime: MoreThan(now),
       },

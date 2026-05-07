@@ -33,4 +33,8 @@ export enum OutlookEventTypes {
 
   // Error events
   SUBSCRIPTION_CREATION_FAILED = 'outlook.subscription.creation_failed',
+
+  // Cron job observability events
+  HEALTH_CHECK_COMPLETED = 'outlook.cron.health_check.completed',
+  RETRY_FAILED_SUBSCRIPTIONS_COMPLETED = 'outlook.cron.retry_failed_subscriptions.completed',
 }
