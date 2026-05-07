@@ -3,7 +3,7 @@ import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Cron } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Not, In } from 'typeorm';
+import { Repository, Not } from 'typeorm';
 import axios from 'axios';
 import { Subscription, BatchRequestPayload, BatchResponsePayload, BatchResponse } from '../../types';
 import { MicrosoftAuthService } from '../auth/microsoft-auth.service';
@@ -878,26 +878,27 @@ export class MicrosoftSubscriptionService {
     const correlationId = `health-check-${Date.now()}`;
 
     try {
-      const allActiveSubs = await this.webhookSubscriptionRepository.findActiveSubscriptions();
+      // Find CORRUPTED users first so we can exclude their subs from the query
+      // instead of loading all subs then filtering in-memory.
+      const corruptedUsers = await this.microsoftUserRepository.find({
+        select: ['id'],
+        where: { status: MicrosoftUserStatus.CORRUPTED },
+      });
+      const corruptedUserIds = corruptedUsers.map((u) => u.id);
 
-      if (allActiveSubs.length === 0) {
-        this.logger.debug(`[${correlationId}] No active subscriptions to verify`);
-        return;
+      if (corruptedUserIds.length > 0) {
+        this.logger.log(
+          `[${correlationId}] Excluding ${corruptedUserIds.length} CORRUPTED user(s) from health check`
+        );
       }
 
-      // Skip subs whose owning user is CORRUPTED — any outbound Graph work for
-      // them would just trigger the same invalid_grant and we've already signalled
-      // the host app to prompt re-auth.
-      const corruptedUserIds = await this.findCorruptedUserIds(allActiveSubs);
-      const activeSubs = corruptedUserIds.size > 0
-        ? allActiveSubs.filter((sub) => !corruptedUserIds.has(sub.userId))
-        : allActiveSubs;
+      const activeSubs = await this.webhookSubscriptionRepository.findActiveSubscriptions(
+        corruptedUserIds.length > 0 ? corruptedUserIds : undefined
+      );
 
-      const skipped = allActiveSubs.length - activeSubs.length;
-      if (skipped > 0) {
-        this.logger.log(
-          `[${correlationId}] Skipping ${skipped} sub(s) owned by ${corruptedUserIds.size} CORRUPTED user(s)`
-        );
+      if (activeSubs.length === 0) {
+        this.logger.debug(`[${correlationId}] No active subscriptions to verify`);
+        return;
       }
 
       const expiringSoon = this.filterExpiringSoon(activeSubs, HEALTH_CHECK_WINDOW_HOURS);
@@ -924,26 +925,88 @@ export class MicrosoftSubscriptionService {
       this.logger.log(
         `[${correlationId}] Health check complete: ${counters.verified} verified, ${counters.recreated} recreated, ${counters.renewed} renewed, ${counters.staleDetected} stale-detected, ${counters.failed} failed`
       );
+
+      this.eventEmitter.emit(OutlookEventTypes.HEALTH_CHECK_COMPLETED, {
+        correlationId,
+        totalActive: activeSubs.length,
+        corruptedUsersExcluded: corruptedUserIds.length,
+        ...counters,
+      });
     } catch (error) {
       this.logger.error(`[${correlationId}] Subscription health check job failed:`, error);
     }
   }
 
   /**
-   * Return the set of user IDs whose MicrosoftUser.status === CORRUPTED among
-   * the owners of the given subs. One indexed query, no N+1.
+   * Daily retry for users whose subscription creation failed with a non-retryable
+   * error during auth. Finds SUBSCRIPTION_FAILED users with no active webhook
+   * subscriptions and attempts to recreate them.
    */
-  private async findCorruptedUserIds(
-    subs: OutlookWebhookSubscription[],
-  ): Promise<Set<number>> {
-    const userIds = Array.from(new Set(subs.map((s) => s.userId)));
-    if (userIds.length === 0) return new Set();
+  @Cron('0 3 * * *')
+  async retryFailedSubscriptions(): Promise<void> {
+    const correlationId = `retry-failed-subs-${Date.now()}`;
+    try {
+      const failedUsers = await this.microsoftUserRepository.find({
+        where: {
+          status: MicrosoftUserStatus.SUBSCRIPTION_FAILED,
+          isActive: true,
+        },
+      });
 
-    const rows = await this.microsoftUserRepository.find({
-      select: ['id'],
-      where: { id: In(userIds), status: MicrosoftUserStatus.CORRUPTED },
-    });
-    return new Set(rows.map((u) => u.id));
+      if (failedUsers.length === 0) {
+        this.logger.debug(`[${correlationId}] No SUBSCRIPTION_FAILED users to retry`);
+        return;
+      }
+
+      const failedUserIds = failedUsers.map((u) => u.id);
+      const activeSubs = await this.webhookSubscriptionRepository.findActiveByUserIds(failedUserIds);
+      const usersWithActiveSubs = new Set(activeSubs.map((s) => s.userId));
+
+      const usersToRetry = failedUsers.filter((u) => !usersWithActiveSubs.has(u.id));
+
+      this.logger.log(
+        `[${correlationId}] Retrying subscriptions: ${failedUsers.length} SUBSCRIPTION_FAILED, ` +
+        `${failedUsers.length - usersToRetry.length} already have subs, ${usersToRetry.length} to retry`
+      );
+
+      let succeeded = 0;
+      let failed = 0;
+
+      for (const user of usersToRetry) {
+        try {
+          await this.createWebhookSubscription(user.externalUserId);
+          await this.microsoftUserRepository.update(
+            { id: user.id },
+            { status: MicrosoftUserStatus.ACTIVE },
+          );
+          succeeded++;
+          this.logger.log(
+            `[${correlationId}] Recreated subscription for user ${user.externalUserId}, status reset to ACTIVE`
+          );
+        } catch (err) {
+          failed++;
+          this.logger.warn(
+            `[${correlationId}] Failed to recreate subscription for user ${user.externalUserId}: ` +
+            (err instanceof Error ? err.message : String(err))
+          );
+        }
+      }
+
+      this.logger.log(
+        `[${correlationId}] Retry complete: ${succeeded} succeeded, ${failed} failed`
+      );
+
+      this.eventEmitter.emit(OutlookEventTypes.RETRY_FAILED_SUBSCRIPTIONS_COMPLETED, {
+        correlationId,
+        totalFailed: failedUsers.length,
+        alreadyHaveSubs: failedUsers.length - usersToRetry.length,
+        attempted: usersToRetry.length,
+        succeeded,
+        failed,
+      });
+    } catch (error) {
+      this.logger.error(`[${correlationId}] Retry failed subscriptions job failed:`, error);
+    }
   }
 
   // ─── Health check helpers ───────────────────────────────────────────

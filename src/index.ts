@@ -21,6 +21,7 @@ export * from './interfaces/recurrence.interfaces';
 export * from './enums/permission-scope.enum';
 export * from './enums/event-types.enum';
 export * from './enums/show-as-type.enum';
+export * from './enums/microsoft-user-status.enum';
 
 // Export constants
 export * from './constants';

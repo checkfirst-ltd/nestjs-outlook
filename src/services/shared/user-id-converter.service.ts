@@ -60,6 +60,7 @@ export class UserIdConverterService {
     }
 
     const user = await this.microsoftUserRepository.findOne({
+      select: ['id'],
       where: { externalUserId },
     });
 
@@ -97,6 +98,7 @@ export class UserIdConverterService {
     }
 
     const user = await this.microsoftUserRepository.findOne({
+      select: ['externalUserId'],
       where: { id: internalUserId },
     });
 
