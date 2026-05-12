@@ -581,8 +581,9 @@ export class MicrosoftAuthService {
         throw error; // Let controller handle with user-friendly message
       }
       if (error instanceof MailboxInactiveError) {
-        // Deactivate the saved Microsoft user since their mailbox isn't usable
-        await this.deactivateMicrosoftUser(stateData.userId, correlationId);
+        // Mark as SUBSCRIPTION_FAILED so the daily retry cron (3 AM) can attempt
+        // subscription creation later when the mailbox may become accessible.
+        await this.markSubscriptionFailed(stateData.userId, correlationId);
         throw error; // Let controller handle with user-friendly message
       }
       if (axios.isAxiosError(error)) {
@@ -633,23 +634,6 @@ export class MicrosoftAuthService {
       // Truly transient: network errors, 429, 5xx — don't block auth
       this.logger.warn(
         `[${correlationId}] Mailbox validation call failed (non-blocking): ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-  }
-
-  /**
-   * Deactivates a Microsoft user record when their mailbox turns out to be unusable.
-   */
-  private async deactivateMicrosoftUser(externalUserId: string, correlationId: string): Promise<void> {
-    try {
-      await this.microsoftUserRepository.update(
-        { externalUserId } as FindOptionsWhere<MicrosoftUser>,
-        { isActive: false },
-      );
-      this.logger.log(`[${correlationId}] Deactivated Microsoft user ${externalUserId} due to unusable mailbox`);
-    } catch (err) {
-      this.logger.warn(
-        `[${correlationId}] Failed to deactivate Microsoft user ${externalUserId}: ${err instanceof Error ? err.message : String(err)}`
       );
     }
   }
