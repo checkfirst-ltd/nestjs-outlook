@@ -1,5 +1,12 @@
 # Changelog
 
+## [8.0.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v8.0.0...v8.0.1) (2026-05-12)
+
+
+### Bug Fixes
+
+* subscription validation failed 403 handling by marking user SUBSCRIPTION_FAILED ([#143](https://github.com/checkfirst-ltd/nestjs-outlook/issues/143)) ([8edca4a](https://github.com/checkfirst-ltd/nestjs-outlook/commit/8edca4ae4aa0792d8d5ee9cdf79a85f8022e6d5d))
+
 ## [8.0.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v7.2.2...v8.0.0) (2026-05-07)
 
 
