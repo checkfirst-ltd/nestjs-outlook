@@ -4,7 +4,7 @@ import axios from 'axios';
 import { TokenResponse } from '../../interfaces/outlook/token-response.interface';
 import { EmailService } from '../email/email.service';
 import { MicrosoftSubscriptionService } from '../subscription/microsoft-subscription.service';
-import { GRAPH_ERROR_CODES, MICROSOFT_CONFIG } from '../../constants';
+import { MICROSOFT_CONFIG } from '../../constants';
 import { MicrosoftOutlookConfig } from '../../interfaces/config/outlook-config.interface';
 import { OutlookEventTypes } from '../../enums/event-types.enum';
 import * as crypto from 'crypto';
@@ -608,13 +608,6 @@ export class MicrosoftAuthService {
    * Catches inactive, soft-deleted, or on-premise mailboxes early — before
    * calendar import is attempted.
    */
-  private isMailboxDisabledError(code?: string, message?: string): boolean {
-    return (
-      code === GRAPH_ERROR_CODES.MAILBOX_NOT_ENABLED ||
-      /inactive|soft-deleted|on-premise/i.test(message ?? '')
-    );
-  }
-
   private async validateMailboxAccess(accessToken: string, correlationId: string): Promise<void> {
     try {
       await axios.get('https://graph.microsoft.com/v1.0/me/mailboxSettings', {
@@ -622,16 +615,22 @@ export class MicrosoftAuthService {
       });
     } catch (error) {
       if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
         const responseData = error.response?.data as { error?: { code?: string; message?: string } } | undefined;
         const graphError = responseData?.error;
-        const code: string | undefined = graphError?.code;
+        const code = graphError?.code;
         const message: string = graphError?.message || error.message;
-        if (this.isMailboxDisabledError(code, message)) {
-          this.logger.warn(`[${correlationId}] Mailbox validation failed: ${code} — ${message}`);
+
+        // 401/403/404 on /me/mailboxSettings = mailbox inaccessible.
+        // With a freshly-obtained access token these are not transient.
+        if (status === 401 || status === 403 || status === 404) {
+          this.logger.warn(
+            `[${correlationId}] Mailbox validation failed (HTTP ${status}): ${code ?? 'no code'} — ${message}`
+          );
           throw new MailboxInactiveError(message);
         }
       }
-      // Non-mailbox errors (network, transient) — don't block auth
+      // Truly transient: network errors, 429, 5xx — don't block auth
       this.logger.warn(
         `[${correlationId}] Mailbox validation call failed (non-blocking): ${error instanceof Error ? error.message : String(error)}`
       );

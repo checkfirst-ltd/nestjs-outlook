@@ -618,15 +618,15 @@ export class MicrosoftSubscriptionService {
       // Convert external to internal ID
       const internalUserId = await this.userIdConverter.externalToInternal(externalUserId, {cache: false});
 
-      // A CORRUPTED user needs to re-authenticate — report as not connected so
+      // A CORRUPTED or inactive user needs to re-authenticate — report as not connected so
       // the UI prompts a fresh OAuth flow instead of offering "Disconnect".
       const user = await this.microsoftUserRepository.findOne({
-        select: ['id', 'status'],
+        select: ['id', 'status', 'isActive'],
         where: { id: internalUserId },
       });
-      if (!user || user.status === MicrosoftUserStatus.CORRUPTED) {
+      if (!user || user.status === MicrosoftUserStatus.CORRUPTED || !user.isActive) {
         this.logger.debug(
-          `[getActiveSubscriptionForUser] User ${externalUserId} is missing or CORRUPTED — reporting as not connected`
+          `[getActiveSubscriptionForUser] User ${externalUserId} is missing, CORRUPTED, or inactive — reporting as not connected`
         );
         return null;
       }
