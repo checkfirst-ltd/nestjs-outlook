@@ -1,5 +1,12 @@
 # Changelog
 
+## [8.0.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v8.0.1...v8.0.2) (2026-05-13)
+
+
+### Bug Fixes
+
+* scoping issues with mailboxSettings endpoint ([#145](https://github.com/checkfirst-ltd/nestjs-outlook/issues/145)) ([2e9e1fa](https://github.com/checkfirst-ltd/nestjs-outlook/commit/2e9e1fa32453d60bca318cfeba74f6e8be291c55))
+
 ## [8.0.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v8.0.0...v8.0.1) (2026-05-12)
 
 
