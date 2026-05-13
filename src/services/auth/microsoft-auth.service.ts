@@ -605,13 +605,20 @@ export class MicrosoftAuthService {
   }
 
   /**
-   * Validates that the user's mailbox is accessible via Microsoft Graph.
+   * Validates that the user's calendar is accessible via Microsoft Graph.
    * Catches inactive, soft-deleted, or on-premise mailboxes early — before
    * calendar import is attempted.
+   *
+   * Uses /me/calendars to validate calendar access.
+   *
+   * @param accessToken - The access token to use for the request.
+   * @param correlationId - The correlation ID to use for the request.
+   * @returns void
+   * @throws CalendarInactiveError if the calendar is inaccessible.
    */
   private async validateMailboxAccess(accessToken: string, correlationId: string): Promise<void> {
     try {
-      await axios.get('https://graph.microsoft.com/v1.0/me/mailboxSettings', {
+      await axios.get('https://graph.microsoft.com/v1.0/me/calendars', {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
     } catch (error) {
@@ -622,7 +629,7 @@ export class MicrosoftAuthService {
         const code = graphError?.code;
         const message: string = graphError?.message || error.message;
 
-        // 401/403/404 on /me/mailboxSettings = mailbox inaccessible.
+        // 401/403/404 on /me/calendars = calendar inaccessible.
         // With a freshly-obtained access token these are not transient.
         if (status === 401 || status === 403 || status === 404) {
           this.logger.warn(
