@@ -480,7 +480,8 @@ export class DeltaSyncService {
       startDate: Date;
       endDate: Date;
     },
-    saveDeltaLink: boolean = true
+    saveDeltaLink: boolean = true,
+    skipCursorAdvanceOnEmpty: boolean = false
   ): AsyncGenerator<DeltaItem[], string | null, unknown> {
     // Convert external ID to internal ID for database operations
     const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
@@ -490,7 +491,7 @@ export class DeltaSyncService {
       ResourceType.CALENDAR
     );
 
-    this.logger.log(`[streamDeltaChanges] Starting stream for user ${internalUserId}, startLink: ${startLink ? 'exists' : 'none'}, forceReset: ${forceReset}`);
+    this.logger.log(`[streamDeltaChanges] Starting stream for user ${internalUserId}, startLink: ${startLink ? 'exists' : 'none'}, forceReset: ${forceReset}, skipCursorAdvanceOnEmpty: ${skipCursorAdvanceOnEmpty}`);
 
     // Force reset if requested (e.g., on reconnection)
     if (forceReset && startLink) {
@@ -498,6 +499,11 @@ export class DeltaSyncService {
       await this.deltaLinkRepository.deleteDeltaLink(internalUserId, ResourceType.CALENDAR);
       startLink = null;
     }
+
+    // Track whether we entered the incremental path (existing cursor reused, not reset).
+    // The skipCursorAdvanceOnEmpty guard only applies to this path — first-time init
+    // and forceReset must always save the fresh link to establish a baseline.
+    const usedExistingCursor = !!startLink;
 
     // Determine the starting URL
     let urlToUse: string;
@@ -551,10 +557,38 @@ export class DeltaSyncService {
         }
       }
 
-      // Save delta link after streaming all pages (if requested)
-      if (finalDeltaLink && saveDeltaLink) {
+      // Save delta link after streaming all pages (if requested).
+      //
+      // Replication-lag guard: when a webhook fires, Microsoft Graph's delta
+      // index can lag behind the actual mutation. The webhook may trigger a
+      // delta call that returns 0 items even though a change is in flight.
+      // If we advance the cursor in that case, the in-flight change becomes
+      // permanently invisible to subsequent delta calls.
+      //
+      // When skipCursorAdvanceOnEmpty=true AND we used an existing cursor AND
+      // the page set was empty, keep the old cursor so the next webhook (or
+      // background reconciliation) re-queries from the same watermark and
+      // naturally picks up the laggy change. This is the documented Microsoft
+      // pattern for handling delta replication delays.
+      //
+      // Microsoft docs: "Sometimes, due to replication delays, the changes to
+      // the object do not show up immediately when you select the
+      // @odata.nextLink or the @odata.deltaLink. Retry the @odata.nextLink or
+      // @odata.deltaLink after some time to retrieve the latest changes."
+      const shouldSkipCursorAdvance =
+        skipCursorAdvanceOnEmpty &&
+        usedExistingCursor &&
+        totalItemsProcessed === 0;
+
+      if (finalDeltaLink && saveDeltaLink && !shouldSkipCursorAdvance) {
         await this.saveDeltaLink(internalUserId, ResourceType.CALENDAR, finalDeltaLink);
         this.logger.log(`[streamDeltaChanges] Saved delta link after streaming ${pageCount} pages for user ${internalUserId}`);
+      } else if (shouldSkipCursorAdvance) {
+        this.logger.warn(
+          `[streamDeltaChanges] Empty delta result on existing cursor — KEEPING old cursor ` +
+          `(skipCursorAdvanceOnEmpty=true) for user ${internalUserId}. ` +
+          `Replication-lag protection: next webhook/reconciliation will re-query the same watermark.`
+        );
       } else if (finalDeltaLink && !saveDeltaLink) {
         this.logger.log(`[streamDeltaChanges] Delta link discarded (saveDeltaLink=false) after streaming ${pageCount} pages for user ${internalUserId}`);
       } else {
