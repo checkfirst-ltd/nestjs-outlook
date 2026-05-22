@@ -483,186 +483,247 @@ export class DeltaSyncService {
     saveDeltaLink: boolean = true,
     skipCursorAdvanceOnEmpty: boolean = false
   ): AsyncGenerator<DeltaItem[], string | null, unknown> {
-    // Convert external ID to internal ID for database operations
     const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
 
-    let startLink = await this.deltaLinkRepository.getDeltaLink(
+    const { startUrl, usedExistingCursor } = await this.resolveSyncStart(
       internalUserId,
-      ResourceType.CALENDAR
+      requestUrl,
+      forceReset,
+      dateRange,
     );
 
-    this.logger.log(`[streamDeltaChanges] Starting stream for user ${internalUserId}, startLink: ${startLink ? 'exists' : 'none'}, forceReset: ${forceReset}, skipCursorAdvanceOnEmpty: ${skipCursorAdvanceOnEmpty}`);
+    this.logger.log(`[streamDeltaChanges] Starting stream for user ${internalUserId}, startLink: ${usedExistingCursor ? 'exists' : 'none'}, forceReset: ${forceReset}, skipCursorAdvanceOnEmpty: ${skipCursorAdvanceOnEmpty}`);
 
-    // Force reset if requested (e.g., on reconnection)
+    try {
+      const { finalDeltaLink, totalItemsProcessed, pageCount } =
+        yield* this.streamSortedPages(client, startUrl, internalUserId, externalUserId, { isRecovery: false });
+
+      await this.persistDeltaLinkDecision({
+        finalDeltaLink,
+        saveDeltaLink,
+        skipCursorAdvanceOnEmpty,
+        usedExistingCursor,
+        totalItemsProcessed,
+        pageCount,
+        internalUserId,
+        externalUserId,
+      });
+
+      return finalDeltaLink;
+    } catch (error) {
+      if (this.is410Error(error)) {
+        return yield* this.recoverFromExpiredCursor(
+          client,
+          requestUrl,
+          externalUserId,
+          internalUserId,
+          dateRange,
+          saveDeltaLink,
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Compose the initial delta request URL, optionally constrained by a date range.
+   * Pure: no side effects, no I/O.
+   */
+  private buildInitialUrl(
+    requestUrl: string,
+    dateRange?: { startDate: Date; endDate: Date },
+  ): string {
+    if (!dateRange) {
+      return requestUrl;
+    }
+    const { startDate, endDate } = dateRange;
+    return `${requestUrl}?startDateTime=${startDate.toISOString()}&endDateTime=${endDate.toISOString()}`;
+  }
+
+  /**
+   * Read the stored cursor, apply forceReset if requested, and resolve the URL
+   * the stream should start from. Returns whether the call is using an existing
+   * incremental cursor (the cursor-advance-on-empty guard hinges on this).
+   */
+  private async resolveSyncStart(
+    internalUserId: number,
+    requestUrl: string,
+    forceReset: boolean,
+    dateRange?: { startDate: Date; endDate: Date },
+  ): Promise<{ startUrl: string; usedExistingCursor: boolean }> {
+    let startLink = await this.deltaLinkRepository.getDeltaLink(
+      internalUserId,
+      ResourceType.CALENDAR,
+    );
+
     if (forceReset && startLink) {
       this.logger.log(`[streamDeltaChanges] Force reset requested, deleting existing delta link for user ${internalUserId}`);
       await this.deltaLinkRepository.deleteDeltaLink(internalUserId, ResourceType.CALENDAR);
       startLink = null;
     }
 
-    // Track whether we entered the incremental path (existing cursor reused, not reset).
-    // The skipCursorAdvanceOnEmpty guard only applies to this path — first-time init
-    // and forceReset must always save the fresh link to establish a baseline.
-    const usedExistingCursor = !!startLink;
-
-    // Determine the starting URL
-    let urlToUse: string;
-    let finalDeltaLink: string | null = null;
-
-    if (!startLink) {
-      // No delta link exists - initialize from "now"
-      this.logger.log(`[streamDeltaChanges] No delta link found, initializing from current point for user ${internalUserId}`);
-
-      // Build URL with date range if provided
-      if (dateRange) {
-        const { startDate, endDate } = dateRange;
-        urlToUse = `${requestUrl}?startDateTime=${startDate.toISOString()}&endDateTime=${endDate.toISOString()}`;
-        this.logger.log(`[streamDeltaChanges] Using date range: ${startDate.toISOString()} to ${endDate.toISOString()}`);
-      } else {
-        urlToUse = requestUrl;
-      }
-    } else {
-      // Delta link exists - incremental sync
+    if (startLink) {
       this.logger.log(`[streamDeltaChanges] Using existing delta link for incremental sync for user ${internalUserId}`);
-      urlToUse = startLink;
+      return { startUrl: startLink, usedExistingCursor: true };
     }
 
-    // Stream pages using core generator with 410 error recovery
+    this.logger.log(`[streamDeltaChanges] No delta link found, initializing from current point for user ${internalUserId}`);
+    if (dateRange) {
+      this.logger.log(`[streamDeltaChanges] Using date range: ${dateRange.startDate.toISOString()} to ${dateRange.endDate.toISOString()}`);
+    }
+    return { startUrl: this.buildInitialUrl(requestUrl, dateRange), usedExistingCursor: false };
+  }
+
+  /**
+   * Stream pages from Microsoft Graph, sort each batch, emit progress events,
+   * yield the sorted batch to the caller, and capture the final deltaLink.
+   * Used by both the normal path and the 410-recovery path (opts.isRecovery
+   * tags log lines and the emitted event).
+   */
+  private async *streamSortedPages(
+    client: Client,
+    startUrl: string,
+    internalUserId: number,
+    externalUserId: string,
+    opts: { isRecovery: boolean },
+  ): AsyncGenerator<
+    DeltaItem[],
+    { finalDeltaLink: string | null; totalItemsProcessed: number; pageCount: number },
+    unknown
+  > {
+    const recoveryTag = opts.isRecovery ? ' [RECOVERY]' : '';
     let pageCount = 0;
     let totalItemsProcessed = 0;
-    try {
-      for await (const page of this.fetchDeltaPagesCore(client, urlToUse, internalUserId)) {
-        pageCount++;
+    let finalDeltaLink: string | null = null;
 
-        // Sort and yield this batch immediately
-        const sortedBatch = this.sortDeltaItems(page.items);
-        totalItemsProcessed += sortedBatch.length;
-        this.logger.log(`[streamDeltaChanges] Yielding page ${pageCount} with ${sortedBatch.length} sorted items for user ${internalUserId}`);
+    for await (const page of this.fetchDeltaPagesCore(client, startUrl, internalUserId)) {
+      pageCount++;
 
-        // Emit progress event for upstream tracking
-        this.eventEmitter.emit('delta-sync.page-processed', {
-          userId: externalUserId,
-          pageNumber: pageCount,
-          itemsInPage: sortedBatch.length,
-          totalItemsSoFar: totalItemsProcessed,
-          isLastPage: page.isLastPage,
-          timestamp: new Date(),
-        });
+      const sortedBatch = this.sortDeltaItems(page.items);
+      totalItemsProcessed += sortedBatch.length;
+      this.logger.log(`[streamDeltaChanges]${recoveryTag} Yielding page ${pageCount} with ${sortedBatch.length} sorted items for user ${internalUserId}`);
 
-        yield sortedBatch;
-
-        // Capture final delta link
-        if (page.isLastPage && page.deltaLink) {
-          finalDeltaLink = page.deltaLink;
-        }
+      const progressPayload: Record<string, unknown> = {
+        userId: externalUserId,
+        pageNumber: pageCount,
+        itemsInPage: sortedBatch.length,
+        totalItemsSoFar: totalItemsProcessed,
+        isLastPage: page.isLastPage,
+        timestamp: new Date(),
+      };
+      if (opts.isRecovery) {
+        progressPayload.isRecovery = true;
       }
+      this.eventEmitter.emit('delta-sync.page-processed', progressPayload);
 
-      // Save delta link after streaming all pages (if requested).
-      //
-      // Replication-lag guard: when a webhook fires, Microsoft Graph's delta
-      // index can lag behind the actual mutation. The webhook may trigger a
-      // delta call that returns 0 items even though a change is in flight.
-      // If we advance the cursor in that case, the in-flight change becomes
-      // permanently invisible to subsequent delta calls.
-      //
-      // When skipCursorAdvanceOnEmpty=true AND we used an existing cursor AND
-      // the page set was empty, keep the old cursor so the next webhook (or
-      // background reconciliation) re-queries from the same watermark and
-      // naturally picks up the laggy change. This is the documented Microsoft
-      // pattern for handling delta replication delays.
-      //
-      // Microsoft docs: "Sometimes, due to replication delays, the changes to
-      // the object do not show up immediately when you select the
-      // @odata.nextLink or the @odata.deltaLink. Retry the @odata.nextLink or
-      // @odata.deltaLink after some time to retrieve the latest changes."
-      const shouldSkipCursorAdvance =
-        skipCursorAdvanceOnEmpty &&
-        usedExistingCursor &&
-        totalItemsProcessed === 0;
+      yield sortedBatch;
 
-      if (finalDeltaLink && saveDeltaLink && !shouldSkipCursorAdvance) {
-        await this.saveDeltaLink(internalUserId, ResourceType.CALENDAR, finalDeltaLink);
-        this.logger.log(`[streamDeltaChanges] Saved delta link after streaming ${pageCount} pages for user ${internalUserId}`);
-      } else if (shouldSkipCursorAdvance) {
-        this.logger.warn(
-          `[streamDeltaChanges] Empty delta result on existing cursor — KEEPING old cursor ` +
-          `(skipCursorAdvanceOnEmpty=true) for user ${internalUserId}. ` +
-          `Replication-lag protection: next webhook/reconciliation will re-query the same watermark.`
-        );
-      } else if (finalDeltaLink && !saveDeltaLink) {
-        this.logger.log(`[streamDeltaChanges] Delta link discarded (saveDeltaLink=false) after streaming ${pageCount} pages for user ${internalUserId}`);
-      } else {
-        this.logger.warn(`[streamDeltaChanges] No delta link received after streaming ${pageCount} pages for user ${internalUserId}`);
+      if (page.isLastPage && page.deltaLink) {
+        finalDeltaLink = page.deltaLink;
       }
-
-      return finalDeltaLink;
-    } catch (error) {
-      // Handle 410 Gone (expired delta token) - automatically recover with full sync
-      if (this.is410Error(error)) {
-        this.logger.warn(
-          `[streamDeltaChanges] Delta token expired (410) for user ${externalUserId}, ` +
-          `deleting expired token and reinitializing with full sync stream`
-        );
-
-        // Delete the expired delta token
-        await this.deltaLinkRepository.deleteDeltaLink(internalUserId, ResourceType.CALENDAR);
-
-        // Restart streaming with full sync (no delta link)
-        this.logger.log(`[streamDeltaChanges] Restarting stream with full sync after token expiration for user ${externalUserId}`);
-
-        // Build fresh URL without delta link
-        const freshUrl = dateRange
-          ? `${requestUrl}?startDateTime=${dateRange.startDate.toISOString()}&endDateTime=${dateRange.endDate.toISOString()}`
-          : requestUrl;
-
-        // Stream from beginning with recovery
-        let recoveryPageCount = 0;
-        let recoveryDeltaLink: string | null = null;
-        let recoveryTotalItems = 0;
-
-        for await (const page of this.fetchDeltaPagesCore(client, freshUrl, internalUserId)) {
-          recoveryPageCount++;
-
-          // Sort and yield this batch immediately
-          const sortedBatch = this.sortDeltaItems(page.items);
-          recoveryTotalItems += sortedBatch.length;
-          this.logger.log(
-            `[streamDeltaChanges] [RECOVERY] Yielding page ${recoveryPageCount} with ${sortedBatch.length} sorted items for user ${internalUserId}`
-          );
-
-          // Emit progress event for upstream tracking (recovery path)
-          this.eventEmitter.emit('delta-sync.page-processed', {
-            userId: externalUserId,
-            pageNumber: recoveryPageCount,
-            itemsInPage: sortedBatch.length,
-            totalItemsSoFar: recoveryTotalItems,
-            isLastPage: page.isLastPage,
-            isRecovery: true,
-            timestamp: new Date(),
-          });
-
-          yield sortedBatch;
-
-          // Capture final delta link
-          if (page.isLastPage && page.deltaLink) {
-            recoveryDeltaLink = page.deltaLink;
-          }
-        }
-
-        // Save delta link after recovery (if requested)
-        if (recoveryDeltaLink && saveDeltaLink) {
-          await this.saveDeltaLink(internalUserId, ResourceType.CALENDAR, recoveryDeltaLink);
-          this.logger.log(
-            `[streamDeltaChanges] [RECOVERY] Saved delta link after streaming ${recoveryPageCount} pages for user ${internalUserId}`
-          );
-        }
-
-        return recoveryDeltaLink;
-      }
-
-      // Re-throw other errors
-      throw error;
     }
+
+    return { finalDeltaLink, totalItemsProcessed, pageCount };
+  }
+
+  /**
+   * Apply the cursor-save decision matrix for the normal (non-recovery) path.
+   *
+   * Replication-lag guard: when a webhook fires, Microsoft Graph's delta index
+   * can lag behind the actual mutation. The webhook may trigger a delta call
+   * that returns 0 items even though a change is in flight. Advancing the
+   * cursor in that case makes the in-flight change permanently invisible to
+   * subsequent delta calls.
+   *
+   * When skipCursorAdvanceOnEmpty=true AND we used an existing cursor AND the
+   * page set was empty, keep the old cursor so the next webhook (or background
+   * reconciliation) re-queries from the same watermark and naturally picks up
+   * the laggy change. Microsoft documents this retry pattern explicitly.
+   */
+  private async persistDeltaLinkDecision(params: {
+    finalDeltaLink: string | null;
+    saveDeltaLink: boolean;
+    skipCursorAdvanceOnEmpty: boolean;
+    usedExistingCursor: boolean;
+    totalItemsProcessed: number;
+    pageCount: number;
+    internalUserId: number;
+    externalUserId: string;
+  }): Promise<void> {
+    const {
+      finalDeltaLink,
+      saveDeltaLink,
+      skipCursorAdvanceOnEmpty,
+      usedExistingCursor,
+      totalItemsProcessed,
+      pageCount,
+      internalUserId,
+    } = params;
+
+    const shouldSkipCursorAdvance =
+      skipCursorAdvanceOnEmpty &&
+      usedExistingCursor &&
+      totalItemsProcessed === 0;
+
+    if (finalDeltaLink && saveDeltaLink && !shouldSkipCursorAdvance) {
+      await this.saveDeltaLink(internalUserId, ResourceType.CALENDAR, finalDeltaLink);
+      this.logger.log(`[streamDeltaChanges] Saved delta link after streaming ${pageCount} pages for user ${internalUserId}`);
+      return;
+    }
+
+    if (shouldSkipCursorAdvance) {
+      this.logger.warn(
+        `[streamDeltaChanges] Empty delta result on existing cursor — KEEPING old cursor ` +
+        `(skipCursorAdvanceOnEmpty=true) for user ${internalUserId}. ` +
+        `Replication-lag protection: next webhook/reconciliation will re-query the same watermark.`
+      );
+      return;
+    }
+
+    if (finalDeltaLink && !saveDeltaLink) {
+      this.logger.log(`[streamDeltaChanges] Delta link discarded (saveDeltaLink=false) after streaming ${pageCount} pages for user ${internalUserId}`);
+      return;
+    }
+
+    this.logger.warn(`[streamDeltaChanges] No delta link received after streaming ${pageCount} pages for user ${internalUserId}`);
+  }
+
+  /**
+   * 410 Gone recovery: the saved delta token expired (cache evicted or sync
+   * reset). Delete it, build a fresh URL, stream from scratch via
+   * streamSortedPages with isRecovery: true, and unconditionally save the new
+   * cursor (there is no old cursor to fall back to).
+   */
+  private async *recoverFromExpiredCursor(
+    client: Client,
+    requestUrl: string,
+    externalUserId: string,
+    internalUserId: number,
+    dateRange: { startDate: Date; endDate: Date } | undefined,
+    saveDeltaLink: boolean,
+  ): AsyncGenerator<DeltaItem[], string | null, unknown> {
+    this.logger.warn(
+      `[streamDeltaChanges] Delta token expired (410) for user ${externalUserId}, ` +
+      `deleting expired token and reinitializing with full sync stream`
+    );
+
+    await this.deltaLinkRepository.deleteDeltaLink(internalUserId, ResourceType.CALENDAR);
+
+    this.logger.log(`[streamDeltaChanges] Restarting stream with full sync after token expiration for user ${externalUserId}`);
+
+    const freshUrl = this.buildInitialUrl(requestUrl, dateRange);
+
+    const { finalDeltaLink: recoveryDeltaLink, pageCount: recoveryPageCount } =
+      yield* this.streamSortedPages(client, freshUrl, internalUserId, externalUserId, { isRecovery: true });
+
+    if (recoveryDeltaLink && saveDeltaLink) {
+      await this.saveDeltaLink(internalUserId, ResourceType.CALENDAR, recoveryDeltaLink);
+      this.logger.log(
+        `[streamDeltaChanges] [RECOVERY] Saved delta link after streaming ${recoveryPageCount} pages for user ${internalUserId}`
+      );
+    }
+
+    return recoveryDeltaLink;
   }
 
   /**
