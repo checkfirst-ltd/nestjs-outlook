@@ -99,7 +99,7 @@ export async function executeGraphApiCall<T>(
 
           // Notify circuit breaker of successful request
           if (rateLimiter) {
-            rateLimiter.recordSuccess();
+            await rateLimiter.recordSuccess();
           }
 
           return result;
@@ -114,7 +114,10 @@ export async function executeGraphApiCall<T>(
 
               // Notify rate limiter about 429 response
               if (rateLimiter && userId) {
-                rateLimiter.handleRateLimitResponse(userId, retryAfterSeconds);
+                await rateLimiter.handleRateLimitResponse(
+                  userId,
+                  retryAfterSeconds,
+                );
               }
 
               logger.warn(
@@ -129,7 +132,7 @@ export async function executeGraphApiCall<T>(
           if (is503Error(error)) {
             // Notify circuit breaker about 503 failure
             if (rateLimiter) {
-              rateLimiter.record503Failure();
+              await rateLimiter.record503Failure();
             }
 
             const retryAfterSeconds = extractRetryAfterSeconds(error);

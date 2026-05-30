@@ -1284,7 +1284,7 @@ export class CalendarService {
           // Extract Retry-After from response headers if present
           const retryAfterSeconds = extractRetryAfterSeconds(response);
           if (retryAfterSeconds) {
-            this.rateLimiter.handleRateLimitResponse(externalUserId, retryAfterSeconds);
+            await this.rateLimiter.handleRateLimitResponse(externalUserId, retryAfterSeconds);
           }
 
           this.logger.log(
