@@ -34,6 +34,15 @@ export interface OutlookLockStore {
    * No-op when the token doesn't match (someone else's lock).
    */
   releaseLock(key: string, token: string): Promise<void>;
+
+  /**
+   * Unconditionally delete the key, ignoring any fencing token.
+   *
+   * Unlike releaseLock, this does not require the caller to hold the lock.
+   * Intended for keys used as a one-bit flag (presence == set) where any
+   * party may clear the flag, not just the setter.
+   */
+  clearLock(key: string): Promise<void>;
 }
 
 export function generateLockToken(): string {
@@ -74,6 +83,10 @@ export class InMemoryOutlookLockStore implements OutlookLockStore {
     if (existing && existing.token === token) {
       this.locks.delete(key);
     }
+  }
+
+  async clearLock(key: string): Promise<void> {
+    this.locks.delete(key);
   }
 }
 
@@ -149,6 +162,16 @@ export class RedisOutlookLockStore implements OutlookLockStore {
     } catch (err) {
       this.logger.error(
         `[releaseLock] Redis error for ${key}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  async clearLock(key: string): Promise<void> {
+    try {
+      await this.redis.del(this.k(key));
+    } catch (err) {
+      this.logger.error(
+        `[clearLock] Redis error for ${key}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
