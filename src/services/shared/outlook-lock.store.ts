@@ -43,6 +43,14 @@ export interface OutlookLockStore {
    * party may clear the flag, not just the setter.
    */
   clearLock(key: string): Promise<void>;
+
+  /**
+   * Atomically test-and-clear a one-bit flag key: delete the key and return
+   * whether it existed. Used to consume a "pending"/"dirty" flag race-free —
+   * a concurrent setter either runs fully before this (observed as true) or
+   * fully after (its key survives), never lost in between.
+   */
+  consumeFlag(key: string): Promise<boolean>;
 }
 
 export function generateLockToken(): string {
@@ -88,6 +96,14 @@ export class InMemoryOutlookLockStore implements OutlookLockStore {
   async clearLock(key: string): Promise<void> {
     this.locks.delete(key);
   }
+
+  async consumeFlag(key: string): Promise<boolean> {
+    const now = Date.now();
+    const existing = this.locks.get(key);
+    const present = !!existing && existing.expiresAt > now;
+    this.locks.delete(key);
+    return present;
+  }
 }
 
 const RELEASE_LUA = `
@@ -104,6 +120,13 @@ if redis.call('GET', KEYS[1]) == ARGV[1] then
 else
   return 0
 end
+`;
+
+// Atomic test-and-clear: DEL returns the number of keys removed (1 if the flag
+// existed, 0 otherwise). Run as a single script so a concurrent setter is never
+// lost between a read and a delete.
+const CONSUME_FLAG_LUA = `
+return redis.call('DEL', KEYS[1])
 `;
 
 export class RedisOutlookLockStore implements OutlookLockStore {
@@ -173,6 +196,18 @@ export class RedisOutlookLockStore implements OutlookLockStore {
       this.logger.error(
         `[clearLock] Redis error for ${key}: ${err instanceof Error ? err.message : String(err)}`,
       );
+    }
+  }
+
+  async consumeFlag(key: string): Promise<boolean> {
+    try {
+      const removed = await this.redis.eval(CONSUME_FLAG_LUA, 1, this.k(key));
+      return removed === 1;
+    } catch (err) {
+      this.logger.error(
+        `[consumeFlag] Redis error for ${key}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return false;
     }
   }
 }
