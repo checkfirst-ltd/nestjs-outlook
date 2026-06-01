@@ -108,4 +108,39 @@ describe.each(backends)("OutlookLockStore (%s)", (_name, makeStore) => {
     await sleep(70); // 140ms total elapsed, but renewed at 70ms → still held
     expect(await store.acquireLock("k1", 120)).toBeNull();
   });
+
+  it("clearLock deletes the key regardless of token (no fencing)", async () => {
+    const token = await store.acquireLock("k1", 60_000);
+    expect(token).toBeTruthy();
+
+    // A caller without the token can still clear it.
+    await store.clearLock("k1");
+
+    const reacquired = await store.acquireLock("k1", 60_000);
+    expect(reacquired).toBeTruthy();
+  });
+
+  it("clearLock on an absent key is a no-op", async () => {
+    await expect(store.clearLock("missing")).resolves.toBeUndefined();
+  });
+
+  it("consumeFlag returns true and clears when the flag is set", async () => {
+    // markSyncPending sets the flag via acquireLock (SET NX).
+    expect(await store.acquireLock("flag", 60_000)).toBeTruthy();
+
+    expect(await store.consumeFlag("flag")).toBe(true);
+
+    // Cleared → the key is free again.
+    expect(await store.acquireLock("flag", 60_000)).toBeTruthy();
+  });
+
+  it("consumeFlag returns false when the flag is absent", async () => {
+    expect(await store.consumeFlag("flag")).toBe(false);
+  });
+
+  it("consumeFlag is idempotent: a second consume returns false", async () => {
+    await store.acquireLock("flag", 60_000);
+    expect(await store.consumeFlag("flag")).toBe(true);
+    expect(await store.consumeFlag("flag")).toBe(false);
+  });
 });
