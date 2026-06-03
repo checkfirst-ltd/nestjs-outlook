@@ -4,7 +4,8 @@ import axios from 'axios';
 import { TokenResponse } from '../../interfaces/outlook/token-response.interface';
 import { EmailService } from '../email/email.service';
 import { MicrosoftSubscriptionService } from '../subscription/microsoft-subscription.service';
-import { MICROSOFT_CONFIG } from '../../constants';
+import { MICROSOFT_CONFIG, OUTLOOK_LOCK_STORE } from '../../constants';
+import { OutlookLockStore } from '../shared/outlook-lock.store';
 import { MicrosoftOutlookConfig } from '../../interfaces/config/outlook-config.interface';
 import { OutlookEventTypes } from '../../enums/event-types.enum';
 import * as crypto from 'crypto';
@@ -69,6 +70,10 @@ export class MicrosoftAuthService {
   ];
   // CSRF token expiration time (30 minutes)
   private readonly CSRF_TOKEN_EXPIRY = 30 * 60 * 1000;
+  // Default TTL for the "revocation email already sent this cycle" dedupe flag.
+  // Cleared earlier on re-auth (see saveMicrosoftUser); this bounds a flag that
+  // is never reset because the user never reconnects. Override via config.
+  private readonly DEFAULT_REVOCATION_EMIT_FLAG_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 1 week
   // Map to track subscription creation in progress for a user (keyed by external user ID)
   private subscriptionInProgress = new Map<string, boolean>();
   // In-memory cache for MicrosoftUser lookups (keyed by `${idKind}:${idValue}:${activeScope}`)
@@ -85,6 +90,8 @@ export class MicrosoftAuthService {
     private readonly csrfTokenRepository: MicrosoftCsrfTokenRepository,
     @InjectRepository(MicrosoftUser)
     private readonly microsoftUserRepository: Repository<MicrosoftUser>,
+    @Inject(OUTLOOK_LOCK_STORE)
+    private readonly lockStore: OutlookLockStore,
   ) {
     console.log('MicrosoftAuthService constructor - microsoftConfig:', {
       clientId: this.microsoftConfig.clientId,
@@ -339,6 +346,10 @@ export class MicrosoftAuthService {
 
     await this.microsoftUserRepository.save(user);
     this.invalidateUserCache(user);
+
+    // Reset the revocation-email dedupe flag: this successful re-auth ends the
+    // current disconnection cycle, so a future revocation should emit again.
+    await this.lockStore.clearLock(this.revocationEmitFlagKey(externalUserId));
   }
 
   /**
@@ -932,16 +943,29 @@ export class MicrosoftAuthService {
    * A subsequent successful saveMicrosoftUser flips it back to ACTIVE.
    * Fail-open: DB errors are logged, never thrown.
    *
-   * Emits USER_REFRESH_TOKEN_INVALID exactly once per disconnection cycle:
-   * only when status transitions from non-CORRUPTED to CORRUPTED. Repeated refresh
-   * attempts on an already-corrupted user do not re-emit, so consumers can map
-   * the event 1:1 to user-facing notifications without their own dedupe.
+   * Emits USER_REFRESH_TOKEN_INVALID exactly once per disconnection cycle, so
+   * consumers can map the event 1:1 to user-facing notifications without their
+   * own dedupe.
+   *
+   * The "emit once" gate is the distributed lock store, NOT the in-memory user
+   * row. A burst of concurrent webhooks each loads its own MicrosoftUser (still
+   * ACTIVE) and would each pass a stale `status === CORRUPTED` check — a TOCTOU
+   * race that previously sent multiple revocation emails (ClickUp 86ca37pux).
+   * `acquireLock` is atomic both within a process (in-memory backend) and across
+   * the ECS fleet (Redis SET NX), so only the first caller emits. The flag is
+   * intentionally not released — its presence IS "already emitted this cycle";
+   * it is cleared on successful re-auth (see saveMicrosoftUser). The flag also
+   * carries a TTL (default one week) as a self-heal bound for users who never
+   * reconnect; override via config.revocationEmitFlagTtlMs.
    */
+  private revocationEmitFlagKey(externalUserId: string): string {
+    return `revocation-emit:${externalUserId}`;
+  }
+
   private async markUserAsCorrupted(
     user: MicrosoftUser,
     reason: string,
   ): Promise<void> {
-    const wasAlreadyCorrupted = user.status === MicrosoftUserStatus.CORRUPTED;
     try {
       user.status = MicrosoftUserStatus.CORRUPTED;
       await this.microsoftUserRepository.save(user);
@@ -954,7 +978,19 @@ export class MicrosoftAuthService {
       return;
     }
 
-    if (wasAlreadyCorrupted) return;
+    // Distributed single-flight gate: only the first caller this cycle emits.
+    // Flag is cleared on re-auth (see saveMicrosoftUser); the TTL only bounds the
+    // case where the user never reconnects. Defaults to one week; override via
+    // config.revocationEmitFlagTtlMs.
+    const emitToken = await this.lockStore.acquireLock(
+      this.revocationEmitFlagKey(user.externalUserId),
+      this.microsoftConfig.revocationEmitFlagTtlMs ??
+        this.DEFAULT_REVOCATION_EMIT_FLAG_TTL_MS,
+    );
+    if (!emitToken) {
+      // Another webhook (this instance or another) already claimed the emit.
+      return;
+    }
 
     // Emit event that the user's refresh token is invalid
     // usage: to handle the error in the host app

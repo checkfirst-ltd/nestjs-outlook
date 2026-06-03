@@ -20,8 +20,13 @@ export interface OutlookLockStore {
   /**
    * Try to acquire a lock. Returns a fencing token on success, null if held.
    * Lock auto-releases after ttlMs unless renewed.
+   *
+   * When ttlMs is omitted (or undefined), the key has NO expiry — it persists
+   * until explicitly cleared/released. Use this for one-bit flags whose lifetime
+   * is governed by an external event (e.g. re-auth) rather than a timeout.
+   * Prefer a finite ttlMs for true locks so a crashed holder can't deadlock.
    */
-  acquireLock(key: string, ttlMs: number): Promise<string | null>;
+  acquireLock(key: string, ttlMs?: number): Promise<string | null>;
 
   /**
    * Extend the lock's TTL. Returns true only if the lock is still held
@@ -65,14 +70,16 @@ export class InMemoryOutlookLockStore implements OutlookLockStore {
     { token: string; expiresAt: number }
   >();
 
-  async acquireLock(key: string, ttlMs: number): Promise<string | null> {
+  async acquireLock(key: string, ttlMs?: number): Promise<string | null> {
     const now = Date.now();
     const existing = this.locks.get(key);
     if (existing && existing.expiresAt > now) {
       return null;
     }
     const token = generateLockToken();
-    this.locks.set(key, { token, expiresAt: now + ttlMs });
+    // No ttl => never expires (Infinity always > now), cleared only explicitly.
+    const expiresAt = ttlMs === undefined ? Infinity : now + ttlMs;
+    this.locks.set(key, { token, expiresAt });
     return token;
   }
 
@@ -142,16 +149,14 @@ export class RedisOutlookLockStore implements OutlookLockStore {
     return `${this.keyPrefix}lock:${key}`;
   }
 
-  async acquireLock(key: string, ttlMs: number): Promise<string | null> {
+  async acquireLock(key: string, ttlMs?: number): Promise<string | null> {
     const token = generateLockToken();
     try {
-      const result = await this.redis.set(
-        this.k(key),
-        token,
-        "PX",
-        ttlMs,
-        "NX",
-      );
+      // No ttl => SET NX without PX, so the key persists until cleared.
+      const result =
+        ttlMs === undefined
+          ? await this.redis.set(this.k(key), token, "NX")
+          : await this.redis.set(this.k(key), token, "PX", ttlMs, "NX");
       return result === "OK" ? token : null;
     } catch (err) {
       this.logger.error(

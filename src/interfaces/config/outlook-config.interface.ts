@@ -57,4 +57,16 @@ export interface MicrosoftOutlookConfig {
    * rate-limit budgets across multiple containers. Omit for in-memory.
    */
   state?: MicrosoftOutlookStateConfig;
+  /**
+   * TTL (ms) for the "revocation email already sent this cycle" dedupe flag,
+   * which suppresses duplicate USER_REFRESH_TOKEN_INVALID emits when a burst of
+   * webhooks arrives for a newly-revoked user.
+   *
+   * The flag is normally cleared when the user re-authenticates (account becomes
+   * ACTIVE again). This TTL only bounds the case where the user never reconnects,
+   * so the flag self-heals instead of living forever. Defaults to one week
+   * (7 * 24 * 60 * 60 * 1000 ms). Lower it to re-notify sooner, or raise it to
+   * suppress duplicate emails for longer.
+   */
+  revocationEmitFlagTtlMs?: number;
 }

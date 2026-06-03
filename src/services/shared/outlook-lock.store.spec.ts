@@ -47,6 +47,35 @@ describe.each(backends)("OutlookLockStore (%s)", (_name, makeStore) => {
     expect(second).toBeNull();
   });
 
+  it("acquires with no ttl (forever) and holds until explicitly cleared", async () => {
+    const token = await store.acquireLock("flag", undefined);
+    expect(token).toBeTruthy();
+
+    // A second acquire is blocked — the no-ttl key never auto-expires.
+    const blocked = await store.acquireLock("flag", undefined);
+    expect(blocked).toBeNull();
+
+    // Only an explicit clear frees it.
+    await store.clearLock("flag");
+    const reacquired = await store.acquireLock("flag", undefined);
+    expect(reacquired).toBeTruthy();
+  });
+
+  it("a no-ttl key survives past where a short ttl would have expired", async () => {
+    const token = await store.acquireLock("flag", undefined);
+    expect(token).toBeTruthy();
+    await sleep(60);
+    // Still held (no expiry) — contrast with a finite ttl below.
+    expect(await store.acquireLock("flag", undefined)).toBeNull();
+  });
+
+  it("a finite ttl expires and allows re-acquire", async () => {
+    const token = await store.acquireLock("k-ttl", 30);
+    expect(token).toBeTruthy();
+    await sleep(60);
+    expect(await store.acquireLock("k-ttl", 30)).toBeTruthy();
+  });
+
   it("releaseLock with the matching token frees the key", async () => {
     const token = await store.acquireLock("k1", 60_000);
     expect(token).toBeTruthy();
