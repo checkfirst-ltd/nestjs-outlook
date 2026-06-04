@@ -8,6 +8,8 @@ export * from './services/email/email.service';
 export * from './services/shared/user-id-converter.service';
 export * from './services/subscription/microsoft-subscription.service';
 export * from './services/shared/graph-rate-limiter.service';
+export * from './services/shared/outlook-lock.store';
+export * from './services/shared/outlook-rate-limit.store';
 
 // Export module
 export * from './microsoft-outlook.module';
@@ -16,6 +18,7 @@ export * from './microsoft-outlook.module';
 export * from './interfaces/outlook/token-response.interface';
 export * from './interfaces/config/outlook-config.interface';
 export * from './interfaces/recurrence.interfaces';
+export * from './interfaces/state/redis-like.interface';
 
 // Export enums
 export * from './enums/permission-scope.enum';

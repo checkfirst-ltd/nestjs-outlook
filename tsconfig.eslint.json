@@ -1,0 +1,8 @@
+{
+  // Lint-only project. Extends the build config but ADDS spec/test files so
+  // type-aware ESLint can parse them. The build (tsconfig.json) still excludes
+  // specs so they never reach the published dist/ output.
+  "extends": "./tsconfig.json",
+  "include": ["src/**/*", "**/*.spec.ts", "**/*.test.ts"],
+  "exclude": ["node_modules", "dist"]
+}
