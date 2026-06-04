@@ -12,7 +12,9 @@ export default tseslint.config(
     },
     languageOptions: {
       parserOptions: {
-        project: './tsconfig.json',
+        // Lint against tsconfig.eslint.json (includes *.spec.ts), NOT the build
+        // tsconfig.json which excludes specs so they never reach the dist build.
+        project: './tsconfig.eslint.json',
         tsconfigRootDir: import.meta.dirname,
       },
     },
@@ -75,6 +77,22 @@ export default tseslint.config(
     },
     linterOptions: {
       reportUnusedDisableDirectives: true,
+    },
+  },
+  {
+    // Test files: relax the type-aware rules that fight common, safe test
+    // patterns (typed mocks via `as never`, jest matcher method references,
+    // synchronous async factories). Source files stay under full strict linting.
+    files: ['**/*.spec.ts', '**/*.test.ts'],
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-argument': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
+      '@typescript-eslint/no-unsafe-return': 'off',
+      '@typescript-eslint/unbound-method': 'off',
+      '@typescript-eslint/require-await': 'off',
     },
   }
 );

@@ -73,7 +73,7 @@ export class GraphRateLimiterService implements OnModuleInit {
     const startTime = Date.now();
     let waitedOnce = false;
 
-    while (true) {
+    for (;;) {
       const cooldownUntil = await this.store.getCooldown(userId);
       if (cooldownUntil && cooldownUntil > Date.now()) {
         const wait = cooldownUntil - Date.now() + 50;
@@ -271,15 +271,14 @@ export class GraphRateLimiterService implements OnModuleInit {
       return this.waitForCircuitBreaker();
     }
 
-    if (cb.state === 'half-open') {
-      // Only the container that won the probe slot proceeds; others wait.
-      const wonProbe = await this.store.tryClaimHalfOpenProbe(
-        this.CB_PROBE_TTL_MS,
-      );
-      if (!wonProbe) {
-        await delay(this.CB_PROBE_TTL_MS);
-        return this.waitForCircuitBreaker();
-      }
+    // Remaining state is 'half-open' (closed returned early, open is handled
+    // above). Only the container that won the probe slot proceeds; others wait.
+    const wonProbe = await this.store.tryClaimHalfOpenProbe(
+      this.CB_PROBE_TTL_MS,
+    );
+    if (!wonProbe) {
+      await delay(this.CB_PROBE_TTL_MS);
+      return this.waitForCircuitBreaker();
     }
   }
 

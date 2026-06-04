@@ -90,10 +90,10 @@ describe("DeltaSyncService.streamDeltaChanges — skipCursorAdvanceOnEmpty guard
     const items: T[] = [];
     let next = await gen.next();
     while (!next.done) {
-      items.push(...(next.value as T[]));
+      items.push(...(next.value));
       next = await gen.next();
     }
-    return { items, returnValue: next.value as TReturn };
+    return { items, returnValue: next.value };
   }
 
   it("(a) empty incremental result + skipCursorAdvanceOnEmpty=true → KEEPS old cursor", async () => {

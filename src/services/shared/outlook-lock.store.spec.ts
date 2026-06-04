@@ -19,7 +19,10 @@ const backends: Array<[string, () => Promise<OutlookLockStore>]> = [
     async () => {
       const client = new IoRedisMock();
       await client.flushall();
-      return new RedisOutlookLockStore(client as never, "outlook:");
+      // Unique prefix per suite: ioredis-mock shares one global keyspace across
+      // all client instances and parallel jest workers, so a shared prefix would
+      // let suites clobber each other's keys. Namespacing keeps them isolated.
+      return new RedisOutlookLockStore(client as never, "outlook-lock-test:");
     },
   ],
 ];

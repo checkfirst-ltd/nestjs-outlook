@@ -13,7 +13,7 @@
  * brand types) that don't reduce to a single signature. We use `any` here only to
  * keep ioredis assignable to this port without forcing a hard dependency.
  */
-/* eslint-disable @typescript-eslint/no-explicit-any */
+/* eslint-disable @typescript-eslint/no-explicit-any -- ioredis's real signatures use heavy overloads (callbacks, Buffer, RedisKey brand types) that don't reduce to one signature; `any` keeps ioredis assignable to this structural port without a hard dependency. */
 export interface RedisLike {
   ping(...args: any[]): Promise<any>;
   set(...args: any[]): Promise<any>;
@@ -27,4 +27,4 @@ export interface RedisLike {
   hset(...args: any[]): Promise<any>;
   hgetall(...args: any[]): Promise<any>;
 }
-/* eslint-enable @typescript-eslint/no-explicit-any */
+/* eslint-enable @typescript-eslint/no-explicit-any -- re-enable after the structural port above. */

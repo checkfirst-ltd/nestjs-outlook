@@ -70,46 +70,50 @@ export class InMemoryOutlookLockStore implements OutlookLockStore {
     { token: string; expiresAt: number }
   >();
 
-  async acquireLock(key: string, ttlMs?: number): Promise<string | null> {
+  // Bodies are synchronous (a Map); they return resolved Promises to satisfy the
+  // async OutlookLockStore contract whose Redis backend is genuinely async.
+  acquireLock(key: string, ttlMs?: number): Promise<string | null> {
     const now = Date.now();
     const existing = this.locks.get(key);
     if (existing && existing.expiresAt > now) {
-      return null;
+      return Promise.resolve(null);
     }
     const token = generateLockToken();
     // No ttl => never expires (Infinity always > now), cleared only explicitly.
     const expiresAt = ttlMs === undefined ? Infinity : now + ttlMs;
     this.locks.set(key, { token, expiresAt });
-    return token;
+    return Promise.resolve(token);
   }
 
-  async renewLock(key: string, token: string, ttlMs: number): Promise<boolean> {
+  renewLock(key: string, token: string, ttlMs: number): Promise<boolean> {
     const now = Date.now();
     const existing = this.locks.get(key);
     if (!existing || existing.token !== token || existing.expiresAt <= now) {
-      return false;
+      return Promise.resolve(false);
     }
     existing.expiresAt = now + ttlMs;
-    return true;
+    return Promise.resolve(true);
   }
 
-  async releaseLock(key: string, token: string): Promise<void> {
+  releaseLock(key: string, token: string): Promise<void> {
     const existing = this.locks.get(key);
     if (existing && existing.token === token) {
       this.locks.delete(key);
     }
+    return Promise.resolve();
   }
 
-  async clearLock(key: string): Promise<void> {
+  clearLock(key: string): Promise<void> {
     this.locks.delete(key);
+    return Promise.resolve();
   }
 
-  async consumeFlag(key: string): Promise<boolean> {
+  consumeFlag(key: string): Promise<boolean> {
     const now = Date.now();
     const existing = this.locks.get(key);
     const present = !!existing && existing.expiresAt > now;
     this.locks.delete(key);
-    return present;
+    return Promise.resolve(present);
   }
 }
 
@@ -153,7 +157,7 @@ export class RedisOutlookLockStore implements OutlookLockStore {
     const token = generateLockToken();
     try {
       // No ttl => SET NX without PX, so the key persists until cleared.
-      const result =
+      const result: unknown =
         ttlMs === undefined
           ? await this.redis.set(this.k(key), token, "NX")
           : await this.redis.set(this.k(key), token, "PX", ttlMs, "NX");
@@ -168,7 +172,7 @@ export class RedisOutlookLockStore implements OutlookLockStore {
 
   async renewLock(key: string, token: string, ttlMs: number): Promise<boolean> {
     try {
-      const result = await this.redis.eval(
+      const result: unknown = await this.redis.eval(
         RENEW_LUA,
         1,
         this.k(key),
@@ -206,7 +210,11 @@ export class RedisOutlookLockStore implements OutlookLockStore {
 
   async consumeFlag(key: string): Promise<boolean> {
     try {
-      const removed = await this.redis.eval(CONSUME_FLAG_LUA, 1, this.k(key));
+      const removed: unknown = await this.redis.eval(
+        CONSUME_FLAG_LUA,
+        1,
+        this.k(key),
+      );
       return removed === 1;
     } catch (err) {
       this.logger.error(

@@ -104,7 +104,9 @@ export class InMemoryOutlookRateLimitStore implements OutlookRateLimitStore {
     return i === 0 ? arr : arr.slice(i);
   }
 
-  async recordRequest(
+  // Bodies are synchronous (in-process Maps); they return resolved Promises to
+  // satisfy the async OutlookRateLimitStore contract whose Redis backend awaits.
+  recordRequest(
     userId: string,
     windowMs: number,
     key: RateLimitWindowKey,
@@ -116,60 +118,62 @@ export class InMemoryOutlookRateLimitStore implements OutlookRateLimitStore {
     const trimmed = this.trim(arr, now - windowMs);
     trimmed.push(now);
     s.windows.set(key, trimmed);
-    return trimmed.length;
+    return Promise.resolve(trimmed.length);
   }
 
-  async getCount(
+  getCount(
     userId: string,
     windowMs: number,
     key: RateLimitWindowKey,
   ): Promise<number> {
     const s = this.users.get(userId);
-    if (!s) return 0;
+    if (!s) return Promise.resolve(0);
     const arr = s.windows.get(key);
-    if (!arr) return 0;
+    if (!arr) return Promise.resolve(0);
     const now = Date.now();
     const trimmed = this.trim(arr, now - windowMs);
     s.windows.set(key, trimmed);
-    return trimmed.length;
+    return Promise.resolve(trimmed.length);
   }
 
-  async getCooldown(userId: string): Promise<number | null> {
+  getCooldown(userId: string): Promise<number | null> {
     const s = this.users.get(userId);
-    if (!s || s.cooldownUntil === null) return null;
+    if (!s || s.cooldownUntil === null) return Promise.resolve(null);
     if (s.cooldownUntil <= Date.now()) {
       s.cooldownUntil = null;
-      return null;
+      return Promise.resolve(null);
     }
-    return s.cooldownUntil;
+    return Promise.resolve(s.cooldownUntil);
   }
 
-  async setCooldown(userId: string, untilMs: number): Promise<void> {
+  setCooldown(userId: string, untilMs: number): Promise<void> {
     const s = this.getOrCreate(userId);
     s.cooldownUntil = untilMs;
     s.lastActivity = Date.now();
+    return Promise.resolve();
   }
 
-  async getCbState(): Promise<CircuitBreakerSnapshot | null> {
-    return { ...this.cbState };
+  getCbState(): Promise<CircuitBreakerSnapshot | null> {
+    return Promise.resolve({ ...this.cbState });
   }
 
-  async setCbState(snapshot: CircuitBreakerSnapshot): Promise<void> {
+  setCbState(snapshot: CircuitBreakerSnapshot): Promise<void> {
     this.cbState = { ...snapshot };
+    return Promise.resolve();
   }
 
-  async tryClaimHalfOpenProbe(ttlMs: number): Promise<boolean> {
+  tryClaimHalfOpenProbe(ttlMs: number): Promise<boolean> {
     const now = Date.now();
-    if (this.halfOpenProbeUntil > now) return false;
+    if (this.halfOpenProbeUntil > now) return Promise.resolve(false);
     this.halfOpenProbeUntil = now + ttlMs;
-    return true;
+    return Promise.resolve(true);
   }
 
-  async getActiveUserCount(): Promise<number> {
-    return this.users.size;
+  getActiveUserCount(): Promise<number> {
+    return Promise.resolve(this.users.size);
   }
 
-  async cleanupInactive(thresholdMs: number): Promise<number> {
+  cleanupInactive(thresholdMs: number): Promise<number> {
     const now = Date.now();
     let removed = 0;
     for (const [userId, state] of this.users.entries()) {
@@ -178,7 +182,7 @@ export class InMemoryOutlookRateLimitStore implements OutlookRateLimitStore {
         removed++;
       }
     }
-    return removed;
+    return Promise.resolve(removed);
   }
 }
 
@@ -241,7 +245,7 @@ export class RedisOutlookRateLimitStore implements OutlookRateLimitStore {
     try {
       const now = Date.now();
       const ttlMs = windowMs + 60_000;
-      const result = await this.redis.eval(
+      const result: unknown = await this.redis.eval(
         RECORD_LUA,
         1,
         this.rlKey(userId, key),
@@ -266,7 +270,7 @@ export class RedisOutlookRateLimitStore implements OutlookRateLimitStore {
   ): Promise<number> {
     try {
       const now = Date.now();
-      const result = await this.redis.eval(
+      const result: unknown = await this.redis.eval(
         COUNT_LUA,
         1,
         this.rlKey(userId, key),
@@ -284,7 +288,7 @@ export class RedisOutlookRateLimitStore implements OutlookRateLimitStore {
 
   async getCooldown(userId: string): Promise<number | null> {
     try {
-      const v = await this.redis.get(this.cdKey(userId));
+      const v: unknown = await this.redis.get(this.cdKey(userId));
       if (!v) return null;
       const until = Number(v);
       if (!Number.isFinite(until) || until <= Date.now()) return null;
@@ -310,11 +314,14 @@ export class RedisOutlookRateLimitStore implements OutlookRateLimitStore {
 
   async getCbState(): Promise<CircuitBreakerSnapshot | null> {
     try {
-      const hash = await this.redis.hgetall(this.cbKey());
+      const hash = (await this.redis.hgetall(this.cbKey())) as
+        | Record<string, string>
+        | null
+        | undefined;
       if (!hash || Object.keys(hash).length === 0) {
         return { state: "closed", openedAt: null };
       }
-      const state = (hash.state as CircuitBreakerState) ?? "closed";
+      const state = (hash.state as CircuitBreakerState | undefined) ?? "closed";
       const openedAtRaw = hash.openedAt;
       const openedAt =
         openedAtRaw && openedAtRaw !== "null" ? Number(openedAtRaw) : null;
@@ -345,7 +352,7 @@ export class RedisOutlookRateLimitStore implements OutlookRateLimitStore {
 
   async tryClaimHalfOpenProbe(ttlMs: number): Promise<boolean> {
     try {
-      const result = await this.redis.set(
+      const result: unknown = await this.redis.set(
         this.cbProbeKey(),
         "1",
         "PX",
@@ -361,13 +368,13 @@ export class RedisOutlookRateLimitStore implements OutlookRateLimitStore {
     }
   }
 
-  async getActiveUserCount(): Promise<number> {
+  getActiveUserCount(): Promise<number> {
     // Approximated via Redis is expensive; stats not load-bearing here.
-    return 0;
+    return Promise.resolve(0);
   }
 
-  async cleanupInactive(_thresholdMs: number): Promise<number> {
+  cleanupInactive(_thresholdMs: number): Promise<number> {
     // Redis TTLs handle eviction; no-op.
-    return 0;
+    return Promise.resolve(0);
   }
 }
