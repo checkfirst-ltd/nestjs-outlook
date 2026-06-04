@@ -1,5 +1,12 @@
 # Changelog
 
+## [8.0.3](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v8.0.2...v8.0.3) (2026-06-04)
+
+
+### Features
+
+* adopt redis client ([#148](https://github.com/checkfirst-ltd/nestjs-outlook/issues/148)) ([7eaae6a](https://github.com/checkfirst-ltd/nestjs-outlook/commit/7eaae6af56f847e3d5525030d78e8f26aaf7a81c))
+
 ## [8.0.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v8.0.1...v8.0.2) (2026-05-13)
 
 
