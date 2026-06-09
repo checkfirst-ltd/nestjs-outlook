@@ -1,10 +1,11 @@
-import { Controller, Post, HttpCode, Query, Res, Req, Injectable, Body, Logger } from '@nestjs/common';
+import { Controller, Post, HttpCode, Query, Res, Req, Injectable, Body, Logger, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiResponse, ApiBody, ApiQuery } from '@nestjs/swagger';
 import { Response, Request } from 'express';
 import { EmailService } from '../services/email/email.service';
 import { ChangeNotification, ChangeType } from '@microsoft/microsoft-graph-types';
 import { OutlookWebhookNotificationDto } from '../dto/outlook-webhook-notification.dto';
 import { validateNotificationItem, validateChangeType, WebhookResourceType } from '../utils/webhook-notification.validator';
+import { WebhookClientStateGuard } from '../guards/webhook-client-state.guard';
 
 @ApiTags('Email')
 @Controller('email')
@@ -28,6 +29,7 @@ export class EmailController {
    * @see https://learn.microsoft.com/en-us/graph/change-notifications-delivery-webhooks
    */
   @Post('webhook')
+  @UseGuards(WebhookClientStateGuard)
   @HttpCode(200)
   @ApiResponse({
     status: 200,

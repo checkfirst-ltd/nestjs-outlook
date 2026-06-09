@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Client } from '@microsoft/microsoft-graph-client';
@@ -110,7 +111,7 @@ export class EmailService {
         lifecycleNotificationUrl: notificationUrl,
         resource: '/me/messages',
         expirationDateTime: expirationDateTime.toISOString(),
-        clientState: `user_${internalUserId}_${Math.random().toString(36).substring(2, 15)}`,
+        clientState: `user_${internalUserId}_${randomUUID()}`,
       };
 
       this.logger.debug(`Creating email webhook subscription with notificationUrl: ${notificationUrl}`);

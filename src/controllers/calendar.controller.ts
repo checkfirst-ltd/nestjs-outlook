@@ -1,4 +1,4 @@
-import { Controller, Post, HttpCode, Query, Res, Req, Injectable, Body, Logger } from '@nestjs/common';
+import { Controller, Post, HttpCode, Query, Res, Req, Injectable, Body, Logger, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiResponse, ApiBody, ApiQuery } from '@nestjs/swagger';
 import { Response, Request } from 'express';
 import { randomUUID } from 'crypto';
@@ -7,6 +7,7 @@ import { ChangeNotification, ChangeType } from '@microsoft/microsoft-graph-types
 import { OutlookWebhookNotificationDto } from '../dto/outlook-webhook-notification.dto';
 import { validateNotificationItem, validateChangeType, WebhookResourceType } from '../utils/webhook-notification.validator';
 import { LifecycleEventHandlerService } from '../services/calendar/lifecycle-event-handler.service';
+import { WebhookClientStateGuard } from '../guards/webhook-client-state.guard';
 
 @ApiTags('Calendar')
 @Controller('calendar')
@@ -33,6 +34,7 @@ export class CalendarController {
    * @see https://learn.microsoft.com/en-us/graph/change-notifications-delivery-webhooks
    */
   @Post('webhook/notification')
+  @UseGuards(WebhookClientStateGuard)
   @HttpCode(200)
   @ApiResponse({
     status: 200,
@@ -159,6 +161,7 @@ export class CalendarController {
    * @see https://learn.microsoft.com/en-us/graph/change-notifications-delivery-webhooks
    */
   @Post('webhook')
+  @UseGuards(WebhookClientStateGuard)
   @HttpCode(200)
   @ApiResponse({
     status: 200,

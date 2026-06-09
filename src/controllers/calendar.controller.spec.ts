@@ -4,6 +4,8 @@ import { CalendarController } from "./calendar.controller";
 import { CalendarService } from "../services/calendar/calendar.service";
 import { LifecycleEventHandlerService } from "../services/calendar/lifecycle-event-handler.service";
 import { OutlookWebhookNotificationDto } from "../dto/outlook-webhook-notification.dto";
+import { WebhookClientStateGuard } from "../guards/webhook-client-state.guard";
+import { OutlookWebhookSubscriptionRepository } from "../repositories/outlook-webhook-subscription.repository";
 
 function makeRes(): jest.Mocked<Response> {
   const res = {
@@ -59,6 +61,11 @@ describe("CalendarController (webhook receiving)", () => {
       providers: [
         { provide: CalendarService, useValue: calendarService },
         { provide: LifecycleEventHandlerService, useValue: lifecycle },
+        {
+          provide: OutlookWebhookSubscriptionRepository,
+          useValue: { findBySubscriptionId: jest.fn() },
+        },
+        WebhookClientStateGuard,
       ],
     }).compile();
 
