@@ -37,6 +37,7 @@ import {
   OutlookRateLimitStore,
   RedisOutlookRateLimitStore,
 } from "./services/shared/outlook-rate-limit.store";
+import { WebhookClientStateGuard } from "./guards/webhook-client-state.guard";
 
 export const { ConfigurableModuleClass, MODULE_OPTIONS_TOKEN } =
   new ConfigurableModuleBuilder<MicrosoftOutlookConfig>()
@@ -156,6 +157,7 @@ async function buildRateLimitStore(
     RecurrenceService,
     MicrosoftSubscriptionService,
     GraphRateLimiterService,
+    WebhookClientStateGuard,
   ],
   exports: [
     CalendarService,
@@ -169,6 +171,7 @@ async function buildRateLimitStore(
     GraphRateLimiterService,
     OUTLOOK_LOCK_STORE,
     OUTLOOK_RATE_LIMIT_STORE,
+    WebhookClientStateGuard,
   ],
 })
 export class MicrosoftOutlookModule extends ConfigurableModuleClass {}
