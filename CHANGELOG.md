@@ -1,5 +1,21 @@
 # Changelog
 
+## [9.0.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v8.0.3...v9.0.0) (2026-06-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **security:** add clientState validation to webhook endpoints ([#151](https://github.com/checkfirst-ltd/nestjs-outlook/issues/151))
+
+### Features
+
+* **security:** add clientState validation to webhook endpoints ([#151](https://github.com/checkfirst-ltd/nestjs-outlook/issues/151)) ([e3b16f4](https://github.com/checkfirst-ltd/nestjs-outlook/commit/e3b16f47d5f442692f5e8635c4d33b1ea1f62495))
+
+
+### Bug Fixes
+
+* **subscription:** add bulk delete for disconnect flow ([#150](https://github.com/checkfirst-ltd/nestjs-outlook/issues/150)) ([076ba59](https://github.com/checkfirst-ltd/nestjs-outlook/commit/076ba59da5a1574ffda212e40536db2844af5d7b))
+
 ## [8.0.3](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v8.0.2...v8.0.3) (2026-06-04)
 
 
