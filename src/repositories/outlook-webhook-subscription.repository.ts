@@ -122,6 +122,18 @@ export class OutlookWebhookSubscriptionRepository {
     return result;
   }
 
+  /**
+   * Find ALL active subscriptions for a user (calendar, email, etc.)
+   * Used for bulk disconnect operations.
+   * @param userId - Internal user ID
+   * @returns Array of all active subscriptions for this user
+   */
+  async findAllActiveByUserId(userId: number): Promise<OutlookWebhookSubscription[]> {
+    return this.repository.find({
+      where: { userId, isActive: true },
+    });
+  }
+
   async findAllActiveByUserIdAndResource(
     userId: number,
     resource: string,
