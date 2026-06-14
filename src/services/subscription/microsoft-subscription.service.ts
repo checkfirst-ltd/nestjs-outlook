@@ -55,6 +55,18 @@ export interface SubscriptionCleanupResult {
   errors: Array<{ subscriptionId: string; error: string }>;
 }
 
+/**
+ * Result of bulk subscription delete operation for disconnect flow
+ */
+export interface BulkSubscriptionDeleteResult {
+  totalFound: number;
+  successfullyDeleted: number;
+  failedToDelete: number;
+  localOnlyDeactivated: number;
+  deletedSubscriptionIds: string[];
+  errors: Array<{ subscriptionId: string; error: string }>;
+}
+
 // ─── Health-check tuning constants ──────────────────────────────────
 /** Microsoft Graph batch API allows at most 20 inner requests per /$batch call. */
 const GRAPH_BATCH_SIZE = 20;
@@ -596,6 +608,144 @@ export class MicrosoftSubscriptionService {
       );
 
       throw new Error(`Failed to delete webhook subscription: ${errorMessage}`);
+    }
+  }
+
+  /**
+   * Delete ALL active webhook subscriptions for a user (calendar, email, etc.)
+   *
+   * Iterates through all active subscriptions, deletes each from Microsoft Graph API,
+   * and deactivates locally. Continues processing even if some deletions fail.
+   * Handles 404s gracefully (subscription already gone at Microsoft).
+   *
+   * @param userId - User ID (can be external string or internal number)
+   * @returns Result summary with success/failure counts
+   */
+  async deleteAllWebhookSubscriptions(
+    userId: string | number,
+  ): Promise<BulkSubscriptionDeleteResult> {
+    const correlationId = `delete-all-subs-${Date.now()}`;
+
+    const result: BulkSubscriptionDeleteResult = {
+      totalFound: 0,
+      successfullyDeleted: 0,
+      failedToDelete: 0,
+      localOnlyDeactivated: 0,
+      deletedSubscriptionIds: [],
+      errors: [],
+    };
+
+    try {
+      this.logger.log(
+        `[${correlationId}] Starting bulk subscription deletion for user ${userId}`
+      );
+
+      const internalUserId = await this.userIdConverter.toInternalUserId(userId);
+
+      // Find ALL active subscriptions for this user
+      const activeSubscriptions = await this.webhookSubscriptionRepository.findAllActiveByUserId(
+        internalUserId
+      );
+
+      result.totalFound = activeSubscriptions.length;
+
+      if (activeSubscriptions.length === 0) {
+        this.logger.log(`[${correlationId}] No active subscriptions found for user ${userId}`);
+        // Still mark user as inactive
+        const updateCriteria = typeof userId === 'string' ? { externalUserId: userId } : { id: userId };
+        await this.microsoftUserRepository.update(updateCriteria, { isActive: false });
+        return result;
+      }
+
+      this.logger.log(
+        `[${correlationId}] Found ${activeSubscriptions.length} active subscription(s) to delete`
+      );
+
+      // Try to get access token (may fail if user already disconnected)
+      let accessToken: string | null = null;
+      try {
+        accessToken = await this.microsoftAuthService.getUserAccessToken({
+          internalUserId,
+          includeInactive: true,
+        });
+        this.logger.debug(`[${correlationId}] Access token obtained`);
+      } catch (tokenError) {
+        const tokenErrorMsg = tokenError instanceof Error ? tokenError.message : 'Unknown error';
+        this.logger.warn(
+          `[${correlationId}] Could not obtain access token: ${tokenErrorMsg}. ` +
+          `Will deactivate subscriptions locally only.`
+        );
+      }
+
+      // Process each subscription
+      for (const subscription of activeSubscriptions) {
+        const subId = subscription.subscriptionId;
+
+        try {
+          // Try to delete at Microsoft if we have a token
+          if (accessToken) {
+            try {
+              await this.deleteSubscription(subId, accessToken);
+              this.logger.debug(
+                `[${correlationId}] Deleted subscription ${subId} at Microsoft`
+              );
+            } catch (deleteError) {
+              // Handle 404 gracefully (subscription already gone)
+              if (axios.isAxiosError(deleteError) && deleteError.response?.status === 404) {
+                this.logger.debug(
+                  `[${correlationId}] Subscription ${subId} not found at Microsoft (already deleted)`
+                );
+              } else {
+                // Log but continue processing other subscriptions
+                const deleteErrorMsg = deleteError instanceof Error ? deleteError.message : 'Unknown error';
+                this.logger.warn(
+                  `[${correlationId}] Failed to delete subscription ${subId} at Microsoft: ${deleteErrorMsg}`
+                );
+                result.errors.push({ subscriptionId: subId, error: deleteErrorMsg });
+              }
+            }
+          }
+
+          // Always deactivate locally
+          await this.webhookSubscriptionRepository.deactivateSubscription(subId);
+
+          if (accessToken) {
+            result.successfullyDeleted++;
+          } else {
+            result.localOnlyDeactivated++;
+          }
+          result.deletedSubscriptionIds.push(subId);
+
+          this.logger.debug(
+            `[${correlationId}] Deactivated subscription ${subId} in local database`
+          );
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+          result.failedToDelete++;
+          result.errors.push({ subscriptionId: subId, error: errorMsg });
+          this.logger.error(
+            `[${correlationId}] Failed to process subscription ${subId}: ${errorMsg}`
+          );
+        }
+      }
+
+      // Always mark user as inactive after processing all subscriptions
+      const updateCriteria = typeof userId === 'string' ? { externalUserId: userId } : { id: userId };
+      await this.microsoftUserRepository.update(updateCriteria, { isActive: false });
+
+      this.logger.log(
+        `[${correlationId}] Bulk deletion complete: ${result.successfullyDeleted} deleted at Microsoft, ` +
+        `${result.localOnlyDeactivated} deactivated locally only, ${result.failedToDelete} failed. ` +
+        `User marked as inactive.`
+      );
+
+      return result;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(
+        `[${correlationId}] Bulk subscription deletion failed: ${errorMessage}`
+      );
+      throw new Error(`Failed to delete all webhook subscriptions: ${errorMessage}`);
     }
   }
 
