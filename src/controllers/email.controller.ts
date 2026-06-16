@@ -5,7 +5,7 @@ import { EmailService } from '../services/email/email.service';
 import { ChangeNotification, ChangeType } from '@microsoft/microsoft-graph-types';
 import { OutlookWebhookNotificationDto } from '../dto/outlook-webhook-notification.dto';
 import { validateNotificationItem, validateChangeType, WebhookResourceType } from '../utils/webhook-notification.validator';
-import { WebhookClientStateGuard } from '../guards/webhook-client-state.guard';
+import { WebhookClientStateGuard, RequestWithWebhookValidation } from '../guards/webhook-client-state.guard';
 
 @ApiTags('Email')
 @Controller('email')
@@ -73,39 +73,49 @@ export class EmailController {
     // Process notification
     try {
       this.logger.debug(`Received email webhook notification: ${JSON.stringify(notificationBody)}`);
-      
+
+      // Drop items rejected by WebhookClientStateGuard (clientState / subscription security check)
+      const { authorized, rejectedCount } = this.filterAuthorizedItems(
+        req as RequestWithWebhookValidation,
+        Array.isArray(notificationBody.value) ? notificationBody.value : [],
+      );
+      if (rejectedCount > 0) {
+        this.logger.warn(`[SECURITY] Skipping ${rejectedCount.toString()} rejected email webhook item(s)`);
+      }
+
+      // Every item failed the security check - acknowledge with 200 but process nothing
+      if (authorized.length === 0) {
+        res.json({
+          success: true,
+          message: rejectedCount > 0
+            ? `Rejected ${rejectedCount.toString()} email notification(s) failing security validation`
+            : `Received email webhook notification with unexpected format`,
+        });
+        return;
+      }
+
       // Early response with 202 Accepted if we have multiple notifications
       // This follows Microsoft's best practice to avoid timing out on the response
-      if (Array.isArray(notificationBody.value) && notificationBody.value.length > 2) {
-        this.logger.log(`Received batch of ${notificationBody.value.length.toString()} email notifications, responding with 202 Accepted`);
+      if (authorized.length > 2) {
+        this.logger.log(`Received batch of ${authorized.length.toString()} email notifications, responding with 202 Accepted`);
         res.status(202).json({
           success: true,
           message: 'Email notifications accepted for processing',
         });
-        
+
         // Process notifications asynchronously after sending the response
-        this.processEmailNotificationBatch(notificationBody).catch((error: unknown) => {
+        this.processEmailNotificationBatch(authorized).catch((error: unknown) => {
           const errorMessage = error instanceof Error ? error.message : String(error);
           this.logger.error(`Error processing email notification batch: ${errorMessage}`);
         });
         return;
       }
-      
-      // For smaller batches, process synchronously
-      if (Array.isArray(notificationBody.value) && notificationBody.value.length > 0) {
-        const results = await this.processEmailNotificationBatch(notificationBody);
-        res.json({
-          success: true,
-          message: `Processed ${results.successCount.toString()} out of ${notificationBody.value.length.toString()} email notifications`,
-        });
-        return;
-      }
 
-      // Handle empty or unexpected notification format
-      this.logger.warn('Received email webhook notification with unexpected format');
+      // For smaller batches, process synchronously
+      const results = await this.processEmailNotificationBatch(authorized);
       res.json({
         success: true,
-        message: `Received email webhook notification with unexpected format`,
+        message: `Processed ${results.successCount.toString()} out of ${authorized.length.toString()} email notifications`,
       });
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -119,22 +129,45 @@ export class EmailController {
   }
   
   /**
+   * Filter out notification items rejected by {@link WebhookClientStateGuard}.
+   *
+   * The guard returns 200 (so Microsoft stops retrying) but marks invalid items on the request.
+   * This drops those items so they are never processed, while authorized items proceed normally.
+   *
+   * @param req Request carrying the guard's `webhookValidation` verdict
+   * @param items The notification items in their original order
+   * @returns The authorized items and how many were rejected
+   */
+  private filterAuthorizedItems<T>(
+    req: RequestWithWebhookValidation,
+    items: T[],
+  ): { authorized: T[]; rejectedCount: number } {
+    const validation = req.webhookValidation;
+    if (!validation || validation.valid || validation.invalidItems.length === 0) {
+      return { authorized: items, rejectedCount: 0 };
+    }
+    const invalidIndexes = new Set(validation.invalidItems.map((i) => i.index));
+    const authorized = items.filter((_, idx) => !invalidIndexes.has(idx));
+    return { authorized, rejectedCount: items.length - authorized.length };
+  }
+
+  /**
    * Process a batch of email notifications asynchronously
-   * @param notificationBody The batch of notifications to process
+   * @param items The notification items to process (already filtered for authorization)
    * @returns Results of the processing operation
    */
   private async processEmailNotificationBatch(
-    notificationBody: OutlookWebhookNotificationDto,
+    items: OutlookWebhookNotificationDto['value'],
   ): Promise<{ successCount: number; failureCount: number }> {
     // Track processing results
     let successCount = 0;
     let failureCount = 0;
-    
+
     // Track processed message IDs to avoid duplicates
     const processedMessages = new Set<string>();
-    
+
     // Process each notification in the batch
-    for (const item of notificationBody.value) {
+    for (const item of items) {
       // Validate the notification item
       const validation = validateNotificationItem(
         item,

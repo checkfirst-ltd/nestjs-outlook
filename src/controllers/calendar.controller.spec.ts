@@ -1,10 +1,14 @@
 import { Test } from "@nestjs/testing";
+import { EventEmitter2 } from "@nestjs/event-emitter";
 import { Response } from "express";
 import { CalendarController } from "./calendar.controller";
 import { CalendarService } from "../services/calendar/calendar.service";
 import { LifecycleEventHandlerService } from "../services/calendar/lifecycle-event-handler.service";
 import { OutlookWebhookNotificationDto } from "../dto/outlook-webhook-notification.dto";
-import { WebhookClientStateGuard } from "../guards/webhook-client-state.guard";
+import {
+  WebhookClientStateGuard,
+  WebhookValidationResult,
+} from "../guards/webhook-client-state.guard";
 import { OutlookWebhookSubscriptionRepository } from "../repositories/outlook-webhook-subscription.repository";
 
 function makeRes(): jest.Mocked<Response> {
@@ -18,6 +22,11 @@ function makeRes(): jest.Mocked<Response> {
 }
 
 const req = {} as never;
+
+/** Build a request carrying the guard's verdict, as the controller reads it. */
+function reqWithValidation(validation: WebhookValidationResult) {
+  return { webhookValidation: validation } as never;
+}
 
 function calendarItem(overrides: Record<string, unknown> = {}) {
   return {
@@ -65,6 +74,7 @@ describe("CalendarController (webhook receiving)", () => {
           provide: OutlookWebhookSubscriptionRepository,
           useValue: { findBySubscriptionId: jest.fn() },
         },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
         WebhookClientStateGuard,
       ],
     }).compile();
@@ -199,6 +209,84 @@ describe("CalendarController (webhook receiving)", () => {
       await controller.handleCalendarWebhook("", body, req, res);
 
       expect(res.status).toHaveBeenCalledWith(202);
+    });
+  });
+
+  describe("honors WebhookClientStateGuard verdict (stop processing)", () => {
+    it("does not process an item the guard marked invalid, and still returns 200", async () => {
+      const res = makeRes();
+      const body = {
+        value: [calendarItem()],
+      } as unknown as OutlookWebhookNotificationDto;
+      const guardedReq = reqWithValidation({
+        valid: false,
+        invalidItems: [
+          { index: 0, valid: false, reason: "client_state_mismatch" },
+        ],
+      });
+
+      await controller.handleCalendarWebhookNotification(
+        "",
+        body,
+        guardedReq,
+        res,
+      );
+
+      expect(calendarService.handleOutlookWebhookV2).not.toHaveBeenCalled();
+      expect(res.status).not.toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: true,
+          message: expect.stringContaining("Rejected"),
+        }),
+      );
+    });
+
+    it("processes only the authorized items in a mixed batch", async () => {
+      const res = makeRes();
+      const body = {
+        value: [
+          calendarItem({ subscriptionId: "forged" }),
+          calendarItem({ subscriptionId: "legit" }),
+        ],
+      } as unknown as OutlookWebhookNotificationDto;
+      const guardedReq = reqWithValidation({
+        valid: false,
+        invalidItems: [
+          { index: 0, valid: false, reason: "unknown_subscription" },
+        ],
+      });
+
+      await controller.handleCalendarWebhookNotification(
+        "",
+        body,
+        guardedReq,
+        res,
+      );
+
+      expect(calendarService.handleOutlookWebhookV2).toHaveBeenCalledTimes(1);
+      const [mapped] = calendarService.handleOutlookWebhookV2.mock.calls[0];
+      expect(mapped).toMatchObject({ subscriptionId: "legit" });
+    });
+
+    it("legacy /webhook also skips invalid items", async () => {
+      const res = makeRes();
+      const body = {
+        value: [calendarItem()],
+      } as unknown as OutlookWebhookNotificationDto;
+      const guardedReq = reqWithValidation({
+        valid: false,
+        invalidItems: [
+          { index: 0, valid: false, reason: "missing_subscription_id" },
+        ],
+      });
+
+      await controller.handleCalendarWebhook("", body, guardedReq, res);
+
+      expect(calendarService.handleOutlookWebhook).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ success: true }),
+      );
     });
   });
 });

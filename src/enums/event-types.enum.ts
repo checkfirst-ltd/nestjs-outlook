@@ -37,4 +37,7 @@ export enum OutlookEventTypes {
   // Cron job observability events
   HEALTH_CHECK_COMPLETED = 'outlook.cron.health_check.completed',
   RETRY_FAILED_SUBSCRIPTIONS_COMPLETED = 'outlook.cron.retry_failed_subscriptions.completed',
+
+  // Security events
+  WEBHOOK_REJECTED = 'outlook.webhook.rejected',
 }
