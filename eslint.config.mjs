@@ -3,9 +3,12 @@ import eslintPluginComments from '@eslint-community/eslint-plugin-eslint-comment
 import eslintPluginImport from 'eslint-plugin-import';
 
 export default tseslint.config(
+  // Global ignores (must be standalone object with only 'ignores' key)
+  {
+    ignores: ['*.mjs', '*.cjs', '*.js', 'dist/**', 'src/mock/**'],
+  },
   tseslint.configs.strictTypeChecked,
   {
-    ignores: ['*.mjs', '*.cjs', '*.js', 'dist/**'],
     plugins: {
       'eslint-comments': eslintPluginComments,
       'import': eslintPluginImport,
