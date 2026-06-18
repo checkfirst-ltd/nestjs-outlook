@@ -1,5 +1,12 @@
 # Changelog
 
+## [9.0.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v9.0.0...v9.0.1) (2026-06-18)
+
+
+### Bug Fixes
+
+* webhook authorization + testing ([#153](https://github.com/checkfirst-ltd/nestjs-outlook/issues/153)) ([7f4bf5f](https://github.com/checkfirst-ltd/nestjs-outlook/commit/7f4bf5ff917007a991aefe0f54c6cceb693e0de9))
+
 ## [9.0.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v8.0.3...v9.0.0) (2026-06-14)
 
 
