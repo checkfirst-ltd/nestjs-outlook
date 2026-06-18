@@ -137,6 +137,35 @@ describe("WebhookClientStateGuard", () => {
     });
   });
 
+  it("rejects (and emits) a subscription with an empty stored clientState (fail closed)", async () => {
+    repo.findBySubscriptionId.mockResolvedValue({
+      subscriptionId: "sub-1",
+      clientState: "",
+      userId: 42,
+    });
+    const req: FakeRequest = {
+      query: {},
+      path: "/calendar/webhook/notification",
+      body: { value: [{ subscriptionId: "sub-1", clientState: "anything" }] },
+    };
+
+    await expect(guard.canActivate(makeContext(req))).resolves.toBe(true);
+    expect(req.webhookValidation?.valid).toBe(false);
+    expect(req.webhookValidation?.invalidItems[0]).toMatchObject({
+      index: 0,
+      reason: "missing_stored_client_state",
+      subscriptionId: "sub-1",
+      userId: 42,
+    });
+    const events = emittedRejections();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      reason: "missing_stored_client_state",
+      subscriptionId: "sub-1",
+      userId: 42,
+    });
+  });
+
   it("isolates a forged item in a mixed batch (one valid, one mismatch)", async () => {
     repo.findBySubscriptionId.mockImplementation((id: string) =>
       Promise.resolve(

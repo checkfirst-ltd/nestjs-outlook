@@ -13,6 +13,7 @@ import { OutlookEventTypes } from '../enums/event-types.enum';
 export type WebhookRejectionReason =
   | 'missing_subscription_id'
   | 'unknown_subscription'
+  | 'missing_stored_client_state'
   | 'client_state_mismatch';
 
 /** Per-item validation outcome attached to the request by {@link WebhookClientStateGuard}. */
@@ -49,8 +50,10 @@ export interface WebhookRejectedEvent {
  * Security behavior:
  * - Validation requests (with validationToken query param) are allowed through
  * - For notifications, each item's clientState is validated against stored value
- * - Mismatched clientState returns 200 (to stop Microsoft retries) but the controller
- *   skips processing invalid items (it reads `request.webhookValidation`)
+ * - A subscription with no stored clientState is unverifiable and fails closed
+ *   (rejected, not skipped)
+ * - Mismatched/unverifiable clientState returns 200 (to stop Microsoft retries) but
+ *   the controller skips processing invalid items (it reads `request.webhookValidation`)
  * - Each rejected item is logged as a security event AND emitted on
  *   {@link OutlookEventTypes.WEBHOOK_REJECTED} for observability
  *
@@ -111,8 +114,25 @@ export class WebhookClientStateGuard implements CanActivate {
           return { index, valid: false, reason: 'unknown_subscription', subscriptionId, userId: null };
         }
 
+        // A stored subscription with no clientState is unverifiable. Fail closed
+        // rather than skip the check — an empty stored value must never accept a
+        // notification (see persistence: clientState is always minted non-empty).
+        if (!subscription.clientState) {
+          this.logger.warn(
+            `[SECURITY] Subscription ${subscriptionId} has no stored clientState; ` +
+            `notification cannot be verified. Rejecting as unverifiable.`
+          );
+          return {
+            index,
+            valid: false,
+            reason: 'missing_stored_client_state',
+            subscriptionId,
+            userId: subscription.userId,
+          };
+        }
+
         // Validate clientState
-        if (subscription.clientState && clientState !== subscription.clientState) {
+        if (clientState !== subscription.clientState) {
           this.logger.warn(
             `[SECURITY] ClientState mismatch for subscription ${subscriptionId}. ` +
             `Expected prefix: user_${subscription.userId}_*, received: ${clientState?.substring(0, 20) ?? 'null'}...`
