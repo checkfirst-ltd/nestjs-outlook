@@ -244,6 +244,10 @@ export class MicrosoftSubscriptionService {
       const webhookPath = this.microsoftConfig.calendarWebhookPath || '/calendar/webhook';
       const notificationUrl = `${basePathUrl}${webhookPath}`;
 
+      // Generate the clientState we bind to this subscription. It must never be
+      // empty — an empty stored value makes notifications unverifiable downstream.
+      const clientState = `user_${internalUserId}_${randomUUID()}`;
+
       // Create subscription payload
       const subscriptionData = {
         changeType: "created,updated,deleted",
@@ -252,7 +256,7 @@ export class MicrosoftSubscriptionService {
         lifecycleNotificationUrl: notificationUrl,
         resource: "/me/events",
         expirationDateTime: expirationDateTime.toISOString(),
-        clientState: `user_${internalUserId}_${randomUUID()}`,
+        clientState,
       };
 
       this.logger.log(
@@ -291,6 +295,13 @@ export class MicrosoftSubscriptionService {
         `[${correlationId}] Created webhook subscription ${response.data.id || "unknown"} for user ${internalUserId}`
       );
 
+      // Persist the clientState we generated. Microsoft normally echoes it back;
+      // if it didn't, fall back to our own value so the stored value is never empty.
+      const storedClientState = response.data.clientState || clientState;
+      if (!storedClientState) {
+        throw new Error('Refusing to persist subscription with empty clientState');
+      }
+
       // Save the subscription to the database
       this.logger.log(`[${correlationId}] Saving subscription to database (internalUserId: ${internalUserId}, externalUserId: ${externalUserId})`);
       await this.webhookSubscriptionRepository.saveSubscription({
@@ -298,7 +309,7 @@ export class MicrosoftSubscriptionService {
         userId: internalUserId,
         resource: response.data.resource,
         changeType: response.data.changeType,
-        clientState: response.data.clientState || "",
+        clientState: storedClientState,
         notificationUrl: response.data.notificationUrl,
         expirationDateTime: response.data.expirationDateTime
           ? new Date(response.data.expirationDateTime)

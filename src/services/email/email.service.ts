@@ -103,6 +103,10 @@ export class EmailService {
       // Create subscription payload with proper URL encoding
       const notificationUrl = `${basePathUrl}/email/webhook`;
 
+      // Generate the clientState we bind to this subscription. It must never be
+      // empty — an empty stored value makes notifications unverifiable downstream.
+      const clientState = `user_${internalUserId}_${randomUUID()}`;
+
       // Create subscription payload
       const subscriptionData = {
         changeType: 'created,updated,deleted',
@@ -111,7 +115,7 @@ export class EmailService {
         lifecycleNotificationUrl: notificationUrl,
         resource: '/me/messages',
         expirationDateTime: expirationDateTime.toISOString(),
-        clientState: `user_${internalUserId}_${randomUUID()}`,
+        clientState,
       };
 
       this.logger.debug(`Creating email webhook subscription with notificationUrl: ${notificationUrl}`);
@@ -144,13 +148,20 @@ export class EmailService {
 
       this.logger.log(`Created email webhook subscription ${response.data.id || 'unknown'} for user ${internalUserId}`);
 
+      // Persist the clientState we generated. Microsoft normally echoes it back;
+      // if it didn't, fall back to our own value so the stored value is never empty.
+      const storedClientState = response.data.clientState || clientState;
+      if (!storedClientState) {
+        throw new Error('Refusing to persist subscription with empty clientState');
+      }
+
       // Save the subscription to the database
       await this.webhookSubscriptionRepository.saveSubscription({
         subscriptionId: response.data.id,
         userId: internalUserId,
         resource: response.data.resource,
         changeType: response.data.changeType,
-        clientState: response.data.clientState || '',
+        clientState: storedClientState,
         notificationUrl: response.data.notificationUrl,
         expirationDateTime: response.data.expirationDateTime ? new Date(response.data.expirationDateTime) : new Date(),
       });
@@ -323,9 +334,14 @@ export class EmailService {
         return { success: false, message: 'Unknown subscription' };
       }
 
-      // Verify the client state for additional security
-      if (subscription.clientState && clientState !== subscription.clientState) {
-        this.logger.warn('Client state mismatch');
+      // Verify the client state for additional security. A subscription with no
+      // stored clientState is unverifiable — fail closed rather than skip the check.
+      if (!subscription.clientState || clientState !== subscription.clientState) {
+        this.logger.warn(
+          subscription.clientState
+            ? 'Client state mismatch'
+            : 'Subscription has no stored clientState; cannot verify notification',
+        );
         return { success: false, message: 'Client state mismatch' };
       }
 

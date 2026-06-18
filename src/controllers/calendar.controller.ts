@@ -7,7 +7,7 @@ import { ChangeNotification, ChangeType } from '@microsoft/microsoft-graph-types
 import { OutlookWebhookNotificationDto } from '../dto/outlook-webhook-notification.dto';
 import { validateNotificationItem, validateChangeType, WebhookResourceType } from '../utils/webhook-notification.validator';
 import { LifecycleEventHandlerService } from '../services/calendar/lifecycle-event-handler.service';
-import { WebhookClientStateGuard } from '../guards/webhook-client-state.guard';
+import { WebhookClientStateGuard, RequestWithWebhookValidation } from '../guards/webhook-client-state.guard';
 
 @ApiTags('Calendar')
 @Controller('calendar')
@@ -81,38 +81,36 @@ export class CalendarController {
       this.logger.log(`[WEBHOOK_RECEIVED] webhookTraceId=${webhookTraceId}, endpoint=notification, notificationCount=${notificationBody.value.length}`);
       this.logger.debug(`Received webhook notification: ${JSON.stringify(notificationBody)}`);
 
+      // Drop items rejected by WebhookClientStateGuard (clientState / subscription security check)
+      const { authorized, rejectedCount } = this.filterAuthorizedItems(
+        req as RequestWithWebhookValidation,
+        Array.isArray(notificationBody.value) ? notificationBody.value : [],
+      );
+      if (rejectedCount > 0) {
+        this.logger.warn(`[SECURITY] Skipping ${rejectedCount.toString()} rejected webhook item(s), webhookTraceId=${webhookTraceId}`);
+      }
+
+      // Every item failed the security check - acknowledge with 200 but process nothing
+      if (authorized.length === 0) {
+        res.json({
+          success: true,
+          message: rejectedCount > 0
+            ? `Rejected ${rejectedCount.toString()} notification(s) failing security validation`
+            : `Received webhook notification with unexpected format`,
+        });
+        return;
+      }
+
       // Early response with 202 Accepted if we have multiple notifications
       // This follows Microsoft's best practice to avoid timing out on the response
-      if (Array.isArray(notificationBody.value) && notificationBody.value.length > 2) {
-        this.logger.log(`Received batch of ${notificationBody.value.length.toString()} notifications, responding with 202 Accepted`);
+      if (authorized.length > 2) {
+        this.logger.log(`Received batch of ${authorized.length.toString()} notifications, responding with 202 Accepted`);
         res.status(202).json({
           success: true,
           message: 'Notifications accepted for processing',
         });
 
-        if (Array.isArray(notificationBody.value) && notificationBody.value.length > 0) {
-          for (const item of notificationBody.value) {
-            await this.calendarService.handleOutlookWebhookV2({
-              subscriptionId: item.subscriptionId,
-              subscriptionExpirationDateTime: item.subscriptionExpirationDateTime,
-              changeType: item.changeType as ChangeType,
-              resource: item.resource,
-              resourceData: item.resourceData,
-              clientState: item.clientState,
-              tenantId: item.tenantId,
-            }, webhookTraceId);
-          }
-          res.json({
-            success: true,
-            message: `Notifications accepted for processing`,
-          });
-          return;
-        }
-      }
-
-      // For smaller batches, process synchronously
-      if (Array.isArray(notificationBody.value) && notificationBody.value.length > 0) {
-        for (const item of notificationBody.value) {
+        for (const item of authorized) {
           await this.calendarService.handleOutlookWebhookV2({
             subscriptionId: item.subscriptionId,
             subscriptionExpirationDateTime: item.subscriptionExpirationDateTime,
@@ -123,18 +121,24 @@ export class CalendarController {
             tenantId: item.tenantId,
           }, webhookTraceId);
         }
-        res.json({
-          success: true,
-          message: `Processed ${notificationBody.value.length.toString()} notifications`,
-        });
         return;
       }
 
-      // Handle empty or unexpected notification format
-      this.logger.warn('Received webhook notification with unexpected format');
+      // For smaller batches, process synchronously
+      for (const item of authorized) {
+        await this.calendarService.handleOutlookWebhookV2({
+          subscriptionId: item.subscriptionId,
+          subscriptionExpirationDateTime: item.subscriptionExpirationDateTime,
+          changeType: item.changeType as ChangeType,
+          resource: item.resource,
+          resourceData: item.resourceData,
+          clientState: item.clientState,
+          tenantId: item.tenantId,
+        }, webhookTraceId);
+      }
       res.json({
         success: true,
-        message: `Received webhook notification with unexpected format`,
+        message: `Processed ${authorized.length.toString()} notifications`,
       });
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -208,17 +212,37 @@ export class CalendarController {
       this.logger.log(`[WEBHOOK_RECEIVED] webhookTraceId=${webhookTraceId}, endpoint=webhook, notificationCount=${notificationBody.value.length}`);
       this.logger.debug(`Received webhook notification: ${JSON.stringify(notificationBody)}`);
 
+      // Drop items rejected by WebhookClientStateGuard (clientState / subscription security check)
+      const { authorized, rejectedCount } = this.filterAuthorizedItems(
+        req as RequestWithWebhookValidation,
+        Array.isArray(notificationBody.value) ? notificationBody.value : [],
+      );
+      if (rejectedCount > 0) {
+        this.logger.warn(`[SECURITY] Skipping ${rejectedCount.toString()} rejected webhook item(s), webhookTraceId=${webhookTraceId}`);
+      }
+
+      // Every item failed the security check - acknowledge with 200 but process nothing
+      if (authorized.length === 0) {
+        res.json({
+          success: true,
+          message: rejectedCount > 0
+            ? `Rejected ${rejectedCount.toString()} notification(s) failing security validation`
+            : `Received webhook notification with unexpected format`,
+        });
+        return;
+      }
+
       // Early response with 202 Accepted if we have multiple notifications
       // This follows Microsoft's best practice to avoid timing out on the response
-      if (Array.isArray(notificationBody.value) && notificationBody.value.length > 2) {
-        this.logger.log(`Received batch of ${notificationBody.value.length.toString()} notifications, responding with 202 Accepted`);
+      if (authorized.length > 2) {
+        this.logger.log(`Received batch of ${authorized.length.toString()} notifications, responding with 202 Accepted`);
         res.status(202).json({
           success: true,
           message: 'Notifications accepted for processing',
         });
 
         // Process notifications asynchronously after sending the response
-        this.processCalendarNotificationBatch(notificationBody, webhookTraceId).catch((error: unknown) => {
+        this.processCalendarNotificationBatch(authorized, webhookTraceId).catch((error: unknown) => {
           const errorMessage = error instanceof Error ? error.message : String(error);
           this.logger.error(`Error processing notification batch: ${errorMessage}`);
         });
@@ -226,20 +250,10 @@ export class CalendarController {
       }
 
       // For smaller batches, process synchronously
-      if (Array.isArray(notificationBody.value) && notificationBody.value.length > 0) {
-        const results = await this.processCalendarNotificationBatch(notificationBody, webhookTraceId);
-        res.json({
-          success: true,
-          message: `Processed ${results.successCount.toString()} out of ${notificationBody.value.length.toString()} notifications`,
-        });
-        return;
-      }
-
-      // Handle empty or unexpected notification format
-      this.logger.warn('Received webhook notification with unexpected format');
+      const results = await this.processCalendarNotificationBatch(authorized, webhookTraceId);
       res.json({
         success: true,
-        message: `Received webhook notification with unexpected format`,
+        message: `Processed ${results.successCount.toString()} out of ${authorized.length.toString()} notifications`,
       });
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -253,13 +267,36 @@ export class CalendarController {
   }
 
   /**
+   * Filter out notification items rejected by {@link WebhookClientStateGuard}.
+   *
+   * The guard returns 200 (so Microsoft stops retrying) but marks invalid items on the request.
+   * This drops those items so they are never processed, while authorized items proceed normally.
+   *
+   * @param req Request carrying the guard's `webhookValidation` verdict
+   * @param items The notification items in their original order
+   * @returns The authorized items and how many were rejected
+   */
+  private filterAuthorizedItems<T>(
+    req: RequestWithWebhookValidation,
+    items: T[],
+  ): { authorized: T[]; rejectedCount: number } {
+    const validation = req.webhookValidation;
+    if (!validation || validation.valid || validation.invalidItems.length === 0) {
+      return { authorized: items, rejectedCount: 0 };
+    }
+    const invalidIndexes = new Set(validation.invalidItems.map((i) => i.index));
+    const authorized = items.filter((_, idx) => !invalidIndexes.has(idx));
+    return { authorized, rejectedCount: items.length - authorized.length };
+  }
+
+  /**
    * Process a batch of calendar notifications asynchronously
-   * @param notificationBody The batch of notifications to process
+   * @param items The notification items to process (already filtered for authorization)
    * @param webhookTraceId Correlation ID for tracing this webhook through downstream operations
    * @returns Results of the processing operation
    */
   private async processCalendarNotificationBatch(
-    notificationBody: OutlookWebhookNotificationDto,
+    items: OutlookWebhookNotificationDto['value'],
     webhookTraceId: string,
   ): Promise<{ successCount: number; failureCount: number }> {
     // Track processing results
@@ -270,7 +307,7 @@ export class CalendarController {
     const processedEvents = new Set<string>();
 
     // Process each notification in the batch
-    for (const item of notificationBody.value) {
+    for (const item of items) {
       // Validate the notification item
       const validation = validateNotificationItem(
         item,

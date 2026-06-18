@@ -1855,12 +1855,14 @@ export class CalendarService {
       return { success: false, message: "Unknown subscription" };
     }
 
-    // Verify the client state for additional security
-    if (
-      subscription.clientState &&
-      clientState !== subscription.clientState
-    ) {
-      this.logger.warn("Client state mismatch");
+    // Verify the client state for additional security. A subscription with no
+    // stored clientState is unverifiable — fail closed rather than skip the check.
+    if (!subscription.clientState || clientState !== subscription.clientState) {
+      this.logger.warn(
+        subscription.clientState
+          ? "Client state mismatch"
+          : "Subscription has no stored clientState; cannot verify notification"
+      );
       return { success: false, message: "Client state mismatch" };
     }
 
