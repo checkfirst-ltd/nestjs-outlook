@@ -1,0 +1,67 @@
+dep_version: "0.1.0"
+
+project:
+  name: "@checkfirst/nestjs-outlook"
+  docs_root: "./docs"
+  description: "An opinionated NestJS module for Microsoft Outlook integration — OAuth authentication, calendar, email, and webhook subscriptions over the Microsoft Graph API."
+
+audiences:
+  - id: library-integrator
+    name: "Library Integrator"
+    goal: "Install the module into a NestJS app and get a user connected to Microsoft for the first time"
+    context: "Experienced NestJS developer; knows TypeORM and DI; new to this module and to the Microsoft Graph OAuth flow"
+    entry_point: "./docs/tutorials/getting-started.md"
+    vocabulary_level: intermediate
+    time_budget: deep
+    success_criteria: "A running app where a user completes the Microsoft OAuth flow and the module persists their tokens"
+
+  - id: app-developer
+    name: "Application Developer"
+    goal: "Perform a specific task with the module — send an email, manage calendar events, set up webhooks, or react to events — and look up exact APIs"
+    context: "Already has the module installed and a user authenticated; needs task steps and precise API signatures"
+    entry_point: "./docs/index.md"
+    vocabulary_level: intermediate
+    time_budget: scanning
+    success_criteria: "Completes the task using the documented service methods without reading source code"
+
+  - id: library-contributor
+    name: "Library Contributor"
+    goal: "Understand the module's internal architecture in order to maintain or extend it"
+    context: "Working on the library itself; needs the conceptual model behind modules, events, shared state, and rate limiting"
+    entry_point: "./docs/explanation/architecture-overview.md"
+    vocabulary_level: expert
+    time_budget: deep
+    success_criteria: "Can locate the right subsystem for a change and understand why the design is shaped the way it is"
+
+  - id: ai-agent
+    name: "AI Agent"
+    goal: "Read the documentation to operate or integrate the module programmatically"
+    context: "Machine consumer; needs a complete, scannable map of the public API surface and event contracts"
+    entry_point: "./docs/reference/api-overview.md"
+    vocabulary_level: expert
+    time_budget: scanning
+    success_criteria: "Resolves the correct service, method, config field, or event from reference alone"
+
+architecture:
+  directory_map:
+    tutorials: docs/tutorials
+    how-to: docs/how-to
+    reference: docs/reference
+    explanation: docs/explanation
+    decision-records: docs/decision-records
+  require_index_files: true
+  link_style: relative
+
+governance:
+  ownership_strategy: per-document
+  fallback_owner: "@checkfirst-ltd"
+  review_cadence:
+    tutorial: 90
+    how-to: 60
+    reference: 30
+    explanation: 180
+    decision-record: 365
+
+generation:
+  ai_provider: constrained
+  require_human_review: true
