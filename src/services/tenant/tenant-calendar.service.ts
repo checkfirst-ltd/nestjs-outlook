@@ -10,7 +10,7 @@ import { OutlookEventTypes } from '../../enums/event-types.enum';
 import { executeGraphApiCall } from '../../utils/outlook-api-executor.util';
 import { TtlCache } from '../../utils/ttl-cache.util';
 import { AppOnlyAuthService } from '../auth/app-only-auth.service';
-import { MicrosoftUser } from '../../entities/microsoft-user.entity';
+import { MicrosoftTenantUser } from '../../entities/microsoft-tenant-user.entity';
 
 /**
  * Service for managing calendars across all users in a tenant using app-only authentication.
@@ -55,8 +55,8 @@ export class TenantCalendarService {
     @Inject(MICROSOFT_CONFIG)
     private readonly microsoftConfig: MicrosoftOutlookConfig,
     private readonly appOnlyAuthService: AppOnlyAuthService,
-    @InjectRepository(MicrosoftUser)
-    private readonly tenantUserRepository: Repository<MicrosoftUser>,
+    @InjectRepository(MicrosoftTenantUser)
+    private readonly tenantUserRepository: Repository<MicrosoftTenantUser>,
   ) {}
 
   /**

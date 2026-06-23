@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import axios from 'axios';
 import { MicrosoftTenant } from '../../entities/microsoft-tenant.entity';
-import { MicrosoftUser } from '../../entities/microsoft-user.entity';
+import { MicrosoftTenantUser } from '../../entities/microsoft-tenant-user.entity';
 import { AppOnlyAuthService } from '../auth/app-only-auth.service';
 import { TtlCache } from '../../utils/ttl-cache.util';
 import { executeGraphApiCall } from '../../utils/outlook-api-executor.util';
@@ -43,7 +43,7 @@ export interface TenantUserLookupResult {
  *
  * Key features:
  * - Lookup users by email or user principal name
- * - Persist user mappings on the shared MicrosoftUser entity (one row per external user)
+ * - Persist user mappings in MicrosoftTenantUser entity
  * - Cache user ID mappings for performance
  * - Support for immutable IDs (IdType="ImmutableId")
  *
@@ -63,8 +63,8 @@ export class TenantUserService {
   constructor(
     @InjectRepository(MicrosoftTenant)
     private readonly tenantRepository: Repository<MicrosoftTenant>,
-    @InjectRepository(MicrosoftUser)
-    private readonly tenantUserRepository: Repository<MicrosoftUser>,
+    @InjectRepository(MicrosoftTenantUser)
+    private readonly tenantUserRepository: Repository<MicrosoftTenantUser>,
     private readonly appOnlyAuthService: AppOnlyAuthService,
     @Inject(MICROSOFT_CONFIG)
     private readonly microsoftConfig: MicrosoftOutlookConfig,
@@ -111,13 +111,9 @@ export class TenantUserService {
       const accessToken = await this.appOnlyAuthService.getAccessToken(tenantId);
 
       // Use $filter to find user by mail or userPrincipalName
-      // Note: mail property may be null for some users, UPN is always present.
-      // Do NOT percent-encode the email here: it goes inside an OData string literal and axios
-      // encodes the whole $filter param once. Pre-encoding turned '@' into '%40' inside the
-      // literal, so `userPrincipalName eq 'user%40domain'` never matched the real UPN. Only
-      // OData-escape single quotes (double them) per the OData literal spec.
-      const escapedEmail = email.replace(/'/g, "''");
-      const filterQuery = `mail eq '${escapedEmail}' or userPrincipalName eq '${escapedEmail}'`;
+      // Note: mail property may be null for some users, UPN is always present
+      const encodedEmail = encodeURIComponent(email);
+      const filterQuery = `mail eq '${encodedEmail}' or userPrincipalName eq '${encodedEmail}'`;
 
       const response = await executeGraphApiCall(
         () => axios.get<{ value: GraphUser[] }>(
@@ -338,22 +334,19 @@ export class TenantUserService {
   /**
    * Register a user mapping from external ID to Microsoft user ID.
    *
-   * Upserts the shared MicrosoftUser row for this host user (keyed by externalUserId),
-   * attaching the tenant + Microsoft identity. Reusing the existing row — rather than
-   * creating a parallel one — keeps a single row per external user, so a user who also
-   * completed delegated OAuth keeps their tokens on the same record and delegated
-   * lookups by externalUserId stay unambiguous.
+   * Creates a MicrosoftTenantUser record linking the host application's user ID
+   * to a Microsoft user within the tenant.
    *
    * @param tenantId - Microsoft tenant ID (Azure AD tenant GUID)
    * @param externalUserId - User ID from the host application
    * @param email - Email or UPN to look up the Microsoft user
-   * @returns The created/updated user mapping
+   * @returns The created/updated tenant user mapping
    */
   async registerUserMapping(
     tenantId: string,
     externalUserId: string,
     email: string,
-  ): Promise<MicrosoftUser> {
+  ): Promise<MicrosoftTenantUser> {
     this.logger.log(
       `[registerUserMapping] Registering user mapping for ${externalUserId} -> ${email} in tenant ${tenantId}`
     );
@@ -373,24 +366,25 @@ export class TenantUserService {
       throw new Error(`Tenant not found or inactive: ${tenantId}`);
     }
 
-    // Upsert by externalUserId so we reuse an existing (possibly delegated) row rather
-    // than creating a parallel record that would collide on externalUserId.
+    // Check for existing mapping
     let tenantUser = await this.tenantUserRepository.findOne({
-      where: { externalUserId },
+      where: {
+        tenant: { id: tenant.id },
+        externalUserId,
+      },
       relations: ['tenant'],
     });
 
     if (tenantUser) {
-      // Attach/refresh the tenant identity on the existing row
+      // Update existing mapping
       this.logger.log(`[registerUserMapping] Updating existing mapping for ${externalUserId}`);
-      tenantUser.tenant = tenant;
       tenantUser.microsoftUserId = userLookup.microsoftUserId;
       tenantUser.userPrincipalName = userLookup.userPrincipalName;
       tenantUser.isActive = true;
     } else {
       // Create new mapping
       this.logger.log(`[registerUserMapping] Creating new mapping for ${externalUserId}`);
-      tenantUser = new MicrosoftUser();
+      tenantUser = new MicrosoftTenantUser();
       tenantUser.tenant = tenant;
       tenantUser.externalUserId = externalUserId;
       tenantUser.microsoftUserId = userLookup.microsoftUserId;
