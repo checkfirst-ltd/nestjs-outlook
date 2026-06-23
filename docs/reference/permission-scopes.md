@@ -14,8 +14,6 @@ dep:
       rel: USES
     - target: ../how-to/authenticate-a-user.md
       rel: NEXT
-    - target: ../decision-records/dr-003-provider-agnostic-permission-scopes.md
-      rel: NEXT
 ---
 
 # PermissionScope Reference
