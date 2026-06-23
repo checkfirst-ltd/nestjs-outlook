@@ -23,6 +23,7 @@ At Checkfirst, we believe that tools should be as transparent as the systems the
 ## Table of Contents
 
 - [Features](#features)
+- [Documentation](#documentation)
 - [Installation](#installation)
 - [Setup](#setup)
   - [1. Database Setup](#1-database-setup)
@@ -59,6 +60,22 @@ At Checkfirst, we believe that tools should be as transparent as the systems the
 - 📧 Email sending with rich content
 - 🔔 Real-time notifications via webhooks
 - 🔍 Event-driven architecture for easy integration
+
+## Documentation
+
+Full documentation lives in [`docs/`](docs/) and is organized by audience and document type
+(tutorials, how-to guides, reference, explanation, decision records).
+
+- **Start here:** [`docs/index.md`](docs/index.md) — documentation root, grouped by audience and type
+- **Onboarding:** [Getting Started](docs/tutorials/getting-started.md) — connect your first user end to end
+- **Task guides:** [How-To guides](docs/how-to/) — authenticate, manage calendar events, send email, set up webhooks, handle events, configure Redis
+- **API reference:** [API Overview](docs/reference/api-overview.md) — complete map of the public surface
+- **Internals & rationale:** [Architecture](docs/explanation/architecture-overview.md) and [Decision Records](docs/decision-records/)
+
+> The docs follow the [Documentation Engineering Protocol](https://github.com/maxios/DEP) (DEP);
+> structure and metadata are defined in [`.docspec`](.docspec).
+
+The sections below cover setup and the most common tasks inline.
 
 ## Installation
 
