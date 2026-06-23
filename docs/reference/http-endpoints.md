@@ -17,6 +17,8 @@ dep:
       rel: NEXT
     - target: ../how-to/subscribe-to-webhooks.md
       rel: NEXT
+    - target: ../decision-records/dr-002-clientstate-webhook-validation.md
+      rel: NEXT
 ---
 
 # HTTP Endpoints Reference

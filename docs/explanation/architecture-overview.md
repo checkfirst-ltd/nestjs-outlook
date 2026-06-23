@@ -20,6 +20,10 @@ dep:
       rel: EXPLAINS
     - target: ../reference/subscription-service.md
       rel: EXPLAINS
+    - target: ./shared-state-and-concurrency.md
+      rel: NEXT
+    - target: ./change-synchronization.md
+      rel: NEXT
 ---
 
 # Architecture Overview
@@ -106,3 +110,5 @@ that claims to be from Microsoft without proof tied to state the module itself i
 - [Configuration](../reference/configuration.md) — the surface that exposes these choices.
 - [Event types](../reference/event-types.md) — the contract the event-driven design produces.
 - [Subscription service](../reference/subscription-service.md) — the subscription lifecycle API.
+- [Shared state and concurrency](shared-state-and-concurrency.md) — locking, rate limiting, and the circuit breaker.
+- [Change synchronization](change-synchronization.md) — how notifications become events.
