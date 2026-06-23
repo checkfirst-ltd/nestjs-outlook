@@ -27,6 +27,20 @@ dep:
       rel: USES
     - target: ./http-endpoints.md
       rel: USES
+    - target: ./recurrence-service.md
+      rel: USES
+    - target: ./user-id-converter-service.md
+      rel: USES
+    - target: ./delta-sync-service.md
+      rel: USES
+    - target: ./graph-rate-limiter-service.md
+      rel: USES
+    - target: ./shared-state-stores.md
+      rel: USES
+    - target: ./show-as-type.md
+      rel: USES
+    - target: ./microsoft-user-status.md
+      rel: USES
     - target: ../explanation/architecture-overview.md
       rel: NEXT
 ---
@@ -52,9 +66,15 @@ Each entry links to its detailed reference.
 | `EmailService` | Sending mail, mail webhooks | `sendEmail`, `createWebhookSubscription`, `handleEmailWebhook` | [Email](email-service.md) |
 | `MicrosoftSubscriptionService` | Webhook subscription lifecycle | `createWebhookSubscription`, `renewWebhookSubscription`, `deleteAllWebhookSubscriptions`, cleanup | [Subscriptions](subscription-service.md) |
 
-Additional exported services (advanced/internal): `RecurrenceService`, `UserIdConverterService`,
-`DeltaSyncService`, `GraphRateLimiterService`, plus the `OutlookLockStore` and
-`OutlookRateLimitStore` shared-state stores.
+Additional exported services:
+
+| Service | Responsibility | Reference |
+|---------|----------------|-----------|
+| `RecurrenceService` | Classify events; expand recurring series | [Recurrence](recurrence-service.md) |
+| `UserIdConverterService` | Map external ↔ internal user IDs | [User ID converter](user-id-converter-service.md) |
+| `DeltaSyncService` | Incremental change fetching via delta queries | [Delta sync](delta-sync-service.md) |
+| `GraphRateLimiterService` | Per-user throttling + circuit breaker | [Rate limiter](graph-rate-limiter-service.md) |
+| `OutlookLockStore` / `OutlookRateLimitStore` | Pluggable shared-state stores | [Shared-state stores](shared-state-stores.md) |
 
 ## Enums
 
@@ -62,8 +82,8 @@ Additional exported services (advanced/internal): `RecurrenceService`, `UserIdCo
 |------|---------|-----------|
 | `PermissionScope` | Requestable permission scopes | [Permission scopes](permission-scopes.md) |
 | `OutlookEventTypes` | Emitted event names | [Event types](event-types.md) |
-| `ShowAsType` | Calendar free/busy status (mirrors Graph) | — |
-| `MicrosoftUserStatus` | Stored user account state (`ACTIVE`, `CORRUPTED`, `SUBSCRIPTION_FAILED`) | — |
+| `ShowAsType` | Calendar free/busy status (mirrors Graph) | [Show-as type](show-as-type.md) |
+| `MicrosoftUserStatus` | Stored user account state (`ACTIVE`, `CORRUPTED`, `SUBSCRIPTION_FAILED`) | [User status](microsoft-user-status.md) |
 
 ## HTTP controllers
 

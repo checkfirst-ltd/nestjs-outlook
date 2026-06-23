@@ -12,6 +12,8 @@ dep:
   links:
     - target: ../how-to/handle-outlook-events.md
       rel: NEXT
+    - target: ../decision-records/dr-004-event-driven-integration.md
+      rel: NEXT
 ---
 
 # OutlookEventTypes Reference

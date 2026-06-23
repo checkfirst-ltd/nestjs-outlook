@@ -16,6 +16,8 @@ dep:
       rel: NEXT
     - target: ../explanation/architecture-overview.md
       rel: NEXT
+    - target: ../decision-records/dr-001-pluggable-shared-state-backend.md
+      rel: NEXT
 ---
 
 # Configuration Reference
