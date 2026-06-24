@@ -39,6 +39,8 @@
     "@nestjs/event-emitter": "^2.0.0",
     "@nestjs/platform-express": "^10.0.0",
     "@nestjs/schedule": "^3.0.0",
+    "@nestjs/serve-static": "^4.0.0",
+    "@nestjs/swagger": "^7.0.0",
     "@nestjs/typeorm": "^10.0.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.0",

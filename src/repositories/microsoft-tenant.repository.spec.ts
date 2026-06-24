@@ -377,7 +377,7 @@ describe('MicrosoftTenantRepository', () => {
 
       // Next find should hit database again (cache was invalidated)
       const result = await repository.findByTenantId(mockTenantId);
-      expect(result?.status).toBe(MicrosoftTenantStatus.DISABLED);
+      expect(result.status).toBe(MicrosoftTenantStatus.DISABLED);
       // findOne called: 1 (initial) + 1 (save check) + 1 (after invalidation) = 3
       expect(mockTypeOrmRepository.findOne).toHaveBeenCalledTimes(3);
     });

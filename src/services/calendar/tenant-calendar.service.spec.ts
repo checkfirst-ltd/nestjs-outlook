@@ -5,7 +5,7 @@ import { Repository } from 'typeorm';
 import axios from 'axios';
 import { TenantCalendarService } from '../tenant/tenant-calendar.service';
 import { AppOnlyAuthService } from '../auth/app-only-auth.service';
-import { MicrosoftUser } from '../../entities/microsoft-user.entity';
+import { MicrosoftTenantUser } from '../../entities/microsoft-tenant-user.entity';
 import { MICROSOFT_CONFIG } from '../../constants';
 import { MicrosoftOutlookConfig } from '../../interfaces/config/outlook-config.interface';
 import { Event } from '../../types';
@@ -13,15 +13,10 @@ import { Event } from '../../types';
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
 
-// executeGraphApiCall retries transient failures. Shape API failures as non-retryable
-// Graph errors (status 403) so the service surfaces them immediately instead of retrying.
-const graphError = (message: string, status = 403): Error =>
-  Object.assign(new Error(message), { response: { status } });
-
 describe('TenantCalendarService', () => {
   let service: TenantCalendarService;
   let appOnlyAuthService: jest.Mocked<AppOnlyAuthService>;
-  let tenantUserRepository: jest.Mocked<Repository<MicrosoftUser>>;
+  let tenantUserRepository: jest.Mocked<Repository<MicrosoftTenantUser>>;
   let eventEmitter: jest.Mocked<EventEmitter2>;
 
   const mockTenantId = '12345678-1234-1234-1234-123456789abc';
@@ -72,7 +67,7 @@ describe('TenantCalendarService', () => {
           useValue: mockAppOnlyAuthService,
         },
         {
-          provide: getRepositoryToken(MicrosoftUser),
+          provide: getRepositoryToken(MicrosoftTenantUser),
           useValue: mockTenantUserRepository,
         },
         {
@@ -88,16 +83,10 @@ describe('TenantCalendarService', () => {
 
     service = module.get<TenantCalendarService>(TenantCalendarService);
     appOnlyAuthService = module.get(AppOnlyAuthService);
-    tenantUserRepository = module.get(getRepositoryToken(MicrosoftUser));
+    tenantUserRepository = module.get(getRepositoryToken(MicrosoftTenantUser));
     eventEmitter = module.get(EventEmitter2);
 
     jest.clearAllMocks();
-    // clearAllMocks does not drain mockResolvedValueOnce queues; reset the shared axios
-    // mock so leftover queued values from a prior test can't bleed into the next one.
-    mockedAxios.get.mockReset();
-    mockedAxios.post.mockReset();
-    mockedAxios.patch.mockReset();
-    mockedAxios.delete.mockReset();
   });
 
   describe('endpoint patterns', () => {
@@ -224,7 +213,7 @@ describe('TenantCalendarService', () => {
       const eventWithAttendees = {
         subject: 'Meeting',
         attendees: [
-          { emailAddress: { address: 'attendee@contoso.com' }, type: 'required' as const },
+          { emailAddress: { address: 'attendee@contoso.com' }, type: 'required' },
         ],
       };
 
@@ -253,7 +242,7 @@ describe('TenantCalendarService', () => {
     });
 
     it('should throw error when event creation fails', async () => {
-      mockedAxios.post.mockRejectedValueOnce(graphError('Network error'));
+      mockedAxios.post.mockRejectedValueOnce(new Error('Network error'));
 
       await expect(
         service.createEvent(
@@ -541,7 +530,7 @@ describe('TenantCalendarService', () => {
 
   describe('error handling', () => {
     it('should throw descriptive error when calendar fetch fails', async () => {
-      mockedAxios.get.mockRejectedValueOnce(graphError('Network timeout'));
+      mockedAxios.get.mockRejectedValueOnce(new Error('Network timeout'));
 
       await expect(
         service.getDefaultCalendarId(mockTenantId, mockMicrosoftUserId)
@@ -561,7 +550,7 @@ describe('TenantCalendarService', () => {
     });
 
     it('should throw error when event update fails', async () => {
-      mockedAxios.patch.mockRejectedValueOnce(graphError('Update failed'));
+      mockedAxios.patch.mockRejectedValueOnce(new Error('Update failed'));
 
       await expect(
         service.updateEvent(
@@ -575,7 +564,7 @@ describe('TenantCalendarService', () => {
     });
 
     it('should throw error when event deletion fails', async () => {
-      mockedAxios.delete.mockRejectedValueOnce(graphError('Delete failed'));
+      mockedAxios.delete.mockRejectedValueOnce(new Error('Delete failed'));
 
       await expect(
         service.deleteEvent(

@@ -146,18 +146,21 @@ export class AppOnlyAuthService implements OnModuleInit {
 
   /**
    * Resolve the private key from various sources.
-   * Priority: privateKey > privateKeyBase64 > privateKeyPath — i.e. an env-provided key (direct
-   * PEM or base64) always takes precedence over a file path, so the environment variable is
-   * authoritative even when a legacy `privateKeyPath` is also present.
+   * Priority: privateKey > privateKeyPath > privateKeyBase64
    */
   private resolvePrivateKey(certificate: CertificateAuthConfig): string | undefined {
-    // Direct PEM string (env)
+    // Direct PEM string
     if (certificate.privateKey) {
       this.logger.debug('Using private key from direct string');
       return certificate.privateKey;
     }
 
-    // Base64-encoded (env) — wins over a file path.
+    // File path
+    if (certificate.privateKeyPath) {
+      return this.loadPrivateKeyFromFile(certificate.privateKeyPath);
+    }
+
+    // Base64-encoded
     if (certificate.privateKeyBase64) {
       try {
         const key = Buffer.from(certificate.privateKeyBase64, 'base64').toString('utf8');
@@ -169,11 +172,6 @@ export class AppOnlyAuthService implements OnModuleInit {
         );
         throw new Error('Failed to decode base64 private key');
       }
-    }
-
-    // File path (fallback when no env-provided key material is configured).
-    if (certificate.privateKeyPath) {
-      return this.loadPrivateKeyFromFile(certificate.privateKeyPath);
     }
 
     return undefined;
@@ -268,41 +266,29 @@ export class AppOnlyAuthService implements OnModuleInit {
 
   /**
    * Resolve credentials from a MicrosoftTenant entity.
-   *
-   * The module-level key (the shared-app certificate, which may come from `certificate.privateKey`
-   * / `privateKeyBase64` env config) ALWAYS takes precedence when configured — the environment
-   * variable is authoritative and overrides any per-tenant `certificateKeyPath`. Only when no
-   * module key is configured does it fall back to a per-tenant dedicated key file. The key and
-   * thumbprint are always taken as a matching pair.
    */
   private resolveTenantEntityCredentials(tenant: MicrosoftTenant): TenantCredentials {
-    // 1) Module-level (env-var / shared-app) key + thumbprint — authoritative when configured.
-    if (this.resolvedPrivateKey && this.appOnlyConfig?.certificate?.thumbprint) {
-      return {
-        tenantId: tenant.tenantId,
-        clientId: tenant.clientId,
-        privateKey: this.resolvedPrivateKey,
-        thumbprint: this.appOnlyConfig.certificate.thumbprint,
-      };
+    if (!tenant.certificateThumbprint) {
+      throw new Error(`Tenant ${tenant.tenantId} has no certificate thumbprint configured`);
     }
 
-    // 2) Fall back to a per-tenant dedicated key file when no module key is configured.
-    if (tenant.certificateKeyPath) {
-      let privateKey = this.privateKeyCache.get(tenant.tenantId);
-      if (!privateKey) {
-        privateKey = this.loadPrivateKeyFromFile(tenant.certificateKeyPath);
-        this.privateKeyCache.set(tenant.tenantId, privateKey);
-      }
-      const thumbprint = tenant.certificateThumbprint || this.appOnlyConfig?.certificate?.thumbprint;
-      if (thumbprint) {
-        return { tenantId: tenant.tenantId, clientId: tenant.clientId, privateKey, thumbprint };
-      }
+    if (!tenant.certificateKeyPath) {
+      throw new Error(`Tenant ${tenant.tenantId} has no private key path configured`);
     }
 
-    throw new Error(
-      `Tenant ${tenant.tenantId} has no usable certificate: no module-level certificate key ` +
-        `and no readable per-tenant key file.`
-    );
+    // Check private key cache first
+    let privateKey = this.privateKeyCache.get(tenant.tenantId);
+    if (!privateKey) {
+      privateKey = this.loadPrivateKeyFromFile(tenant.certificateKeyPath);
+      this.privateKeyCache.set(tenant.tenantId, privateKey);
+    }
+
+    return {
+      tenantId: tenant.tenantId,
+      clientId: tenant.clientId,
+      privateKey,
+      thumbprint: tenant.certificateThumbprint,
+    };
   }
 
   /**
@@ -352,23 +338,12 @@ export class AppOnlyAuthService implements OnModuleInit {
         const errorCode = errorData?.error as string | undefined;
         const errorDescription = errorData?.error_description as string | undefined;
 
-        // Surface the full Azure AD diagnostic payload. `error_codes` carries
-        // the AADSTS numbers, and trace_id/correlation_id let you cross-reference
-        // the failure in the Entra sign-in logs. These are the fields Microsoft
-        // returns on a failed client-credentials token request.
         this.logger.error(
           `Failed to obtain app-only token for tenant ${credentials.tenantId}: ${errorCode ?? 'unknown'} - ${errorDescription ?? error.message}`,
           {
             status: error.response?.status,
             errorCode,
             errorDescription,
-            errorCodes: errorData?.error_codes,
-            traceId: errorData?.trace_id,
-            correlationId: errorData?.correlation_id,
-            timestamp: errorData?.timestamp,
-            errorUri: errorData?.error_uri,
-            tenantId: credentials.tenantId,
-            tokenEndpoint,
           }
         );
 
@@ -527,20 +502,6 @@ export class AppOnlyAuthService implements OnModuleInit {
   private buildAdminConsentRedirectUri(): string {
     const config = this.microsoftConfig;
 
-    if (!config.redirectPath) {
-      throw new Error(
-        'MicrosoftOutlookModule config is missing required field: redirectPath. ' +
-        'Ensure it is provided when calling MicrosoftOutlookModule.forRoot() or MicrosoftOutlookModule.forRootAsync().',
-      );
-    }
-
-    if (!config.backendBaseUrl) {
-      throw new Error(
-        'MicrosoftOutlookModule config is missing required field: backendBaseUrl. ' +
-        'Ensure it is provided when calling MicrosoftOutlookModule.forRoot() or MicrosoftOutlookModule.forRootAsync().',
-      );
-    }
-
     // If redirectPath already contains a full URL, use it directly
     if (config.redirectPath.startsWith('http')) {
       // Replace the user auth callback path with admin consent path
@@ -663,28 +624,5 @@ export class AppOnlyAuthService implements OnModuleInit {
    */
   getClientId(): string {
     return this.clientId;
-  }
-
-  /**
-   * Get the module-level certificate configuration (thumbprint + file paths).
-   *
-   * Used when a tenant connection is recorded on the admin-consent callback and no
-   * per-tenant certificate was pre-registered: the new row inherits the shared app
-   * certificate so token acquisition (which resolves credentials from the entity)
-   * can succeed. Returns `undefined` when the module is configured for client-secret
-   * auth rather than a certificate.
-   */
-  getModuleCertificate():
-    | { thumbprint: string; certificatePath?: string; privateKeyPath?: string }
-    | undefined {
-    const certificate = this.appOnlyConfig?.certificate;
-    if (!certificate?.thumbprint) {
-      return undefined;
-    }
-    return {
-      thumbprint: certificate.thumbprint,
-      certificatePath: certificate.certificatePath,
-      privateKeyPath: certificate.privateKeyPath,
-    };
   }
 }

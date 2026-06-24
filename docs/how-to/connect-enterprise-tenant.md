@@ -4,13 +4,11 @@ dep:
   audience: [library-integrator, app-developer]
   owner: "@checkfirst-ltd"
   created: 2026-06-23
-  last_verified: 2026-06-28T12:00:00+03:00
+  last_verified: 2026-06-23T12:00:00+03:00
   confidence: high
   depends_on:
     - src/interfaces/config/outlook-config.interface.ts
     - src/services/auth/app-only-auth.service.ts
-    - src/controllers/tenant-auth.controller.ts
-    - src/repositories/microsoft-tenant.repository.ts
   tags: [auth, enterprise, tenant, app-only, client-credentials]
   links:
     - target: ../reference/app-only-auth-service.md
@@ -141,59 +139,6 @@ await this.tenantUsers.mapUser('your-user-123', 'john.doe@contoso.com');
 const upn = await this.tenantUsers.resolveUserPrincipalName('your-user-123');
 const events = await this.tenantCalendar.listEvents(upn);
 ```
-
-## Multi-tenant: register tenants and run admin consent
-
-The configuration above describes the **single-tenant** mode, where one tenant is
-fixed in module config (`appOnly.tenantId`). For **multi-tenant** scenarios the module
-also supports an **entity-based** flow, where each tenant is stored as a
-`MicrosoftTenant` row and activated through the admin-consent callback handled by
-`TenantAuthController` (`GET /auth/microsoft/tenant/admin-callback`).
-
-> **Important:** the admin-consent callback only *activates* an existing
-> `MicrosoftTenant` row — it never creates one. You must register the tenant first,
-> otherwise the callback responds with *"Tenant Not Found — please ensure the tenant
-> was properly registered before requesting admin consent."*
->
-> The callback looks the tenant up by the `state` query parameter, and this
-> implementation maps `state` directly to `tenantId`. So the value you store in
-> `tenantId` (the Azure AD **directory GUID**) must also be the `state` you pass to
-> the admin-consent URL.
-
-### 1. Register the tenant
-
-Insert a `MicrosoftTenant` row before initiating consent. The
-[`AppOnlyAuthService.getAdminConsentUrl(state, tenantId, clientId)`](../reference/app-only-auth-service.md)
-helper builds the URL to hand to the administrator:
-
-```typescript
-// state === tenantId === the Azure AD directory GUID
-const tenant = await tenantRepository.save({
-  tenantId: directoryGuid,          // Azure AD directory ID (GUID)
-  clientId: azureAppClientId,
-  certificateThumbprint: certThumbprint, // '' is allowed for client-secret auth
-  status: MicrosoftTenantStatus.PENDING_CONSENT,
-  isActive: true,
-});
-
-const adminConsentUrl = appOnlyAuthService.getAdminConsentUrl(
-  tenant.tenantId, // state
-  tenant.tenantId, // tenantId (directory the admin signs into)
-  tenant.clientId,
-);
-```
-
-The sample app exposes this as `POST /tenant/register` (see
-`samples/nestjs-outlook-example/src/tenant/tenant.service.ts`), which returns the
-ready-to-use `adminConsentUrl` in its response.
-
-### 2. Administrator grants consent
-
-Direct the tenant administrator to the `adminConsentUrl`. After they approve,
-Microsoft redirects to `/auth/microsoft/tenant/admin-callback` with
-`tenant`, `state`, and `admin_consent=True`. The callback matches the row by
-`state == tenantId`, sets its status to `ACTIVE`, and verifies it can acquire a
-token. The tenant is then ready for `TenantCalendarService` / `TenantUserService`.
 
 ## Using certificate authentication
 

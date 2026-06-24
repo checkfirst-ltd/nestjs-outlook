@@ -66,7 +66,7 @@ describe('AppOnlyAuthService', () => {
     it('should initialize without app-only config', async () => {
       const module = await createModule(createMockConfig());
       service = module.get<AppOnlyAuthService>(AppOnlyAuthService);
-      service.onModuleInit();
+      await service.onModuleInit();
 
       expect(service).toBeDefined();
       expect(service.isEnabled()).toBe(false);
@@ -80,7 +80,7 @@ describe('AppOnlyAuthService', () => {
         },
       }));
       service = module.get<AppOnlyAuthService>(AppOnlyAuthService);
-      service.onModuleInit();
+      await service.onModuleInit();
 
       expect(service.isEnabled()).toBe(false);
     });
@@ -93,7 +93,7 @@ describe('AppOnlyAuthService', () => {
         },
       }));
       service = module.get<AppOnlyAuthService>(AppOnlyAuthService);
-      service.onModuleInit();
+      await service.onModuleInit();
 
       expect(service.isEnabled()).toBe(true);
       expect(service.getTenantId()).toBe(mockTenantId);
@@ -113,7 +113,7 @@ describe('AppOnlyAuthService', () => {
         },
       }));
       service = module.get<AppOnlyAuthService>(AppOnlyAuthService);
-      service.onModuleInit();
+      await service.onModuleInit();
 
       expect(service.isEnabled()).toBe(true);
     });
@@ -133,7 +133,7 @@ describe('AppOnlyAuthService', () => {
         },
       }));
       service = module.get<AppOnlyAuthService>(AppOnlyAuthService);
-      service.onModuleInit();
+      await service.onModuleInit();
 
       expect(mockedFs.readFileSync).toHaveBeenCalledWith('/path/to/key.pem', 'utf8');
       expect(service.isEnabled()).toBe(true);
@@ -154,7 +154,7 @@ describe('AppOnlyAuthService', () => {
         },
       }));
       service = module.get<AppOnlyAuthService>(AppOnlyAuthService);
-      service.onModuleInit();
+      await service.onModuleInit();
 
       expect(service.isEnabled()).toBe(true);
     });
@@ -176,7 +176,7 @@ describe('AppOnlyAuthService', () => {
       }));
       service = module.get<AppOnlyAuthService>(AppOnlyAuthService);
 
-      expect(() => { service.onModuleInit(); }).toThrow(
+      expect(() => service.onModuleInit()).toThrow(
         'Failed to load private key from file'
       );
     });
@@ -235,7 +235,7 @@ describe('AppOnlyAuthService', () => {
         },
       }));
       service = module.get<AppOnlyAuthService>(AppOnlyAuthService);
-      service.onModuleInit();
+      await service.onModuleInit();
     });
 
     it('should request new token when cache is empty', async () => {
@@ -339,7 +339,7 @@ describe('AppOnlyAuthService', () => {
     beforeEach(async () => {
       const module = await createModule(createMockConfig());
       service = module.get<AppOnlyAuthService>(AppOnlyAuthService);
-      service.onModuleInit();
+      await service.onModuleInit();
     });
 
     it('should get token using MicrosoftTenant entity credentials', async () => {
@@ -383,7 +383,7 @@ describe('AppOnlyAuthService', () => {
       const match = requestBody.match(/client_assertion=([^&]+)/);
       expect(match).toBeTruthy();
 
-      const assertion = decodeURIComponent((match as RegExpMatchArray)[1]);
+      const assertion = decodeURIComponent(match![1]);
       const parts = assertion.split('.');
       const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
 
@@ -475,7 +475,7 @@ describe('AppOnlyAuthService', () => {
         },
       }));
       service = module.get<AppOnlyAuthService>(AppOnlyAuthService);
-      service.onModuleInit();
+      await service.onModuleInit();
 
       const assertion = service.buildClientAssertion(mockTenantId);
 
@@ -508,7 +508,7 @@ describe('AppOnlyAuthService', () => {
         },
       }));
       service = module.get<AppOnlyAuthService>(AppOnlyAuthService);
-      service.onModuleInit();
+      await service.onModuleInit();
     });
 
     it('should generate admin consent URL for common endpoint', () => {
@@ -550,7 +550,7 @@ describe('AppOnlyAuthService', () => {
         },
       }));
       service = module.get<AppOnlyAuthService>(AppOnlyAuthService);
-      service.onModuleInit();
+      await service.onModuleInit();
     });
 
     it('should return success result when consent is granted', () => {
@@ -611,7 +611,7 @@ describe('AppOnlyAuthService', () => {
         },
       }));
       service = module.get<AppOnlyAuthService>(AppOnlyAuthService);
-      service.onModuleInit();
+      await service.onModuleInit();
     });
 
     it('should invalidate cache for specific tenant', async () => {

@@ -29,6 +29,7 @@ export * from './enums/event-types.enum';
 export * from './enums/show-as-type.enum';
 export * from './enums/microsoft-user-status.enum';
 export * from './enums/microsoft-tenant-status.enum';
+export * from './enums/tenant-connection-status.enum';
 
 // Export constants
 export * from './constants';
@@ -51,10 +52,15 @@ export * from './dto/outlook-webhook-notification.dto';
 export * from './entities/outlook-webhook-subscription.entity';
 export * from './entities/microsoft-user.entity';
 export * from './entities/microsoft-tenant.entity';
+export * from './entities/microsoft-tenant-user.entity';
+export * from './entities/tenant-connection.entity';
+export * from './entities/tenant-user.entity';
 
 // Repositories
 export * from './repositories/outlook-webhook-subscription.repository';
 export * from './repositories/microsoft-tenant.repository';
+export * from './repositories/microsoft-tenant-user.repository';
+export * from './repositories/tenant-connection.repository';
 
 // Types
 export * from './types';

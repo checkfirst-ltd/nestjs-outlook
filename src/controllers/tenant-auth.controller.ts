@@ -1,9 +1,8 @@
-import { Controller, Get, Delete, Query, Logger, Res, HttpStatus, Optional, Inject } from '@nestjs/common';
+import { Controller, Get, Query, Logger, Res, HttpStatus, Optional } from '@nestjs/common';
 import { Response } from 'express';
 import { ApiTags, ApiResponse, ApiQuery, ApiOperation, ApiProduces } from '@nestjs/swagger';
 import { AppOnlyAuthService } from '../services/auth/app-only-auth.service';
 import { MicrosoftTenantRepository } from '../repositories/microsoft-tenant.repository';
-import { MicrosoftTenant } from '../entities/microsoft-tenant.entity';
 import { MicrosoftTenantStatus } from '../enums/microsoft-tenant-status.enum';
 
 /**
@@ -25,16 +24,9 @@ export class TenantAuthController {
   private readonly logger = new Logger(TenantAuthController.name);
 
   constructor(
-    // NOTE: the `| null` union type makes TypeScript emit `Object` for this
-    // parameter in `design:paramtypes`, so Nest cannot infer the provider token
-    // by reflection. The explicit `@Inject(...)` token is required alongside
-    // `@Optional()` — without it the dependency is silently injected as
-    // `undefined`, making the controller always report "not configured".
     @Optional()
-    @Inject(AppOnlyAuthService)
     private readonly appOnlyAuthService: AppOnlyAuthService | null,
     @Optional()
-    @Inject(MicrosoftTenantRepository)
     private readonly tenantConnectionRepository: MicrosoftTenantRepository | null,
   ) {}
 
@@ -184,20 +176,6 @@ export class TenantAuthController {
   ) {
     const correlationId = `tenant-consent-${externalTenantId || 'unknown'}-${Date.now()}`;
 
-    // Observability: always record exactly what Microsoft returned on the
-    // admin-consent callback, before any branching. These are the raw query
-    // parameters Microsoft appends to the redirect URI.
-    this.logger.log(
-      `[${correlationId}] Admin consent callback received from Microsoft: ` +
-        JSON.stringify({
-          tenant: microsoftTenantId,
-          state: externalTenantId,
-          admin_consent: adminConsent,
-          error: error,
-          error_description: errorDescription,
-        }),
-    );
-
     try {
       // Check if app-only auth is configured
       if (!this.appOnlyAuthService || !this.tenantConnectionRepository) {
@@ -249,38 +227,16 @@ export class TenantAuthController {
         `[${correlationId}] Admin consent granted for tenant ${microsoftTenantId} (external: ${externalTenantId})`
       );
 
-      // Look up an existing connection for this tenant. It may not exist yet:
-      // callers can initiate admin consent by simply supplying a tenant ID, without
-      // pre-registering a MicrosoftTenant row. In that case we record the tenant here,
-      // after consent has been confirmed, rather than failing.
-      let connection = await this.tenantConnectionRepository.findByExternalTenantId(externalTenantId);
+      // Update tenant connection status
+      const connection = await this.tenantConnectionRepository.findByExternalTenantId(externalTenantId);
 
       if (!connection) {
-        this.logger.log(
-          `[${correlationId}] No existing tenant connection for ${microsoftTenantId}; recording a new one from admin-consent callback`
-        );
-
-        // Inherit the module-level (shared app) certificate so app-only token
-        // acquisition can resolve credentials from the new row below. Configuration
-        // Error is only reachable if the module has no certificate configured.
-        const moduleCertificate = this.appOnlyAuthService.getModuleCertificate();
-        if (!moduleCertificate) {
-          this.logger.error(
-            `[${correlationId}] Cannot record tenant ${microsoftTenantId}: no module certificate configured`
-          );
-          return res.status(HttpStatus.OK).send(this.renderErrorPage(
-            'Configuration Error',
-            'Admin consent was granted, but the application has no certificate configured to complete the connection.',
-            'Please contact your administrator to configure the application certificate.',
-          ));
-        }
-
-        connection = new MicrosoftTenant();
-        connection.tenantId = microsoftTenantId;
-        connection.clientId = this.appOnlyAuthService.getClientId();
-        connection.certificateThumbprint = moduleCertificate.thumbprint;
-        connection.certificatePath = moduleCertificate.certificatePath ?? null;
-        connection.certificateKeyPath = moduleCertificate.privateKeyPath ?? null;
+        this.logger.error(`[${correlationId}] Tenant connection not found: ${externalTenantId}`);
+        return res.status(HttpStatus.OK).send(this.renderErrorPage(
+          'Tenant Not Found',
+          'The tenant connection was not found in our system.',
+          'Please ensure the tenant was properly registered before requesting admin consent.',
+        ));
       }
 
       // Verify the Microsoft tenant ID matches
@@ -298,18 +254,11 @@ export class TenantAuthController {
       // Update tenant connection with Microsoft tenant ID and activate
       connection.tenantId = microsoftTenantId;
       connection.status = MicrosoftTenantStatus.ACTIVE;
-      connection.isActive = true;
-      connection.adminConsentGrantedAt = new Date();
-      connection = await this.tenantConnectionRepository.save(connection);
+      await this.tenantConnectionRepository.save(connection);
 
-      // Test that we can obtain a token for this tenant.
-      // Pass the tenant ENTITY (not the tenant-ID string) so credentials are
-      // resolved from the registered row (per-tenant certificate/key path).
-      // Passing a bare string would route to the module-level config instead,
-      // which fails with "Certificate credentials required" when only
-      // per-tenant credentials are configured.
+      // Test that we can obtain a token for this tenant
       try {
-        await this.appOnlyAuthService.getAccessToken(connection);
+        await this.appOnlyAuthService.getAccessToken(microsoftTenantId);
         this.logger.log(`[${correlationId}] Successfully verified token acquisition for tenant ${microsoftTenantId}`);
       } catch (tokenError) {
         const tokenErrorMsg = tokenError instanceof Error ? tokenError.message : 'Unknown error';
@@ -341,124 +290,6 @@ export class TenantAuthController {
         'Please try again. If the problem persists, contact support.',
       ));
     }
-  }
-
-  /**
-   * Get the current tenant connection status.
-   *
-   * @summary Get tenant connection
-   * @description Returns the stored tenant connection for the given tenant, or for the
-   * module-configured tenant when no `tenantId` is supplied. Returns `null` when no active
-   * connection exists (never connected, or disconnected), which callers read as "not connected".
-   *
-   * @param {string} tenantId - Optional Azure AD tenant ID; defaults to the configured tenant
-   * @returns {MicrosoftTenant | null} The tenant connection record, or null
-   */
-  @Get('connection')
-  @ApiOperation({
-    summary: 'Get tenant connection status',
-    description:
-      'Returns the stored app-only tenant connection (status, consent timestamp, active flag). Falls back to the module-configured tenant when tenantId is omitted. Returns null when no active connection exists.',
-  })
-  @ApiQuery({
-    name: 'tenantId',
-    description: 'Azure AD tenant ID to look up (defaults to the configured tenant)',
-    required: false,
-    type: String,
-    example: '12345678-1234-1234-1234-123456789abc',
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'Tenant connection record, or null when not connected',
-  })
-  async getConnection(@Query('tenantId') tenantId?: string) {
-    if (!this.appOnlyAuthService || !this.tenantConnectionRepository) {
-      return null;
-    }
-
-    // An explicit tenantId is looked up directly (and only that one).
-    // findByTenantId only returns active rows, so a disconnected tenant reads as null.
-    if (tenantId) {
-      return (await this.tenantConnectionRepository.findByTenantId(tenantId)) ?? null;
-    }
-
-    // No tenantId supplied: prefer the module-configured tenant when it is a concrete
-    // tenant. When it is 'common' (or has no row), this is the dynamic-tenant flow where
-    // the tenant is chosen at consent time — fall back to the single active connection so
-    // callers (e.g. the dashboard) reflect it without knowing the tenant id up front.
-    const configuredTenantId = this.appOnlyAuthService.getTenantId();
-    if (configuredTenantId && configuredTenantId !== 'common') {
-      const byConfigured = await this.tenantConnectionRepository.findByTenantId(configuredTenantId);
-      if (byConfigured) {
-        return byConfigured;
-      }
-    }
-
-    const activeConnections = await this.tenantConnectionRepository.findAllActive();
-    return activeConnections[0] ?? null;
-  }
-
-  /**
-   * Disconnect a tenant connection.
-   *
-   * @summary Disconnect tenant
-   * @description Deactivates the stored tenant connection and invalidates any cached
-   * app-only access token so subsequent Graph calls stop working until re-consent.
-   *
-   * @param {string} tenantId - Optional Azure AD tenant ID; defaults to the configured tenant
-   * @returns {{ message: string }} Confirmation message
-   */
-  @Delete('connection')
-  @ApiOperation({
-    summary: 'Disconnect the tenant connection',
-    description:
-      'Deactivates the stored app-only tenant connection and invalidates the cached access token. Falls back to the module-configured tenant when tenantId is omitted.',
-  })
-  @ApiQuery({
-    name: 'tenantId',
-    description: 'Azure AD tenant ID to disconnect (defaults to the configured tenant)',
-    required: false,
-    type: String,
-    example: '12345678-1234-1234-1234-123456789abc',
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'Tenant disconnected (or nothing to disconnect)',
-  })
-  async disconnect(@Query('tenantId') tenantId?: string): Promise<{ message: string }> {
-    if (!this.appOnlyAuthService || !this.tenantConnectionRepository) {
-      throw new Error('Tenant-wide authentication is not configured for this application');
-    }
-
-    // Resolve which tenant to disconnect, mirroring getConnection: an explicit tenantId
-    // wins; otherwise use the module-configured tenant when concrete; otherwise (the
-    // 'common' dynamic-tenant flow) fall back to the active connection. Without this
-    // fallback a no-tenantId disconnect would deactivate 'common' — a no-op — and the
-    // real connection would stay active.
-    let resolvedTenantId = tenantId;
-    if (!resolvedTenantId) {
-      const configuredTenantId = this.appOnlyAuthService.getTenantId();
-      if (
-        configuredTenantId &&
-        configuredTenantId !== 'common' &&
-        (await this.tenantConnectionRepository.findByTenantId(configuredTenantId))
-      ) {
-        resolvedTenantId = configuredTenantId;
-      } else {
-        const activeConnections = await this.tenantConnectionRepository.findAllActive();
-        resolvedTenantId = activeConnections[0]?.tenantId;
-      }
-    }
-
-    if (!resolvedTenantId) {
-      return { message: 'No tenant connection to disconnect.' };
-    }
-
-    await this.tenantConnectionRepository.deactivate(resolvedTenantId);
-    this.appOnlyAuthService.invalidateCache(resolvedTenantId);
-    this.logger.log(`Tenant connection disconnected: ${resolvedTenantId}`);
-
-    return { message: 'Microsoft 365 tenant disconnected successfully.' };
   }
 
   /**
