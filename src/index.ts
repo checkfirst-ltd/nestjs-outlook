@@ -2,6 +2,7 @@
 
 // Export services
 export * from './services/auth/microsoft-auth.service';
+export * from './services/auth/app-only-auth.service';
 export * from './services/calendar/calendar.service';
 export * from './services/calendar/recurrence.service';
 export * from './services/email/email.service';
@@ -10,6 +11,8 @@ export * from './services/subscription/microsoft-subscription.service';
 export * from './services/shared/graph-rate-limiter.service';
 export * from './services/shared/outlook-lock.store';
 export * from './services/shared/outlook-rate-limit.store';
+export * from './services/tenant/tenant-calendar.service';
+export * from './services/tenant/tenant-user.service';
 
 // Export module
 export * from './microsoft-outlook.module';
@@ -25,6 +28,8 @@ export * from './enums/permission-scope.enum';
 export * from './enums/event-types.enum';
 export * from './enums/show-as-type.enum';
 export * from './enums/microsoft-user-status.enum';
+export * from './enums/microsoft-tenant-status.enum';
+export * from './enums/tenant-connection-status.enum';
 
 // Export constants
 export * from './constants';
@@ -37,6 +42,7 @@ export * from './errors/subscription-setup.error';
 // Export controllers
 export * from './controllers/calendar.controller';
 export * from './controllers/microsoft-auth.controller';
+export * from './controllers/tenant-auth.controller';
 export * from './controllers/email.controller';
 
 // Export DTOs
@@ -45,9 +51,16 @@ export * from './dto/outlook-webhook-notification.dto';
 // Entities
 export * from './entities/outlook-webhook-subscription.entity';
 export * from './entities/microsoft-user.entity';
+export * from './entities/microsoft-tenant.entity';
+export * from './entities/microsoft-tenant-user.entity';
+export * from './entities/tenant-connection.entity';
+export * from './entities/tenant-user.entity';
 
 // Repositories
 export * from './repositories/outlook-webhook-subscription.repository';
+export * from './repositories/microsoft-tenant.repository';
+export * from './repositories/microsoft-tenant-user.repository';
+export * from './repositories/tenant-connection.repository';
 
 // Types
 export * from './types';

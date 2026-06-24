@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NestJS Outlook Integration Demo</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="app-header__logo">
+        <svg class="app-header__logo-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path d="M21.17 2.06A2.02 2.02 0 0019.65 1.5h-7.3c-.57 0-1.13.2-1.57.56L1.72 9.94A2 2 0 001 11.44v7.12c0 .55.22 1.08.61 1.47l2.36 2.36c.39.39.92.61 1.47.61h7.12c.55 0 1.08-.22 1.47-.61l8.44-8.44c.39-.39.61-.92.61-1.47V5.35c0-.57-.2-1.13-.56-1.57l-1.35-1.72zM20 12.48l-8.44 8.44H5.44l-2.36-2.36v-7.12l9.06-7.88h7.3l1.56 2v6.92z"/>
+          <circle cx="15.5" cy="8.5" r="2"/>
+        </svg>
+        NestJS Outlook Demo
+      </div>
+      <nav class="app-header__nav">
+        <div id="connectionStatus" class="app-header__status app-header__status--disconnected">
+          <span class="status-indicator status-indicator--disconnected"></span>
+          <span>Not Connected</span>
+        </div>
+      </nav>
+    </header>
+
+    <!-- Main Content -->
+    <main class="app-main">
+      <div class="page-title">
+        <h1 class="page-title__heading">Microsoft 365 Integration Demo</h1>
+        <p class="page-title__description">
+          Test the @checkfirst/nestjs-outlook module capabilities including OAuth, tenant authentication, calendar, and email features.
+        </p>
+      </div>
+
+      <!-- Tabs -->
+      <div class="tabs">
+        <button class="tab tab--active" data-tab="auth">Authentication</button>
+        <button class="tab" data-tab="calendar">Calendar</button>
+        <button class="tab" data-tab="email">Email</button>
+        <button class="tab" data-tab="users">Users</button>
+      </div>
+
+      <!-- Authentication Tab -->
+      <div id="tab-auth" class="tab-panel tab-panel--active">
+        <div class="section-grid">
+          <!-- User OAuth Card -->
+          <div class="card">
+            <div class="card__header">
+              <h2 class="card__title">
+                <svg class="card__icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                </svg>
+                User OAuth Flow
+              </h2>
+              <span class="card__badge card__badge--user">Delegated</span>
+            </div>
+            <div class="card__body">
+              <p class="card__description">
+                Authenticate individual users via Microsoft OAuth 2.0 flow. This grants delegated permissions to act on behalf of the user.
+              </p>
+              <div class="alert alert--info">
+                <svg class="alert__icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>
+                </svg>
+                <div class="alert__content">
+                  Users will be redirected to Microsoft to sign in and grant permissions.
+                </div>
+              </div>
+              <button id="btnUserLogin" class="btn btn--primary btn--block">
+                <svg class="btn__icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+                </svg>
+                Sign in with Microsoft
+              </button>
+              <div id="userAuthResponse" class="response-panel hidden">
+                <div class="response-panel__header">
+                  <span>Response</span>
+                  <div class="response-panel__status">
+                    <span id="userAuthStatusCode" class="response-panel__status-code"></span>
+                  </div>
+                </div>
+                <div class="response-panel__body">
+                  <pre id="userAuthJson" class="response-panel__json"></pre>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tenant Admin Consent Card -->
+          <div class="card">
+            <div class="card__header">
+              <h2 class="card__title">
+                <svg class="card__icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z"/>
+                </svg>
+                Tenant Admin Consent
+              </h2>
+              <span class="card__badge card__badge--tenant">App-Only</span>
+            </div>
+            <div class="card__body">
+              <p class="card__description">
+                Grant organization-wide access via admin consent. This enables app-only authentication using client credentials flow.
+              </p>
+              <div class="form-group">
+                <label class="form-label" for="tenantState">External Tenant ID (State)</label>
+                <input type="text" id="tenantState" class="form-input" placeholder="e.g., my-org-tenant-001">
+                <p class="form-hint">Optional identifier to correlate the consent with your tenant record.</p>
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="microsoftTenantId">Microsoft Tenant ID</label>
+                <input type="text" id="microsoftTenantId" class="form-input" placeholder="common (default) or specific tenant ID">
+                <p class="form-hint">Use "common" for any tenant, or specify a directory ID.</p>
+              </div>
+              <button id="btnAdminConsent" class="btn btn--primary btn--block">
+                <svg class="btn__icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/>
+                </svg>
+                Request Admin Consent
+              </button>
+              <div id="adminConsentResponse" class="response-panel hidden">
+                <div class="response-panel__header">
+                  <span>Admin Consent URL</span>
+                  <div class="response-panel__status">
+                    <span id="adminConsentStatusCode" class="response-panel__status-code"></span>
+                  </div>
+                </div>
+                <div class="response-panel__body">
+                  <pre id="adminConsentJson" class="response-panel__json"></pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Calendar Tab -->
+      <div id="tab-calendar" class="tab-panel">
+        <div class="section-grid">
+          <!-- Create Event Card -->
+          <div class="card">
+            <div class="card__header">
+              <h2 class="card__title">
+                <svg class="card__icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11zM9 10H7v2h2v-2zm4 0h-2v2h2v-2zm4 0h-2v2h2v-2zm-8 4H7v2h2v-2zm4 0h-2v2h2v-2zm4 0h-2v2h2v-2z"/>
+                </svg>
+                Create Calendar Event
+              </h2>
+            </div>
+            <div class="card__body">
+              <p class="card__description">
+                Create a new event on the connected Microsoft 365 calendar.
+              </p>
+              <form id="createEventForm">
+                <div class="form-group">
+                  <label class="form-label form-label--required" for="eventName">Event Name</label>
+                  <input type="text" id="eventName" class="form-input" placeholder="Meeting with team" required>
+                </div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label class="form-label form-label--required" for="eventStart">Start Date/Time</label>
+                    <input type="datetime-local" id="eventStart" class="form-input" required>
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label form-label--required" for="eventEnd">End Date/Time</label>
+                    <input type="datetime-local" id="eventEnd" class="form-input" required>
+                  </div>
+                </div>
+                <button type="submit" id="btnCreateEvent" class="btn btn--primary btn--block">
+                  <svg class="btn__icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+                  </svg>
+                  Create Event
+                </button>
+              </form>
+              <div id="createEventResponse" class="response-panel hidden">
+                <div class="response-panel__header">
+                  <span>Response</span>
+                  <div class="response-panel__status">
+                    <span id="createEventStatusCode" class="response-panel__status-code"></span>
+                  </div>
+                </div>
+                <div class="response-panel__body">
+                  <pre id="createEventJson" class="response-panel__json"></pre>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tenant Calendar Operations Card -->
+          <div class="card">
+            <div class="card__header">
+              <h2 class="card__title">
+                <svg class="card__icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11z"/>
+                </svg>
+                Tenant Calendar (App-Only)
+              </h2>
+              <span class="card__badge card__badge--tenant">Requires Admin Consent</span>
+            </div>
+            <div class="card__body">
+              <p class="card__description">
+                Access any user's calendar within the tenant using app-only authentication. Requires prior admin consent.
+              </p>
+              <div class="form-group">
+                <label class="form-label form-label--required" for="tenantCalendarUserId">User ID or Email</label>
+                <input type="text" id="tenantCalendarUserId" class="form-input" placeholder="user@contoso.com">
+                <p class="form-hint">The user whose calendar you want to access.</p>
+              </div>
+              <div class="btn-group">
+                <button id="btnGetTenantCalendars" class="btn btn--secondary">
+                  List Calendars
+                </button>
+                <button id="btnGetTenantEvents" class="btn btn--secondary">
+                  Get Events
+                </button>
+              </div>
+              <div id="tenantCalendarResponse" class="response-panel hidden">
+                <div class="response-panel__header">
+                  <span>Response</span>
+                  <div class="response-panel__status">
+                    <span id="tenantCalendarStatusCode" class="response-panel__status-code"></span>
+                  </div>
+                </div>
+                <div class="response-panel__body">
+                  <pre id="tenantCalendarJson" class="response-panel__json"></pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Email Tab -->
+      <div id="tab-email" class="tab-panel">
+        <div class="section-grid">
+          <!-- Send Email Card -->
+          <div class="card">
+            <div class="card__header">
+              <h2 class="card__title">
+                <svg class="card__icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/>
+                </svg>
+                Send Email
+              </h2>
+            </div>
+            <div class="card__body">
+              <p class="card__description">
+                Send an email through Microsoft 365 on behalf of the connected user.
+              </p>
+              <form id="sendEmailForm">
+                <div class="form-group">
+                  <label class="form-label form-label--required" for="emailTo">To</label>
+                  <input type="email" id="emailTo" class="form-input" placeholder="recipient@example.com" required>
+                </div>
+                <div class="form-group">
+                  <label class="form-label form-label--required" for="emailSubject">Subject</label>
+                  <input type="text" id="emailSubject" class="form-input" placeholder="Email subject" required>
+                </div>
+                <div class="form-group">
+                  <label class="form-label form-label--required" for="emailBody">Body</label>
+                  <textarea id="emailBody" class="form-textarea" placeholder="Email content..." rows="4" required></textarea>
+                </div>
+                <button type="submit" id="btnSendEmail" class="btn btn--primary btn--block">
+                  <svg class="btn__icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+                  </svg>
+                  Send Email
+                </button>
+              </form>
+              <div id="sendEmailResponse" class="response-panel hidden">
+                <div class="response-panel__header">
+                  <span>Response</span>
+                  <div class="response-panel__status">
+                    <span id="sendEmailStatusCode" class="response-panel__status-code"></span>
+                  </div>
+                </div>
+                <div class="response-panel__body">
+                  <pre id="sendEmailJson" class="response-panel__json"></pre>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Read Emails Card -->
+          <div class="card">
+            <div class="card__header">
+              <h2 class="card__title">
+                <svg class="card__icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M20 6H10v2h10v12H4V8h2v4h2V4h6V0H6v6H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/>
+                </svg>
+                Inbox
+              </h2>
+            </div>
+            <div class="card__body">
+              <p class="card__description">
+                Retrieve recent emails from the connected user's mailbox.
+              </p>
+              <div class="form-group">
+                <label class="form-label" for="emailLimit">Number of emails</label>
+                <select id="emailLimit" class="form-select">
+                  <option value="5">5 emails</option>
+                  <option value="10" selected>10 emails</option>
+                  <option value="25">25 emails</option>
+                  <option value="50">50 emails</option>
+                </select>
+              </div>
+              <button id="btnGetEmails" class="btn btn--secondary btn--block">
+                <svg class="btn__icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M19 8l-4 4h3c0 3.31-2.69 6-6 6-1.01 0-1.97-.25-2.8-.7l-1.46 1.46C8.97 19.54 10.43 20 12 20c4.42 0 8-3.58 8-8h3l-4-4zM6 12c0-3.31 2.69-6 6-6 1.01 0 1.97.25 2.8.7l1.46-1.46C15.03 4.46 13.57 4 12 4c-4.42 0-8 3.58-8 8H1l4 4 4-4H6z"/>
+                </svg>
+                Fetch Emails
+              </button>
+              <div id="getEmailsResponse" class="response-panel hidden">
+                <div class="response-panel__header">
+                  <span>Response</span>
+                  <div class="response-panel__status">
+                    <span id="getEmailsStatusCode" class="response-panel__status-code"></span>
+                  </div>
+                </div>
+                <div class="response-panel__body">
+                  <pre id="getEmailsJson" class="response-panel__json"></pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Users Tab -->
+      <div id="tab-users" class="tab-panel">
+        <div class="section-grid">
+          <!-- List Users Card -->
+          <div class="card">
+            <div class="card__header">
+              <h2 class="card__title">
+                <svg class="card__icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/>
+                </svg>
+                Tenant Users
+              </h2>
+              <span class="card__badge card__badge--tenant">App-Only</span>
+            </div>
+            <div class="card__body">
+              <p class="card__description">
+                List all users in the connected Microsoft 365 tenant. Requires app-only authentication with admin consent.
+              </p>
+              <div class="form-group">
+                <label class="form-label" for="userSearchFilter">Search Filter</label>
+                <input type="text" id="userSearchFilter" class="form-input" placeholder="Filter by display name or email...">
+                <p class="form-hint">Optional OData filter expression.</p>
+              </div>
+              <button id="btnListUsers" class="btn btn--primary btn--block">
+                <svg class="btn__icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+                </svg>
+                List Users
+              </button>
+              <div id="listUsersResponse" class="response-panel hidden">
+                <div class="response-panel__header">
+                  <span>Response</span>
+                  <div class="response-panel__status">
+                    <span id="listUsersStatusCode" class="response-panel__status-code"></span>
+                  </div>
+                </div>
+                <div class="response-panel__body">
+                  <pre id="listUsersJson" class="response-panel__json"></pre>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- User Details Card -->
+          <div class="card">
+            <div class="card__header">
+              <h2 class="card__title">
+                <svg class="card__icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/>
+                </svg>
+                User Details
+              </h2>
+              <span class="card__badge card__badge--tenant">App-Only</span>
+            </div>
+            <div class="card__body">
+              <p class="card__description">
+                Get detailed information about a specific user in the tenant.
+              </p>
+              <div class="form-group">
+                <label class="form-label form-label--required" for="userDetailId">User ID or Email</label>
+                <input type="text" id="userDetailId" class="form-input" placeholder="user@contoso.com or user-id">
+              </div>
+              <button id="btnGetUser" class="btn btn--secondary btn--block">
+                <svg class="btn__icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                </svg>
+                Get User Details
+              </button>
+              <div id="getUserResponse" class="response-panel hidden">
+                <div class="response-panel__header">
+                  <span>Response</span>
+                  <div class="response-panel__status">
+                    <span id="getUserStatusCode" class="response-panel__status-code"></span>
+                  </div>
+                </div>
+                <div class="response-panel__body">
+                  <pre id="getUserJson" class="response-panel__json"></pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="app-footer">
+      <p>
+        Built with <a href="https://github.com/checkfirst-ltd/nestjs-outlook" target="_blank">@checkfirst/nestjs-outlook</a>
+        | Microsoft 365 Integration for NestJS
+      </p>
+    </footer>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

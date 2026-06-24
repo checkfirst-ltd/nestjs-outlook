@@ -3,7 +3,9 @@ import { TypeOrmModule } from "@nestjs/typeorm";
 import { ScheduleModule } from "@nestjs/schedule";
 import { EventEmitterModule } from "@nestjs/event-emitter";
 import { MicrosoftAuthService } from "./services/auth/microsoft-auth.service";
+import { AppOnlyAuthService } from "./services/auth/app-only-auth.service";
 import { MicrosoftAuthController } from "./controllers/microsoft-auth.controller";
+import { TenantAuthController } from "./controllers/tenant-auth.controller";
 import { CalendarController } from "./controllers/calendar.controller";
 import { EmailController } from "./controllers/email.controller";
 import { OutlookWebhookSubscription } from "./entities/outlook-webhook-subscription.entity";
@@ -19,6 +21,8 @@ import { MicrosoftCsrfTokenRepository } from "./repositories/microsoft-csrf-toke
 import { CalendarService } from "./services/calendar/calendar.service";
 import { EmailService } from "./services/email/email.service";
 import { MicrosoftUser } from "./entities/microsoft-user.entity";
+import { MicrosoftTenant } from "./entities/microsoft-tenant.entity";
+import { MicrosoftTenantUser } from "./entities/microsoft-tenant-user.entity";
 import { OutlookDeltaLink } from "./entities/delta-link.entity";
 import { OutlookDeltaLinkRepository } from "./repositories/outlook-delta-link.repository";
 import { DeltaSyncService } from "./services/shared/delta-sync.service";
@@ -38,6 +42,10 @@ import {
   RedisOutlookRateLimitStore,
 } from "./services/shared/outlook-rate-limit.store";
 import { WebhookClientStateGuard } from "./guards/webhook-client-state.guard";
+import { TenantCalendarService } from "./services/tenant/tenant-calendar.service";
+import { TenantUserService } from "./services/tenant/tenant-user.service";
+import { MicrosoftTenantRepository } from "./repositories/microsoft-tenant.repository";
+import { MicrosoftTenantUserRepository } from "./repositories/microsoft-tenant-user.repository";
 
 export const { ConfigurableModuleClass, MODULE_OPTIONS_TOKEN } =
   new ConfigurableModuleBuilder<MicrosoftOutlookConfig>()
@@ -124,10 +132,18 @@ async function buildRateLimitStore(
       MicrosoftCsrfToken,
       MicrosoftUser,
       OutlookDeltaLink,
+      // Tenant entities for app-only authentication
+      MicrosoftTenant,
+      MicrosoftTenantUser,
     ]),
     EventEmitterModule.forRoot(),
   ],
-  controllers: [MicrosoftAuthController, CalendarController, EmailController],
+  controllers: [
+    MicrosoftAuthController,
+    TenantAuthController,
+    CalendarController,
+    EmailController,
+  ],
   providers: [
     {
       provide: MICROSOFT_CONFIG,
@@ -150,6 +166,7 @@ async function buildRateLimitStore(
     CalendarService,
     EmailService,
     MicrosoftAuthService,
+    AppOnlyAuthService,
     OutlookDeltaLinkRepository,
     DeltaSyncService,
     UserIdConverterService,
@@ -158,12 +175,18 @@ async function buildRateLimitStore(
     MicrosoftSubscriptionService,
     GraphRateLimiterService,
     WebhookClientStateGuard,
+    // Tenant services for app-only authentication
+    TenantCalendarService,
+    TenantUserService,
+    MicrosoftTenantRepository,
+    MicrosoftTenantUserRepository,
   ],
   exports: [
     CalendarService,
     RecurrenceService,
     EmailService,
     MicrosoftAuthService,
+    AppOnlyAuthService,
     OutlookDeltaLinkRepository,
     DeltaSyncService,
     UserIdConverterService,
@@ -172,6 +195,11 @@ async function buildRateLimitStore(
     OUTLOOK_LOCK_STORE,
     OUTLOOK_RATE_LIMIT_STORE,
     WebhookClientStateGuard,
+    // Tenant services for app-only authentication
+    TenantCalendarService,
+    TenantUserService,
+    MicrosoftTenantRepository,
+    MicrosoftTenantUserRepository,
   ],
 })
 export class MicrosoftOutlookModule extends ConfigurableModuleClass {}
