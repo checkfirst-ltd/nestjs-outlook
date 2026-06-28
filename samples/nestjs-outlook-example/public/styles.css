@@ -763,3 +763,110 @@ body {
     display: none;
   }
 }
+
+/* ============================================
+   Tenant onboarding wizard
+   ============================================ */
+.mode-toggle {
+  display: flex;
+  gap: 8px;
+}
+
+.mode-toggle__btn {
+  flex: 1;
+  padding: 10px 12px;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--neutral-90);
+  background-color: var(--neutral-0);
+  border: 1px solid var(--neutral-30);
+  border-radius: var(--border-radius);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mode-toggle__btn:hover {
+  border-color: var(--ms-blue);
+}
+
+.mode-toggle__btn--active {
+  color: var(--neutral-0);
+  background-color: var(--ms-blue);
+  border-color: var(--ms-blue);
+}
+
+.cert-output {
+  margin-top: 12px;
+  padding: 16px;
+  background-color: var(--neutral-5);
+  border: 1px solid var(--neutral-30);
+  border-radius: var(--border-radius);
+}
+
+.cert-output__row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.cert-output__label {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--neutral-90);
+}
+
+.cert-output__thumbprint {
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+  font-size: var(--font-size-sm);
+  word-break: break-all;
+  color: var(--ms-blue-dark);
+  background-color: var(--neutral-0);
+  border: 1px solid var(--neutral-20);
+  border-radius: var(--border-radius);
+  padding: 6px 8px;
+  user-select: all;
+}
+
+.azure-steps {
+  margin-top: 12px;
+}
+
+.azure-steps__title {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  margin: 0 0 6px;
+  color: var(--neutral-90);
+}
+
+.azure-steps ol {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.azure-steps li {
+  font-size: var(--font-size-sm);
+  color: var(--neutral-90);
+  margin-bottom: 6px;
+  line-height: 1.5;
+}
+
+.consent-status {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  font-size: var(--font-size-sm);
+  border-radius: var(--border-radius);
+  border: 1px solid transparent;
+}
+
+.consent-status--ok {
+  color: var(--ms-green-dark);
+  background-color: #f0f9f0;
+  border-color: #c8e6c8;
+}
+
+.consent-status--error {
+  color: var(--ms-red);
+  background-color: #fdf2f3;
+  border-color: #f5c6cb;
+}

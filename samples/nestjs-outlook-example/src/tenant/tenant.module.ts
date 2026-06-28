@@ -5,10 +5,36 @@ import {
   MicrosoftOutlookModule,
   MicrosoftTenant,
   MicrosoftTenantUser,
+  AppOnlyAuthConfig,
 } from '@checkfirst/nestjs-outlook';
 import { TenantController } from './tenant.controller';
 import { TenantService } from './tenant.service';
+import { CertificateService } from './certificate.service';
 import { getRequiredConfig } from '../shared/config.utils';
+
+/**
+ * Build the app-only (client-credentials) config from the shared certificate
+ * environment variables. Required so that string-based token acquisition
+ * (TenantUserService.listUsers, lookupUserByEmail, etc.) can resolve credentials.
+ *
+ * `tenantId` is only a placeholder to enable the feature — the multi-tenant
+ * services always pass an explicit tenant ID, which overrides it per request.
+ */
+function buildAppOnlyConfig(configService: ConfigService): AppOnlyAuthConfig | undefined {
+  const thumbprint = configService.get<string>('MICROSOFT_CERTIFICATE_THUMBPRINT');
+  const privateKeyPath = configService.get<string>('MICROSOFT_CERTIFICATE_KEY_PATH');
+  const certificatePath = configService.get<string>('MICROSOFT_CERTIFICATE_PATH');
+
+  if (!thumbprint || !privateKeyPath) {
+    return undefined;
+  }
+
+  return {
+    enabled: true,
+    tenantId: configService.get<string>('MICROSOFT_TENANT_ID') ?? 'common',
+    certificate: { thumbprint, privateKeyPath, certificatePath },
+  };
+}
 
 /**
  * Module for enterprise tenant calendar operations using app-only authentication.
@@ -34,18 +60,13 @@ import { getRequiredConfig } from '../shared/config.utils';
         redirectPath: configService.get('MICROSOFT_REDIRECT_PATH', 'auth/microsoft/callback'),
         backendBaseUrl: getRequiredConfig(configService, 'BACKEND_BASE_URL'),
         basePath: configService.get('MICROSOFT_BASE_PATH'),
-        // Tenant-specific configuration for app-only auth
-        tenant: {
-          tenantId: configService.get('MICROSOFT_TENANT_ID'),
-          certificatePath: configService.get('MICROSOFT_CERTIFICATE_PATH'),
-          certificateKeyPath: configService.get('MICROSOFT_CERTIFICATE_KEY_PATH'),
-          certificateThumbprint: configService.get('MICROSOFT_CERTIFICATE_THUMBPRINT'),
-        },
+        // App-only (client-credentials) config built from the shared certificate.
+        appOnly: buildAppOnlyConfig(configService),
       }),
     }),
   ],
   controllers: [TenantController],
-  providers: [TenantService],
+  providers: [TenantService, CertificateService],
   exports: [TenantService],
 })
 export class TenantModule {}

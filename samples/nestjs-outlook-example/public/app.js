@@ -51,7 +51,13 @@
   function setupEventListeners() {
     // Authentication
     document.getElementById('btnUserLogin').addEventListener('click', handleUserLogin);
-    document.getElementById('btnAdminConsent').addEventListener('click', handleAdminConsent);
+
+    // Tenant onboarding wizard
+    document.getElementById('modeShared').addEventListener('click', () => setMode('shared'));
+    document.getElementById('modeDedicated').addEventListener('click', () => setMode('dedicated'));
+    document.getElementById('btnGenerateCert').addEventListener('click', handleGenerateCert);
+    document.getElementById('btnDownloadCer').addEventListener('click', handleDownloadCer);
+    document.getElementById('btnRegisterConsent').addEventListener('click', handleRegisterConsent);
 
     // Calendar
     document.getElementById('createEventForm').addEventListener('submit', handleCreateEvent);
@@ -100,6 +106,7 @@
               tenantId: event.data.tenantId
             }, 200);
             updateConnectionStatus(true, 'Tenant Connected');
+            setConsentStatus('Tenant connected — admin consent granted and access verified.', true);
             break;
           case 'tenant-consent-failed':
           case 'tenant-consent-error':
@@ -107,6 +114,7 @@
               success: false,
               error: event.data.error || 'Consent failed'
             }, 400);
+            setConsentStatus(event.data.error || 'Admin consent failed.', false);
             break;
         }
       }
@@ -216,44 +224,160 @@
     }
   }
 
+  // ============================================
+  // Tenant Onboarding Wizard
+  // ============================================
+
+  // Current onboarding mode and the most recently generated certificate.
+  let currentMode = 'shared';
+  let generatedCert = null;
+
   /**
-   * Handle admin consent request
+   * Switch between the "shared" and "dedicated" onboarding models.
    */
-  async function handleAdminConsent() {
-    const button = document.getElementById('btnAdminConsent');
-    const state = document.getElementById('tenantState').value;
-    const tenantId = document.getElementById('microsoftTenantId').value || 'common';
+  function setMode(mode) {
+    currentMode = mode;
+    const dedicated = mode === 'dedicated';
+
+    document.getElementById('modeShared').classList.toggle('mode-toggle__btn--active', !dedicated);
+    document.getElementById('modeDedicated').classList.toggle('mode-toggle__btn--active', dedicated);
+    document.getElementById('clientIdGroup').classList.toggle('hidden', !dedicated);
+    document.getElementById('generateCertGroup').classList.toggle('hidden', !dedicated);
+
+    document.getElementById('modeHint').innerHTML = dedicated
+      ? 'Uses <strong>your own</strong> Azure app registration. Generate a certificate below, upload it to your app, then grant consent.'
+      : 'Uses the Checkfirst-owned app &amp; certificate. Just enter your Microsoft Tenant ID and grant consent — no certificate needed.';
+
+    // A mode switch invalidates any previously generated certificate.
+    generatedCert = null;
+    document.getElementById('certOutput').classList.add('hidden');
+  }
+
+  /**
+   * Generate a dedicated per-tenant certificate.
+   */
+  async function handleGenerateCert() {
+    const button = document.getElementById('btnGenerateCert');
+    const tenantId = document.getElementById('microsoftTenantId').value.trim();
+
+    if (!tenantId) {
+      setConsentStatus('Enter your Microsoft Tenant ID first.', false);
+      return;
+    }
 
     setButtonLoading(button, true);
-
     try {
-      const params = new URLSearchParams();
-      if (state) params.append('state', state);
-      if (tenantId) params.append('tenantId', tenantId);
-
-      const endpoint = `/auth/microsoft/tenant/admin-consent${params.toString() ? '?' + params.toString() : ''}`;
-      const result = await apiRequest('GET', endpoint);
-
+      const result = await apiRequest('POST', '/tenant/certificate/generate', { tenantId });
       showResponse('adminConsentResponse', 'adminConsentStatusCode', 'adminConsentJson', result.data, result.status);
 
-      if (result.ok && result.data.url) {
-        // Open admin consent URL in a popup
-        const width = 600;
-        const height = 700;
-        const left = (window.innerWidth - width) / 2 + window.screenX;
-        const top = (window.innerHeight - height) / 2 + window.screenY;
-
-        window.open(
-          result.data.url,
-          'AdminConsent',
-          `width=${width},height=${height},left=${left},top=${top},toolbar=no,menubar=no,scrollbars=yes`
-        );
+      if (result.ok) {
+        generatedCert = result.data;
+        document.getElementById('certThumbprint').textContent = result.data.thumbprint;
+        document.getElementById('certOutput').classList.remove('hidden');
+        setConsentStatus('Certificate generated. Upload the .cer to your Azure app, then grant consent.', true);
+      } else {
+        setConsentStatus('Certificate generation failed.', false);
       }
     } catch (error) {
       showResponse('adminConsentResponse', 'adminConsentStatusCode', 'adminConsentJson', { error: error.message }, 500);
     } finally {
       setButtonLoading(button, false);
     }
+  }
+
+  /**
+   * Download the generated public certificate as a .cer file.
+   */
+  function handleDownloadCer() {
+    if (!generatedCert || !generatedCert.certificatePem) return;
+    const tenantId = document.getElementById('microsoftTenantId').value.trim() || 'tenant';
+    const blob = new Blob([generatedCert.certificatePem], { type: 'application/x-x509-ca-cert' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${tenantId}.cer`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  /**
+   * Register the tenant and open the admin-consent popup.
+   */
+  async function handleRegisterConsent() {
+    const button = document.getElementById('btnRegisterConsent');
+    const tenantId = document.getElementById('microsoftTenantId').value.trim();
+
+    if (!tenantId) {
+      setConsentStatus('Enter your Microsoft Tenant ID.', false);
+      return;
+    }
+
+    let body;
+    if (currentMode === 'dedicated') {
+      const clientId = document.getElementById('tenantClientId').value.trim();
+      if (!clientId) {
+        setConsentStatus('Enter your Application (client) ID.', false);
+        return;
+      }
+      if (!generatedCert) {
+        setConsentStatus('Generate a certificate first.', false);
+        return;
+      }
+      body = {
+        mode: 'dedicated',
+        tenantId,
+        clientId,
+        certificateThumbprint: generatedCert.thumbprint,
+        certificateKeyPath: generatedCert.keyPath,
+        certificatePath: generatedCert.certPath,
+      };
+    } else {
+      body = { mode: 'shared', tenantId };
+    }
+
+    setButtonLoading(button, true);
+    try {
+      const result = await apiRequest('POST', '/tenant/register', body);
+      showResponse('adminConsentResponse', 'adminConsentStatusCode', 'adminConsentJson', result.data, result.status);
+
+      if (result.ok && result.data.adminConsentUrl) {
+        setConsentStatus('Tenant registered. Complete admin consent in the popup window…', true);
+        openConsentPopup(result.data.adminConsentUrl);
+      } else {
+        setConsentStatus('Registration failed — see the response below.', false);
+      }
+    } catch (error) {
+      showResponse('adminConsentResponse', 'adminConsentStatusCode', 'adminConsentJson', { error: error.message }, 500);
+    } finally {
+      setButtonLoading(button, false);
+    }
+  }
+
+  /**
+   * Open the Microsoft admin-consent URL in a centered popup.
+   */
+  function openConsentPopup(url) {
+    const width = 600;
+    const height = 700;
+    const left = (window.innerWidth - width) / 2 + window.screenX;
+    const top = (window.innerHeight - height) / 2 + window.screenY;
+    window.open(
+      url,
+      'AdminConsent',
+      `width=${width},height=${height},left=${left},top=${top},toolbar=no,menubar=no,scrollbars=yes`
+    );
+  }
+
+  /**
+   * Show a human-readable status line under the wizard.
+   */
+  function setConsentStatus(message, ok) {
+    const el = document.getElementById('consentStatus');
+    el.textContent = message;
+    el.classList.remove('hidden', 'consent-status--ok', 'consent-status--error');
+    el.classList.add(ok ? 'consent-status--ok' : 'consent-status--error');
   }
 
   // ============================================

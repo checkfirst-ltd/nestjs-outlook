@@ -1,4 +1,4 @@
-import { Controller, Get, Query, Logger, Res, HttpStatus, Optional } from '@nestjs/common';
+import { Controller, Get, Query, Logger, Res, HttpStatus, Optional, Inject } from '@nestjs/common';
 import { Response } from 'express';
 import { ApiTags, ApiResponse, ApiQuery, ApiOperation, ApiProduces } from '@nestjs/swagger';
 import { AppOnlyAuthService } from '../services/auth/app-only-auth.service';
@@ -24,9 +24,16 @@ export class TenantAuthController {
   private readonly logger = new Logger(TenantAuthController.name);
 
   constructor(
+    // NOTE: the `| null` union type makes TypeScript emit `Object` for this
+    // parameter in `design:paramtypes`, so Nest cannot infer the provider token
+    // by reflection. The explicit `@Inject(...)` token is required alongside
+    // `@Optional()` — without it the dependency is silently injected as
+    // `undefined`, making the controller always report "not configured".
     @Optional()
+    @Inject(AppOnlyAuthService)
     private readonly appOnlyAuthService: AppOnlyAuthService | null,
     @Optional()
+    @Inject(MicrosoftTenantRepository)
     private readonly tenantConnectionRepository: MicrosoftTenantRepository | null,
   ) {}
 
@@ -176,6 +183,20 @@ export class TenantAuthController {
   ) {
     const correlationId = `tenant-consent-${externalTenantId || 'unknown'}-${Date.now()}`;
 
+    // Observability: always record exactly what Microsoft returned on the
+    // admin-consent callback, before any branching. These are the raw query
+    // parameters Microsoft appends to the redirect URI.
+    this.logger.log(
+      `[${correlationId}] Admin consent callback received from Microsoft: ` +
+        JSON.stringify({
+          tenant: microsoftTenantId,
+          state: externalTenantId,
+          admin_consent: adminConsent,
+          error: error,
+          error_description: errorDescription,
+        }),
+    );
+
     try {
       // Check if app-only auth is configured
       if (!this.appOnlyAuthService || !this.tenantConnectionRepository) {
@@ -256,9 +277,14 @@ export class TenantAuthController {
       connection.status = MicrosoftTenantStatus.ACTIVE;
       await this.tenantConnectionRepository.save(connection);
 
-      // Test that we can obtain a token for this tenant
+      // Test that we can obtain a token for this tenant.
+      // Pass the tenant ENTITY (not the tenant-ID string) so credentials are
+      // resolved from the registered row (per-tenant certificate/key path).
+      // Passing a bare string would route to the module-level config instead,
+      // which fails with "Certificate credentials required" when only
+      // per-tenant credentials are configured.
       try {
-        await this.appOnlyAuthService.getAccessToken(microsoftTenantId);
+        await this.appOnlyAuthService.getAccessToken(connection);
         this.logger.log(`[${correlationId}] Successfully verified token acquisition for tenant ${microsoftTenantId}`);
       } catch (tokenError) {
         const tokenErrorMsg = tokenError instanceof Error ? tokenError.message : 'Unknown error';
