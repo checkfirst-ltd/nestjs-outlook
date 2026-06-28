@@ -220,6 +220,48 @@ export class TenantService {
   }
 
   /**
+   * List the calendars for a user in the active tenant (app-only).
+   */
+  async getUserCalendars(userId: string) {
+    const data = await this.graphGet(
+      `/users/${encodeURIComponent(userId)}/calendars?$select=id,name,owner,canEdit,isDefaultCalendar`,
+    );
+    return { calendars: data.value ?? [] };
+  }
+
+  /**
+   * List upcoming/recent events for a user in the active tenant (app-only).
+   */
+  async getUserEvents(userId: string) {
+    const data = await this.graphGet(
+      `/users/${encodeURIComponent(userId)}/events?$select=id,subject,start,end,location,organizer&$top=25`,
+    );
+    return { events: data.value ?? [] };
+  }
+
+  /**
+   * Perform a GET against Microsoft Graph using an app-only token for the
+   * active tenant. Credentials are resolved from the tenant entity, so this
+   * works for both shared and dedicated certificate models.
+   */
+  private async graphGet(path: string): Promise<{ value?: unknown[] }> {
+    const tenant = await this.getActiveTenant();
+    const token = await this.appOnlyAuthService.getAccessToken(tenant);
+
+    const response = await fetch(`https://graph.microsoft.com/v1.0${path}`, {
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    });
+
+    const data = (await response.json()) as { value?: unknown[]; error?: { message?: string } };
+    if (!response.ok) {
+      throw new BadRequestException(
+        data.error?.message ?? `Microsoft Graph request failed (${response.status})`,
+      );
+    }
+    return data;
+  }
+
+  /**
    * Look up a Microsoft user by email address within the tenant.
    */
   async lookupUser(email: string) {
