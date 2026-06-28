@@ -101,27 +101,76 @@
             </div>
             <div class="card__body">
               <p class="card__description">
-                Grant organization-wide access via admin consent. This enables app-only authentication using client credentials flow.
+                Self-serve onboarding for organization-wide (app-only) access. Choose how the
+                application is registered, then grant admin consent.
               </p>
+
+              <!-- Step 1: choose onboarding model -->
               <div class="form-group">
-                <label class="form-label" for="tenantState">External Tenant ID (State)</label>
-                <input type="text" id="tenantState" class="form-input" placeholder="e.g., my-org-tenant-001">
-                <p class="form-hint">Optional identifier to correlate the consent with your tenant record.</p>
+                <label class="form-label">Onboarding model</label>
+                <div class="mode-toggle">
+                  <button type="button" id="modeShared" class="mode-toggle__btn mode-toggle__btn--active">
+                    Shared (Checkfirst app)
+                  </button>
+                  <button type="button" id="modeDedicated" class="mode-toggle__btn">
+                    Dedicated (your app)
+                  </button>
+                </div>
+                <p class="form-hint" id="modeHint">
+                  Uses the Checkfirst-owned app &amp; certificate. Just enter your Microsoft Tenant ID
+                  and grant consent — no certificate needed.
+                </p>
               </div>
+
+              <!-- Step 2: inputs -->
               <div class="form-group">
-                <label class="form-label" for="microsoftTenantId">Microsoft Tenant ID</label>
-                <input type="text" id="microsoftTenantId" class="form-input" placeholder="common (default) or specific tenant ID">
-                <p class="form-hint">Use "common" for any tenant, or specify a directory ID.</p>
+                <label class="form-label form-label--required" for="microsoftTenantId">Microsoft Tenant ID</label>
+                <input type="text" id="microsoftTenantId" class="form-input" placeholder="directory GUID, e.g. f924fe0c-3938-47eb-b765-ac6a941fbd8f">
+                <p class="form-hint">Your Azure AD <strong>Directory (tenant) ID</strong> — found on the app registration's Overview page.</p>
               </div>
-              <button id="btnAdminConsent" class="btn btn--primary btn--block">
+              <div class="form-group hidden" id="clientIdGroup">
+                <label class="form-label form-label--required" for="tenantClientId">Application (client) ID</label>
+                <input type="text" id="tenantClientId" class="form-input" placeholder="your app registration's client ID (GUID)">
+                <p class="form-hint">The <strong>Application (client) ID</strong> of your own Azure app registration.</p>
+              </div>
+
+              <!-- Step 3 (dedicated only): generate certificate -->
+              <div class="form-group hidden" id="generateCertGroup">
+                <button id="btnGenerateCert" class="btn btn--secondary btn--block">
+                  <svg class="btn__icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/>
+                  </svg>
+                  Generate Certificate
+                </button>
+                <div id="certOutput" class="cert-output hidden">
+                  <div class="cert-output__row">
+                    <span class="cert-output__label">Thumbprint (x5t#S256)</span>
+                    <code id="certThumbprint" class="cert-output__thumbprint"></code>
+                  </div>
+                  <button id="btnDownloadCer" class="btn btn--secondary btn--block">Download .cer</button>
+                  <div class="azure-steps">
+                    <p class="azure-steps__title">Before granting consent, in the Azure Portal:</p>
+                    <ol>
+                      <li>Open <strong>App registrations → your app → Certificates &amp; secrets → Certificates</strong> and upload the downloaded <code>.cer</code>.</li>
+                      <li>Under <strong>API permissions</strong>, add the required <strong>Application</strong> permissions (e.g. <code>Calendars.ReadWrite</code>, <code>User.Read.All</code>).</li>
+                    </ol>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Step 4: register + consent -->
+              <button id="btnRegisterConsent" class="btn btn--primary btn--block">
                 <svg class="btn__icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                   <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/>
                 </svg>
-                Request Admin Consent
+                Register &amp; Grant Consent
               </button>
+
+              <p id="consentStatus" class="consent-status hidden"></p>
+
               <div id="adminConsentResponse" class="response-panel hidden">
                 <div class="response-panel__header">
-                  <span>Admin Consent URL</span>
+                  <span>Response</span>
                   <div class="response-panel__status">
                     <span id="adminConsentStatusCode" class="response-panel__status-code"></span>
                   </div>

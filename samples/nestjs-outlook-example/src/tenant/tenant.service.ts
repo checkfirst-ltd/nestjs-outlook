@@ -1,15 +1,20 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import {
   TenantCalendarService,
   TenantUserService,
+  AppOnlyAuthService,
   MicrosoftTenant,
   MicrosoftTenantUser,
   MicrosoftTenantStatus,
 } from '@checkfirst/nestjs-outlook';
 import { CreateTenantEventDto } from './dto/create-tenant-event.dto';
 import { RegisterUserMappingDto } from './dto/lookup-user.dto';
+import { RegisterTenantDto } from './dto/register-tenant.dto';
+import { GenerateCertificateDto } from './dto/generate-certificate.dto';
+import { CertificateService } from './certificate.service';
 
 /**
  * Service for managing tenant-wide calendar operations.
@@ -27,11 +32,143 @@ export class TenantService {
   constructor(
     private readonly tenantCalendarService: TenantCalendarService,
     private readonly tenantUserService: TenantUserService,
+    private readonly appOnlyAuthService: AppOnlyAuthService,
+    private readonly certificateService: CertificateService,
+    private readonly configService: ConfigService,
     @InjectRepository(MicrosoftTenant)
     private readonly tenantRepository: Repository<MicrosoftTenant>,
     @InjectRepository(MicrosoftTenantUser)
     private readonly tenantUserRepository: Repository<MicrosoftTenantUser>,
   ) {}
+
+  /**
+   * Generate a self-signed certificate for app-only authentication.
+   * `shared: true` generates the one-time Checkfirst shared-app certificate;
+   * otherwise a per-tenant certificate is generated for `tenantId`.
+   */
+  generateCertificate(dto: GenerateCertificateDto) {
+    if (dto.shared) {
+      return this.certificateService.generateSharedCertificate();
+    }
+
+    if (!dto.tenantId) {
+      throw new BadRequestException('tenantId is required to generate a dedicated certificate.');
+    }
+
+    return this.certificateService.generateTenantCertificate(dto.tenantId);
+  }
+
+  /**
+   * Register (or update) a Microsoft 365 tenant for app-only access.
+   *
+   * This inserts the `microsoft_tenants` row that the admin-consent callback
+   * later activates. The tenant starts in PENDING_CONSENT status; an Azure AD
+   * administrator must then visit the returned `adminConsentUrl` to grant
+   * tenant-wide application permissions.
+   *
+   * Two onboarding models are supported:
+   * - `shared`: credentials default to the Checkfirst app's configured client ID
+   *   and shared certificate (the customer only supplies `tenantId`).
+   * - `dedicated`: the customer supplies their own `clientId` plus the per-tenant
+   *   certificate fields (typically from POST /tenant/certificate/generate).
+   */
+  async registerTenant(dto: RegisterTenantDto) {
+    const mode = dto.mode ?? 'shared';
+    this.logger.log(`Registering tenant ${dto.tenantId} (mode ${mode})`);
+
+    const credentials = this.resolveRegistrationCredentials(dto, mode);
+
+    const existing = await this.tenantRepository.findOne({
+      where: { tenantId: dto.tenantId },
+    });
+
+    const tenant = existing ?? this.tenantRepository.create({ tenantId: dto.tenantId });
+
+    tenant.clientId = credentials.clientId;
+    tenant.certificateThumbprint = credentials.certificateThumbprint;
+    tenant.certificatePath = credentials.certificatePath;
+    tenant.certificateKeyPath = credentials.certificateKeyPath;
+    tenant.isActive = true;
+    // Preserve ACTIVE status on re-registration; otherwise (re)start the consent flow.
+    if (tenant.status !== MicrosoftTenantStatus.ACTIVE) {
+      tenant.status = MicrosoftTenantStatus.PENDING_CONSENT;
+    }
+
+    const saved = await this.tenantRepository.save(tenant);
+
+    // The consent callback looks the tenant up by the `state` parameter, which
+    // this implementation maps to `tenantId` — so state and tenantId are both
+    // the directory GUID.
+    const adminConsentUrl = this.appOnlyAuthService.getAdminConsentUrl(
+      saved.tenantId,
+      saved.tenantId,
+      saved.clientId,
+    );
+
+    return {
+      id: saved.id,
+      tenantId: saved.tenantId,
+      clientId: saved.clientId,
+      status: saved.status,
+      isActive: saved.isActive,
+      adminConsentUrl,
+    };
+  }
+
+  /**
+   * Resolve the client ID + certificate fields to persist, based on the
+   * onboarding mode. In shared mode they come from the Checkfirst app config;
+   * in dedicated mode they come from the request (the tenant's own app + cert).
+   */
+  private resolveRegistrationCredentials(
+    dto: RegisterTenantDto,
+    mode: 'shared' | 'dedicated',
+  ): {
+    clientId: string;
+    certificateThumbprint: string;
+    certificatePath: string | null;
+    certificateKeyPath: string | null;
+  } {
+    if (mode === 'dedicated') {
+      if (!dto.clientId) {
+        throw new BadRequestException('clientId is required in "dedicated" mode.');
+      }
+      if (!dto.certificateThumbprint || !dto.certificateKeyPath) {
+        throw new BadRequestException(
+          'certificateThumbprint and certificateKeyPath are required in "dedicated" mode. ' +
+            'Generate them first with POST /tenant/certificate/generate.',
+        );
+      }
+      return {
+        clientId: dto.clientId,
+        certificateThumbprint: dto.certificateThumbprint,
+        certificatePath: dto.certificatePath ?? null,
+        certificateKeyPath: dto.certificateKeyPath,
+      };
+    }
+
+    // shared mode — default everything from the Checkfirst app config.
+    const clientId = this.appOnlyAuthService.getClientId();
+    const certificateThumbprint = this.configService.get<string>('MICROSOFT_CERTIFICATE_THUMBPRINT');
+    const certificateKeyPath = this.configService.get<string>('MICROSOFT_CERTIFICATE_KEY_PATH');
+    const certificatePath = this.configService.get<string>('MICROSOFT_CERTIFICATE_PATH');
+
+    if (!certificateThumbprint || !certificateKeyPath) {
+      throw new BadRequestException(
+        'Shared certificate is not configured. Run the one-time setup ' +
+          '(POST /tenant/certificate/generate { "shared": true }), upload certs/shared.crt to ' +
+          'the Checkfirst Azure app, then set MICROSOFT_CERTIFICATE_THUMBPRINT, ' +
+          'MICROSOFT_CERTIFICATE_KEY_PATH and MICROSOFT_CERTIFICATE_PATH and restart.',
+      );
+    }
+
+    return {
+      clientId,
+      certificateThumbprint,
+      certificatePath: certificatePath ?? null,
+      certificateKeyPath,
+    };
+  }
 
   /**
    * Get the active tenant configuration.
@@ -52,6 +189,34 @@ export class TenantService {
     }
 
     return tenant;
+  }
+
+  /**
+   * List users in the active tenant (app-only). Optional OData `$filter`.
+   */
+  async listUsers(filter?: string) {
+    const tenant = await this.getActiveTenant();
+    this.logger.log(`Listing users in tenant ${tenant.tenantId}${filter ? ` (filter: ${filter})` : ''}`);
+    return this.tenantUserService.listUsers(tenant.tenantId, filter ? { filter } : undefined);
+  }
+
+  /**
+   * Get a single Microsoft user in the active tenant by UPN/email or object ID.
+   */
+  async getUser(userIdOrUpn: string) {
+    const tenant = await this.getActiveTenant();
+    this.logger.log(`Getting user ${userIdOrUpn} in tenant ${tenant.tenantId}`);
+
+    // A value containing "@" is treated as a UPN/email; otherwise as an object ID.
+    const user = userIdOrUpn.includes('@')
+      ? await this.tenantUserService.lookupUserByUpn(tenant.tenantId, userIdOrUpn)
+      : await this.tenantUserService.getUserById(tenant.tenantId, userIdOrUpn);
+
+    if (!user) {
+      throw new NotFoundException(`User not found: ${userIdOrUpn}`);
+    }
+
+    return user;
   }
 
   /**

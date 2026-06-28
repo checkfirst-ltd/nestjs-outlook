@@ -338,12 +338,23 @@ export class AppOnlyAuthService implements OnModuleInit {
         const errorCode = errorData?.error as string | undefined;
         const errorDescription = errorData?.error_description as string | undefined;
 
+        // Surface the full Azure AD diagnostic payload. `error_codes` carries
+        // the AADSTS numbers, and trace_id/correlation_id let you cross-reference
+        // the failure in the Entra sign-in logs. These are the fields Microsoft
+        // returns on a failed client-credentials token request.
         this.logger.error(
           `Failed to obtain app-only token for tenant ${credentials.tenantId}: ${errorCode ?? 'unknown'} - ${errorDescription ?? error.message}`,
           {
             status: error.response?.status,
             errorCode,
             errorDescription,
+            errorCodes: errorData?.error_codes,
+            traceId: errorData?.trace_id,
+            correlationId: errorData?.correlation_id,
+            timestamp: errorData?.timestamp,
+            errorUri: errorData?.error_uri,
+            tenantId: credentials.tenantId,
+            tokenEndpoint,
           }
         );
 

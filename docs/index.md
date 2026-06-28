@@ -62,6 +62,7 @@ dep:
 - [TenantCalendarService Reference](reference/tenant-calendar-service.md)
 - [TenantUserService Reference](reference/tenant-user-service.md)
 - [AppOnlyAuthService Reference](reference/app-only-auth-service.md)
+- [Tenant-Wide Authentication](explanation/tenant-wide-authentication.md)
 - [Configuration Reference](reference/configuration.md)
 - [MicrosoftSubscriptionService Reference](reference/subscription-service.md)
 - [OutlookEventTypes Reference](reference/event-types.md)
@@ -74,6 +75,7 @@ dep:
 
 - [Change Synchronization](explanation/change-synchronization.md)
 - [Shared State and Concurrency](explanation/shared-state-and-concurrency.md)
+- [Tenant-Wide Authentication](explanation/tenant-wide-authentication.md)
 - [Architecture Overview](explanation/architecture-overview.md)
 - [DR-001: Pluggable Shared-State Backend (Redis or In-Memory)](decision-records/dr-001-pluggable-shared-state-backend.md)
 - [DR-003: Provider-Agnostic Permission Scopes](decision-records/dr-003-provider-agnostic-permission-scopes.md)
@@ -97,6 +99,7 @@ dep:
 
 - [Change Synchronization](explanation/change-synchronization.md)
 - [Shared State and Concurrency](explanation/shared-state-and-concurrency.md)
+- [Tenant-Wide Authentication](explanation/tenant-wide-authentication.md)
 - [Architecture Overview](explanation/architecture-overview.md)
 - [DR-001: Pluggable Shared-State Backend (Redis or In-Memory)](decision-records/dr-001-pluggable-shared-state-backend.md)
 - [DR-003: Provider-Agnostic Permission Scopes](decision-records/dr-003-provider-agnostic-permission-scopes.md)
@@ -134,6 +137,7 @@ dep:
 
 - [Change Synchronization](explanation/change-synchronization.md)
 - [Shared State and Concurrency](explanation/shared-state-and-concurrency.md)
+- [Tenant-Wide Authentication](explanation/tenant-wide-authentication.md)
 - [Architecture Overview](explanation/architecture-overview.md)
 
 ### How To
