@@ -140,6 +140,34 @@ export class TenantController {
   }
 
   /**
+   * List a user's calendars in the active tenant.
+   */
+  @Get('users/:userId/calendars')
+  @ApiOperation({
+    summary: 'List user calendars',
+    description: "Lists the specified user's calendars in the active tenant via app-only auth.",
+  })
+  @ApiParam({ name: 'userId', description: 'Microsoft UPN/email or object ID' })
+  @ApiResponse({ status: 200, description: 'Calendars listed successfully' })
+  async getUserCalendars(@Param('userId') userId: string) {
+    return this.tenantService.getUserCalendars(userId);
+  }
+
+  /**
+   * List a user's calendar events in the active tenant.
+   */
+  @Get('users/:userId/events')
+  @ApiOperation({
+    summary: 'List user events',
+    description: "Lists the specified user's calendar events in the active tenant via app-only auth.",
+  })
+  @ApiParam({ name: 'userId', description: 'Microsoft UPN/email or object ID' })
+  @ApiResponse({ status: 200, description: 'Events listed successfully' })
+  async getUserEvents(@Param('userId') userId: string) {
+    return this.tenantService.getUserEvents(userId);
+  }
+
+  /**
    * Get the default calendar ID for a user.
    */
   @Get('users/:externalUserId/calendar')
