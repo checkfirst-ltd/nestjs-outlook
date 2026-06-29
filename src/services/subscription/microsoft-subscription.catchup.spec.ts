@@ -61,7 +61,9 @@ describe('MicrosoftSubscriptionService — catch-up + staleness config', () => {
       throw new Error('bus down');
     });
 
-    expect(() => svc.triggerCatchUpReconcile(1, 'renew')).not.toThrow();
+    expect(() => {
+      svc.triggerCatchUpReconcile(1, 'renew');
+    }).not.toThrow();
   });
 
   it('defaults staleNotificationThresholdHours to 24h', () => {
