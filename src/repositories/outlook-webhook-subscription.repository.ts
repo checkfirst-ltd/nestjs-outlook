@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, MoreThan, In, Not } from 'typeorm';
+import { Repository, MoreThan, LessThanOrEqual, In, Not } from 'typeorm';
 import { OutlookWebhookSubscription } from '../entities/outlook-webhook-subscription.entity';
 import { TtlCache } from '../utils/ttl-cache.util';
 
@@ -168,5 +168,20 @@ export class OutlookWebhookSubscriptionRepository {
 
   async count(options: Parameters<Repository<OutlookWebhookSubscription>['count']>[0]): Promise<number> {
     return await this.repository.count(options);
+  }
+
+  /**
+   * Find active subscriptions that are expiring before the given threshold date.
+   * Used by the renewal worker to proactively renew subscriptions before they expire.
+   * @param threshold - Date threshold; subscriptions expiring before this date are returned
+   * @returns Array of active subscriptions expiring soon
+   */
+  async findExpiringSoon(threshold: Date): Promise<OutlookWebhookSubscription[]> {
+    return this.repository.find({
+      where: {
+        isActive: true,
+        expirationDateTime: LessThanOrEqual(threshold),
+      },
+    });
   }
 }

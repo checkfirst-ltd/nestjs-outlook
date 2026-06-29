@@ -1,9 +1,8 @@
-import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { LifecycleEventType } from '../../enums/lifecycle-event-types.enum';
 import { OutlookEventTypes } from '../../enums/event-types.enum';
 import { OutlookWebhookSubscriptionRepository } from '../../repositories/outlook-webhook-subscription.repository';
-import { CalendarService } from './calendar.service';
 import { MicrosoftSubscriptionService } from '../subscription/microsoft-subscription.service';
 import { OutlookWebhookNotificationItemDto } from '../../dto/outlook-webhook-notification.dto';
 import { UserIdConverterService } from '../shared/user-id-converter.service';
@@ -21,8 +20,6 @@ export class LifecycleEventHandlerService {
   private readonly logger = new Logger(LifecycleEventHandlerService.name);
 
   constructor(
-    @Inject(forwardRef(() => CalendarService))
-    private readonly calendarService: CalendarService,
     private readonly subscriptionService: MicrosoftSubscriptionService,
     private readonly subscriptionRepository: OutlookWebhookSubscriptionRepository,
     private readonly eventEmitter: EventEmitter2,
@@ -233,6 +230,10 @@ export class LifecycleEventHandlerService {
           `[SUBSCRIPTION_REMOVED] Successfully re-created subscription for user ${subscription.userId}`,
         );
 
+        // The new subscription only delivers notifications from now on; reuse the persistent delta
+        // cursor to pull anything that changed while the old subscription was gone.
+        this.subscriptionService.triggerCatchUpReconcile(subscription.userId, 'subscription_removed');
+
         this.eventEmitter.emit(OutlookEventTypes.SUBSCRIPTION_RECREATED, {
           subscriptionId,
           tenantId,
@@ -312,33 +313,27 @@ export class LifecycleEventHandlerService {
         };
       }
 
-      // Trigger delta sync to catch up on missed changes AND process them
+      // Recover missed changes via the safe, cursor-gated reconcile path. We deliberately do NOT
+      // use the legacy CalendarService.syncDeltaChanges here: that advances the delta cursor during
+      // the fetch (before changes are persisted) and processes fire-and-forget, so a failure loses
+      // the change permanently. The reconcile triggered below reads from the persistent cursor and
+      // only advances it after durable persistence (see reconcileUserInternal).
       this.logger.log(
-        `[MISSED] Starting delta sync for user ${subscription.userId} to recover missed changes`,
+        `[MISSED] Triggering catch-up reconcile for user ${subscription.userId} to recover missed changes`,
       );
 
-      const externalUserId = await this.userIdConverter.internalToExternal(subscription.userId);
+      this.subscriptionService.triggerCatchUpReconcile(subscription.userId, 'lifecycle-missed');
 
-      const changesCount = await this.calendarService.syncDeltaChanges(
-        externalUserId,
-        subscriptionId,
-      );
-
-      this.logger.log(
-        `[MISSED] Delta sync completed. Found ${changesCount} changes for subscription ${subscriptionId}`,
-      );
-
-      // Emit event for monitoring
+      // Emit event for monitoring (observability only).
       this.eventEmitter.emit(OutlookEventTypes.LIFECYCLE_MISSED, {
         subscriptionId,
         tenantId,
         userId: subscription.userId,
-        changesFound: changesCount,
       });
 
       return {
         success: true,
-        message: `Delta sync completed. Found ${changesCount} changes.`,
+        message: 'Catch-up reconcile triggered to recover missed changes.',
       };
     } catch (error) {
       const errorMessage =
