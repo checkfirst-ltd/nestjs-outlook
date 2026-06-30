@@ -14,7 +14,7 @@
 
 An opinionated NestJS module for Microsoft Outlook integration that provides easy access to Microsoft Graph API for emails, calendars, and more.
 
-## Why We Built This
+## Why We Built This 
 
 At Checkfirst, we believe that tools should be as transparent as the systems they support. This library is part of our commitment to the Testing, Inspection, Certification, and Compliance (TICC) industry, where we help transform operations through intelligent automation. While our [ScheduleAI platform](https://www.checkfirst.ai/scheduleai) helps organizations optimize inspections, audits and fieldwork, we recognize that true innovation requires open collaboration. By sharing the Microsoft integration layer that powers our authentication, calendar, and email services, we're enabling developers to build robust, enterprise-grade applications without reimplementing complex Microsoft Graph protocols. Whether you're creating scheduling systems, communication tools, or productivity enhancers, this library embodies our philosophy that trust in technology starts with transparency and accessibility.
 
