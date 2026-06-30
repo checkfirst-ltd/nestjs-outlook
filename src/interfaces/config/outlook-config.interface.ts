@@ -24,21 +24,6 @@ export interface MicrosoftOutlookStateConfig {
 }
 
 /**
- * Optional tuning for subscription staleness detection.
- *
- * Subscription renewal is now handled proactively by the SubscriptionRenewalWorker,
- * which renews subscriptions before they expire. This config only controls staleness
- * detection for subscriptions that haven't received notifications.
- */
-export interface SubscriptionHealthConfig {
-  /**
-   * A subscription with no change notification in this many hours is treated as stale and gets a
-   * catch-up reconcile (and a LIFECYCLE_MISSED observability event). Defaults to 24.
-   */
-  staleNotificationThresholdHours?: number;
-}
-
-/**
  * Configuration interface for Microsoft Outlook OAuth settings
  */
 export interface MicrosoftOutlookConfig {
@@ -84,9 +69,4 @@ export interface MicrosoftOutlookConfig {
    * suppress duplicate emails for longer.
    */
   revocationEmitFlagTtlMs?: number;
-  /**
-   * Optional tuning for subscription staleness detection. Subscription renewal is handled
-   * proactively by the SubscriptionRenewalWorker. See {@link SubscriptionHealthConfig}.
-   */
-  subscription?: SubscriptionHealthConfig;
 }
