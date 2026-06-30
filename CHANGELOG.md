@@ -1,5 +1,12 @@
 # Changelog
 
+## [9.0.3](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v9.0.2...v9.0.3) (2026-06-30)
+
+
+### Bug Fixes
+
+* dummy change for ([#158](https://github.com/checkfirst-ltd/nestjs-outlook/issues/158)) ([#159](https://github.com/checkfirst-ltd/nestjs-outlook/issues/159)) ([cb9b6a5](https://github.com/checkfirst-ltd/nestjs-outlook/commit/cb9b6a5c1103202622b06b6661cb39674b02e218))
+
 ## [9.0.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v9.0.1...v9.0.2) (2026-06-29)
 
 
