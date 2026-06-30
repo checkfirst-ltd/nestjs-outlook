@@ -1,5 +1,12 @@
 # Changelog
 
+## [9.0.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v9.0.1...v9.0.2) (2026-06-29)
+
+
+### Bug Fixes
+
+* subscription renewal threshold ([#156](https://github.com/checkfirst-ltd/nestjs-outlook/issues/156)) ([f023b96](https://github.com/checkfirst-ltd/nestjs-outlook/commit/f023b968a9161038fa31c55f5864a6bdcd3fdc0a))
+
 ## [9.0.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v9.0.0...v9.0.1) (2026-06-18)
 
 
