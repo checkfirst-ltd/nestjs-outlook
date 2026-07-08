@@ -31,20 +31,32 @@ zrok2 create name nestjs-outlook-demo        # → https://nestjs-outlook-demo.s
 #    https://nestjs-outlook-demo.shares.zrok.io/auth/microsoft/callback
 #    (append /<MICROSOFT_BASE_PATH> before /auth/... if you set that var)
 
-# 3. (once) point the app at the public URL
+# 3. (once) point the app at the public URL and let it start the tunnel itself
 #    in .env:  BACKEND_BASE_URL=https://nestjs-outlook-demo.shares.zrok.io
+#              ZROK_AUTOSTART=true
 
-# 4. (per run) start the demo — it listens on :8888
+# 4. (per run) start the demo — it listens on :8888 AND opens the tunnel on boot
 npm run start:dev
 
-# 5. (per run) start the tunnel in a second terminal
-npm run zrok:share
-
-# 6. (per run, optional) confirm everything lines up
+# 5. (per run, optional) confirm everything lines up
 npm run zrok:preflight
 ```
 
 Then open `https://nestjs-outlook-demo.shares.zrok.io` and run the OAuth login.
+
+## Automatic tunnel (`ZROK_AUTOSTART`)
+
+Set `ZROK_AUTOSTART=true` in `.env` and the app starts the tunnel itself right after it
+begins listening (`src/main.ts` → `startZrokTunnel()` in `src/zrok-autostart.ts`) — no second
+terminal, no `npm run zrok:share`. The tunnel is a child process of the app, so stopping the app
+(Ctrl-C) tears the tunnel down with it and you don't leak a share.
+
+- The reserved name defaults to the one in `BACKEND_BASE_URL` (e.g. `nestjs-outlook-demo` from
+  `https://nestjs-outlook-demo.shares.zrok.io`); override with `ZROK_NAME`.
+- Leave `ZROK_AUTOSTART` unset/`false` for plain localhost runs — the app skips the tunnel entirely.
+- If `zrok2` isn't installed/found, the app logs a warning and keeps running on localhost.
+
+`npm run zrok:share` still works if you'd rather run the tunnel in its own terminal.
 
 ## The npm scripts
 

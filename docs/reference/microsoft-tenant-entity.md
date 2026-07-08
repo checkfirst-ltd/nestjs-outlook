@@ -1,26 +1,35 @@
 ---
 dep:
   type: reference
-  audience: [app-developer, ai-agent, library-contributor]
+  audience:
+    - app-developer
+    - ai-agent
+    - library-contributor
   owner: "@checkfirst-ltd"
   created: 2026-06-23
   last_verified: 2026-06-23T12:00:00+03:00
   confidence: high
   depends_on:
     - src/entities/microsoft-tenant.entity.ts
+    - src/entities/microsoft-user.entity.ts
     - src/enums/microsoft-tenant-status.enum.ts
     - src/repositories/microsoft-tenant.repository.ts
-  tags: [entity, tenant, database, app-only, typeorm]
+  tags:
+    - entity
+    - tenant
+    - database
+    - app-only
+    - typeorm
   links:
     - target: ./microsoft-tenant-status.md
       rel: USES
-    - target: ./microsoft-tenant-user-entity.md
-      rel: NEXT
     - target: ./app-only-auth-service.md
       rel: USES
     - target: ../how-to/connect-enterprise-tenant.md
       rel: NEXT
     - target: ../decision-records/dr-006-dual-auth-architecture.md
+      rel: NEXT
+    - target: ./microsoft-user-entity.md
       rel: NEXT
 ---
 
@@ -62,7 +71,7 @@ Exported from `@checkfirst/nestjs-outlook`.
 
 | Relation | Target Entity | Type | Description |
 |----------|---------------|------|-------------|
-| (inverse) | `MicrosoftTenantUser` | OneToMany | Users mapped within this tenant. |
+| (inverse) | `MicrosoftUser` | OneToMany (via `tenant_id`) | Users mapped into this tenant for app-only access. |
 
 ## Repository
 
@@ -96,4 +105,4 @@ Created by migration `1750000000000-AddMicrosoftTenantTables`.
 
 - [AppOnlyAuthService](app-only-auth-service.md) — loads tenant credentials for token acquisition.
 - [TenantAuthController](../how-to/connect-enterprise-tenant.md) — processes admin consent callbacks.
-- [MicrosoftTenantUser entity](microsoft-tenant-user-entity.md) — references tenant via foreign key.
+- [MicrosoftUser entity](microsoft-user-entity.md) — references tenant via `tenant_id` foreign key.

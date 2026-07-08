@@ -1,15 +1,23 @@
 ---
 dep:
   type: decision-record
-  audience: [library-contributor, ai-agent]
+  audience:
+    - library-contributor
+    - ai-agent
   owner: "@checkfirst-ltd"
   created: 2026-06-23
   last_verified: 2026-06-23T12:00:00+03:00
   confidence: high
   depends_on:
+    - src/entities/microsoft-user.entity.ts
     - src/services/tenant/tenant-user.service.ts
-    - src/entities/tenant-user-mapping.entity.ts
-  tags: [decision, users, mapping, identity, tenant, app-only]
+  tags:
+    - decision
+    - users
+    - mapping
+    - identity
+    - tenant
+    - app-only
   links:
     - target: ../reference/tenant-user-service.md
       rel: DECIDES
@@ -20,6 +28,29 @@ dep:
 ---
 
 # DR-008: Tenant User Mapping Strategy
+
+> **Update (2026-07-08) — storage consolidated onto `MicrosoftUser`.**
+> The original decision persisted mappings in a **separate** `MicrosoftTenantUser` /
+> `TenantUserMapping` table. That has been reversed: tenant mappings now live on the
+> **shared `microsoft_users` table** as additional nullable columns
+> (`tenant_id`, `microsoft_user_id`, `user_principal_name`), and the delegated token
+> columns (`access_token`, `refresh_token`, `token_expiry`, `scopes`) are now nullable so
+> an app-only user can exist without tokens.
+>
+> **Rationale for the reversal:**
+> - **One identity, one row.** A host user is a single person whether reached via delegated
+>   OAuth or app-only. Keeping one row (keyed by `externalUserId`) means shared user
+>   features — default calendar, active flag, future per-user settings — are implemented and
+>   migrated **once**, not per table.
+> - **Same operations, different namespace.** Delegated and app-only differ only in the Graph
+>   path (`/me/*` vs `/users/{upn}/*`), so the underlying identity model is the same.
+> - **No collision.** Delegated code looks users up by `externalUserId` alone; a parallel
+>   tenant table sharing that id would make those lookups ambiguous. `registerUserMapping`
+>   therefore **upserts onto the existing row** rather than creating a second one.
+>
+> The mapping *contract* below (explicit mapping, bidirectional lookup, validation on map,
+> no auto-sync) is unchanged — only the physical storage moved. The "Entity design" and
+> "Stored in module's database" sections are superseded by this note.
 
 ## Context
 
@@ -56,8 +87,10 @@ const events = await tenantCalendar.listEvents(upn);
    rather than the module guessing the association. This avoids false positives when
    email addresses don't match UPNs or when the host's user model doesn't include emails.
 
-2. **Stored in module's database:** Mappings are persisted in a `TenantUserMapping` entity
-   alongside other module tables. The host doesn't need to add columns to its user table.
+2. **Stored on the shared `MicrosoftUser` row:** Mappings are persisted as tenant columns
+   on the existing `microsoft_users` table (one row per `externalUserId`), not a separate
+   table. The host doesn't need to add columns to its own user table. See the update note
+   above for why storage was consolidated.
 
 3. **Bidirectional lookup:** Both `resolveUserPrincipalName(externalUserId)` and
    `resolveExternalUserId(upn)` are supported. Reverse lookup is useful when processing
@@ -72,22 +105,28 @@ const events = await tenantCalendar.listEvents(upn);
 
 ## Entity design
 
+The mapping columns live on the shared `microsoft_users` table (see
+[MicrosoftUser entity](../reference/microsoft-user-entity.md)). A single row per host user
+carries delegated tokens and/or app-only tenant identity:
+
 ```
-┌─────────────────────────────────────────────────┐
-│             TenantUserMapping                   │
-├─────────────────────────────────────────────────┤
-│ id              │ number (PK)                   │
-│ externalUserId  │ string (unique index)         │
-│ userPrincipalName │ string (unique index)       │
-│ microsoftUserId │ string                        │
-│ tenantId        │ string                        │
-│ createdAt       │ datetime                      │
-│ updatedAt       │ datetime                      │
-└─────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│                       microsoft_users                         │
+├───────────────────────────────────────────────────────────────┤
+│ id                  │ number (PK)                             │
+│ external_user_id    │ string (indexed) — the mapping key      │
+│ ── app-only (tenant) mapping columns ──                       │
+│ tenant_id           │ FK → microsoft_tenants.id (nullable)    │
+│ microsoft_user_id   │ string (indexed, nullable)              │
+│ user_principal_name │ string (nullable)                       │
+│ ── delegated OAuth columns (nullable for app-only users) ──   │
+│ access_token / refresh_token / token_expiry / scopes          │
+└───────────────────────────────────────────────────────────────┘
 ```
 
-Unique indexes on both `externalUserId` and `userPrincipalName` ensure one-to-one mapping
-and enable efficient lookups in both directions.
+Lookups are keyed by `external_user_id` (indexed) with `microsoft_user_id` also indexed for
+reverse resolution. `registerUserMapping` upserts by `external_user_id` so each host user
+maps to exactly one row.
 
 ## Alternatives considered
 
@@ -141,7 +180,8 @@ On every operation, call Graph to look up the user by email or other attribute.
 
 - **Provisioning step:** Host must integrate mapping into its user provisioning flow
 - **Sync burden:** If users are renamed or deleted in Microsoft, mappings become stale
-- **Storage overhead:** Additional table and queries (minimal impact)
+- **Shared-row coupling:** Delegated and app-only data share a row, so lookups by
+  `externalUserId` must tolerate rows where one capability's columns are null
 
 ### Operational
 

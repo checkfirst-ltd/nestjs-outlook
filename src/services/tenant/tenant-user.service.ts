@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import axios from 'axios';
 import { MicrosoftTenant } from '../../entities/microsoft-tenant.entity';
-import { MicrosoftTenantUser } from '../../entities/microsoft-tenant-user.entity';
+import { MicrosoftUser } from '../../entities/microsoft-user.entity';
 import { AppOnlyAuthService } from '../auth/app-only-auth.service';
 import { TtlCache } from '../../utils/ttl-cache.util';
 import { executeGraphApiCall } from '../../utils/outlook-api-executor.util';
@@ -43,7 +43,7 @@ export interface TenantUserLookupResult {
  *
  * Key features:
  * - Lookup users by email or user principal name
- * - Persist user mappings in MicrosoftTenantUser entity
+ * - Persist user mappings on the shared MicrosoftUser entity (one row per external user)
  * - Cache user ID mappings for performance
  * - Support for immutable IDs (IdType="ImmutableId")
  *
@@ -63,8 +63,8 @@ export class TenantUserService {
   constructor(
     @InjectRepository(MicrosoftTenant)
     private readonly tenantRepository: Repository<MicrosoftTenant>,
-    @InjectRepository(MicrosoftTenantUser)
-    private readonly tenantUserRepository: Repository<MicrosoftTenantUser>,
+    @InjectRepository(MicrosoftUser)
+    private readonly tenantUserRepository: Repository<MicrosoftUser>,
     private readonly appOnlyAuthService: AppOnlyAuthService,
     @Inject(MICROSOFT_CONFIG)
     private readonly microsoftConfig: MicrosoftOutlookConfig,
@@ -334,19 +334,22 @@ export class TenantUserService {
   /**
    * Register a user mapping from external ID to Microsoft user ID.
    *
-   * Creates a MicrosoftTenantUser record linking the host application's user ID
-   * to a Microsoft user within the tenant.
+   * Upserts the shared MicrosoftUser row for this host user (keyed by externalUserId),
+   * attaching the tenant + Microsoft identity. Reusing the existing row — rather than
+   * creating a parallel one — keeps a single row per external user, so a user who also
+   * completed delegated OAuth keeps their tokens on the same record and delegated
+   * lookups by externalUserId stay unambiguous.
    *
    * @param tenantId - Microsoft tenant ID (Azure AD tenant GUID)
    * @param externalUserId - User ID from the host application
    * @param email - Email or UPN to look up the Microsoft user
-   * @returns The created/updated tenant user mapping
+   * @returns The created/updated user mapping
    */
   async registerUserMapping(
     tenantId: string,
     externalUserId: string,
     email: string,
-  ): Promise<MicrosoftTenantUser> {
+  ): Promise<MicrosoftUser> {
     this.logger.log(
       `[registerUserMapping] Registering user mapping for ${externalUserId} -> ${email} in tenant ${tenantId}`
     );
@@ -366,25 +369,24 @@ export class TenantUserService {
       throw new Error(`Tenant not found or inactive: ${tenantId}`);
     }
 
-    // Check for existing mapping
+    // Upsert by externalUserId so we reuse an existing (possibly delegated) row rather
+    // than creating a parallel record that would collide on externalUserId.
     let tenantUser = await this.tenantUserRepository.findOne({
-      where: {
-        tenant: { id: tenant.id },
-        externalUserId,
-      },
+      where: { externalUserId },
       relations: ['tenant'],
     });
 
     if (tenantUser) {
-      // Update existing mapping
+      // Attach/refresh the tenant identity on the existing row
       this.logger.log(`[registerUserMapping] Updating existing mapping for ${externalUserId}`);
+      tenantUser.tenant = tenant;
       tenantUser.microsoftUserId = userLookup.microsoftUserId;
       tenantUser.userPrincipalName = userLookup.userPrincipalName;
       tenantUser.isActive = true;
     } else {
       // Create new mapping
       this.logger.log(`[registerUserMapping] Creating new mapping for ${externalUserId}`);
-      tenantUser = new MicrosoftTenantUser();
+      tenantUser = new MicrosoftUser();
       tenantUser.tenant = tenant;
       tenantUser.externalUserId = externalUserId;
       tenantUser.microsoftUserId = userLookup.microsoftUserId;

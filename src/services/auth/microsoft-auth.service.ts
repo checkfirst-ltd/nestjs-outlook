@@ -441,12 +441,20 @@ export class MicrosoftAuthService {
         throw new Error(`No Microsoft user found with ${identifier}`);
       }
 
+      // A user that only has app-only (tenant) access has no delegated tokens. Delegated
+      // token retrieval is not possible for them until they complete the OAuth flow.
+      if (user.accessToken == null || user.refreshToken == null || user.tokenExpiry == null) {
+        throw new Error(
+          `Microsoft user ${String(user.id)} has no delegated auth tokens (app-only user or not yet authenticated)`
+        );
+      }
+
       // Extract & REFRESH the token information
       return await this.processTokenInfo({
         accessToken: user.accessToken,
         refreshToken: user.refreshToken,
         tokenExpiry: user.tokenExpiry,
-        scopes: user.scopes
+        scopes: user.scopes ?? ''
       }, user.id);
     }
 
@@ -869,7 +877,7 @@ export class MicrosoftAuthService {
         throw new Error(`No user found with ID ${String(internalUserId)}`);
       }
 
-      const scopeString = internalUser.scopes;
+      const scopeString = internalUser.scopes ?? '';
       this.logger.debug(`Using saved scopes from database: ${scopeString}`);
 
       this.logger.debug(`Refreshing token for user ID ${String(internalUserId)} with scopes: ${scopeString}`);

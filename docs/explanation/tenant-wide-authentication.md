@@ -1,7 +1,10 @@
 ---
 dep:
   type: explanation
-  audience: [library-consumer, library-contributor, ai-agent]
+  audience:
+    - library-consumer
+    - library-contributor
+    - ai-agent
   owner: "@checkfirst-ltd"
   created: 2026-06-25
   last_verified: 2026-06-25T12:00:00+03:00
@@ -11,8 +14,13 @@ dep:
     - src/services/tenant/tenant-calendar.service.ts
     - src/services/tenant/tenant-user.service.ts
     - src/entities/microsoft-tenant.entity.ts
-    - src/entities/microsoft-tenant-user.entity.ts
-  tags: [architecture, authentication, tenant, app-only, enterprise]
+    - src/entities/microsoft-user.entity.ts
+  tags:
+    - architecture
+    - authentication
+    - tenant
+    - app-only
+    - enterprise
   links:
     - target: ../decision-records/dr-006-dual-auth-architecture.md
       rel: EXPLAINS
@@ -259,24 +267,27 @@ const token = await appOnlyAuthService.getAccessToken(microsoftTenantEntity);
 
 ## The Data Model
 
-The module stores tenant and user mapping information in two entities:
+Tenant registration lives in `microsoft_tenants`. User mappings do **not** have their own
+table — they are stored as nullable columns on the shared `microsoft_users` table, so one
+row per host user carries delegated tokens and/or app-only tenant identity (see
+[DR-008](../decision-records/dr-008-tenant-user-mapping.md)):
 
 ```
-┌────────────────────────────────┐         ┌────────────────────────────────┐
-│     microsoft_tenants          │         │    microsoft_tenant_users      │
-├────────────────────────────────┤         ├────────────────────────────────┤
-│ id (PK)                        │────┐    │ id (PK)                        │
-│ tenant_id (unique)             │    │    │ tenant_id (FK) ────────────────┤
-│ client_id                      │    │    │ microsoft_user_id              │
-│ certificate_thumbprint         │    └───►│ external_user_id (indexed)     │
-│ certificate_path               │         │ user_principal_name            │
-│ certificate_key_path           │         │ default_calendar_id (cached)   │
-│ status                         │         │ is_active                      │
-│ admin_consent_granted_at       │         │ created_at                     │
-│ is_active                      │         │ updated_at                     │
-│ created_at                     │         └────────────────────────────────┘
-│ updated_at                     │
-└────────────────────────────────┘
+┌────────────────────────────────┐         ┌────────────────────────────────────┐
+│     microsoft_tenants          │         │          microsoft_users           │
+├────────────────────────────────┤         ├────────────────────────────────────┤
+│ id (PK)                        │────┐    │ id (PK)                            │
+│ tenant_id (unique)             │    │    │ external_user_id (indexed)         │
+│ client_id                      │    │    │ ── delegated (nullable) ──         │
+│ certificate_thumbprint         │    │    │ access_token / refresh_token       │
+│ certificate_path               │    │    │ token_expiry / scopes / status     │
+│ certificate_key_path           │    │    │ ── app-only (nullable) ──          │
+│ status                         │    └───►│ tenant_id (FK)                     │
+│ admin_consent_granted_at       │         │ microsoft_user_id (indexed)        │
+│ is_active                      │         │ user_principal_name                │
+│ created_at                     │         │ default_calendar_id (cached)       │
+│ updated_at                     │         │ is_active / created_at / updated_at│
+└────────────────────────────────┘         └────────────────────────────────────┘
 
 Status values:
   PENDING_CONSENT  →  Admin hasn't granted consent yet
@@ -327,7 +338,8 @@ The key challenge: **Your app has its own user IDs. Microsoft has different user
        │                                     │
        │                                     │    → Returns microsoftUserId
        │                                     │
-       │                                     │ 3. Store mapping in DB:
+       │                                     │ 3. Upsert mapping onto microsoft_users
+       │                                     │    (by external_user_id):
        │                                     │    ┌─────────────────────────────┐
        │                                     │    │ external: "insp-12345"      │
        │                                     │    │ microsoft: "abc-def-789"    │
@@ -335,7 +347,7 @@ The key challenge: **Your app has its own user IDs. Microsoft has different user
        │                                     │    └─────────────────────────────┘
        │                                     │
        │◄────────────────────────────────────│
-       │  Returns MicrosoftTenantUser entity │
+       │  Returns MicrosoftUser entity       │
        │                                     │
 ```
 
