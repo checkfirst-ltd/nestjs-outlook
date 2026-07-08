@@ -11,6 +11,9 @@
 - [GraphRateLimiterService Reference](graph-rate-limiter-service.md) ● `high` — library-contributor, ai-agent
 - [HTTP Endpoints Reference](http-endpoints.md) ● `high` — library-integrator, app-developer, ai-agent
 - [MicrosoftAuthService Reference](microsoft-auth-service.md) ● `high` — app-developer, ai-agent
+- [MicrosoftTenant Entity Reference](microsoft-tenant-entity.md) ● `high` — app-developer, ai-agent, library-contributor
+- [MicrosoftTenantStatus Reference](microsoft-tenant-status.md) ● `high` — app-developer, ai-agent, library-contributor
+- [MicrosoftUser Entity Reference](microsoft-user-entity.md) ● `high` — app-developer, ai-agent, library-contributor
 - [MicrosoftUserStatus Reference](microsoft-user-status.md) ● `high` — app-developer, ai-agent, library-contributor
 - [PermissionScope Reference](permission-scopes.md) ● `high` — app-developer, ai-agent, library-integrator
 - [RecurrenceService Reference](recurrence-service.md) ● `high` — app-developer, ai-agent, library-contributor

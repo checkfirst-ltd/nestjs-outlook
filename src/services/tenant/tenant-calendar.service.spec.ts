@@ -5,7 +5,7 @@ import { Repository } from 'typeorm';
 import axios from 'axios';
 import { TenantCalendarService } from './tenant-calendar.service';
 import { AppOnlyAuthService } from '../auth/app-only-auth.service';
-import { MicrosoftTenantUser } from '../../entities/microsoft-tenant-user.entity';
+import { MicrosoftUser } from '../../entities/microsoft-user.entity';
 import { MICROSOFT_CONFIG } from '../../constants';
 import { MicrosoftOutlookConfig } from '../../interfaces/config/outlook-config.interface';
 
@@ -15,7 +15,7 @@ const mockedAxios = axios as jest.Mocked<typeof axios>;
 describe('TenantCalendarService', () => {
   let service: TenantCalendarService;
   let appOnlyAuthService: jest.Mocked<AppOnlyAuthService>;
-  let tenantUserRepository: jest.Mocked<Repository<MicrosoftTenantUser>>;
+  let tenantUserRepository: jest.Mocked<Repository<MicrosoftUser>>;
   let eventEmitter: jest.Mocked<EventEmitter2>;
 
   const mockConfig: MicrosoftOutlookConfig = {
@@ -53,7 +53,7 @@ describe('TenantCalendarService', () => {
           useValue: mockAppOnlyAuthService,
         },
         {
-          provide: getRepositoryToken(MicrosoftTenantUser),
+          provide: getRepositoryToken(MicrosoftUser),
           useValue: mockTenantUserRepository,
         },
         {
@@ -69,10 +69,16 @@ describe('TenantCalendarService', () => {
 
     service = module.get<TenantCalendarService>(TenantCalendarService);
     appOnlyAuthService = module.get(AppOnlyAuthService);
-    tenantUserRepository = module.get(getRepositoryToken(MicrosoftTenantUser));
+    tenantUserRepository = module.get(getRepositoryToken(MicrosoftUser));
     eventEmitter = module.get(EventEmitter2);
 
     jest.clearAllMocks();
+    // clearAllMocks does not drain mockResolvedValueOnce queues; reset the shared axios
+    // mock so leftover queued values from a prior test can't bleed into the next one.
+    mockedAxios.get.mockReset();
+    mockedAxios.post.mockReset();
+    mockedAxios.patch.mockReset();
+    mockedAxios.delete.mockReset();
   });
 
   afterEach(() => {

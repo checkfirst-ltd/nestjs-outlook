@@ -1,4 +1,4 @@
-import { Controller, Get, Query, Logger, Res, HttpStatus, Optional, Inject } from '@nestjs/common';
+import { Controller, Get, Delete, Query, Logger, Res, HttpStatus, Optional, Inject } from '@nestjs/common';
 import { Response } from 'express';
 import { ApiTags, ApiResponse, ApiQuery, ApiOperation, ApiProduces } from '@nestjs/swagger';
 import { AppOnlyAuthService } from '../services/auth/app-only-auth.service';
@@ -316,6 +316,92 @@ export class TenantAuthController {
         'Please try again. If the problem persists, contact support.',
       ));
     }
+  }
+
+  /**
+   * Get the current tenant connection status.
+   *
+   * @summary Get tenant connection
+   * @description Returns the stored tenant connection for the given tenant, or for the
+   * module-configured tenant when no `tenantId` is supplied. Returns `null` when no active
+   * connection exists (never connected, or disconnected), which callers read as "not connected".
+   *
+   * @param {string} tenantId - Optional Azure AD tenant ID; defaults to the configured tenant
+   * @returns {MicrosoftTenant | null} The tenant connection record, or null
+   */
+  @Get('connection')
+  @ApiOperation({
+    summary: 'Get tenant connection status',
+    description:
+      'Returns the stored app-only tenant connection (status, consent timestamp, active flag). Falls back to the module-configured tenant when tenantId is omitted. Returns null when no active connection exists.',
+  })
+  @ApiQuery({
+    name: 'tenantId',
+    description: 'Azure AD tenant ID to look up (defaults to the configured tenant)',
+    required: false,
+    type: String,
+    example: '12345678-1234-1234-1234-123456789abc',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Tenant connection record, or null when not connected',
+  })
+  async getConnection(@Query('tenantId') tenantId?: string) {
+    if (!this.appOnlyAuthService || !this.tenantConnectionRepository) {
+      return null;
+    }
+
+    const resolvedTenantId = tenantId ?? this.appOnlyAuthService.getTenantId();
+    if (!resolvedTenantId) {
+      return null;
+    }
+
+    // findByTenantId only returns active rows, so a disconnected tenant reads as null.
+    return (await this.tenantConnectionRepository.findByTenantId(resolvedTenantId)) ?? null;
+  }
+
+  /**
+   * Disconnect a tenant connection.
+   *
+   * @summary Disconnect tenant
+   * @description Deactivates the stored tenant connection and invalidates any cached
+   * app-only access token so subsequent Graph calls stop working until re-consent.
+   *
+   * @param {string} tenantId - Optional Azure AD tenant ID; defaults to the configured tenant
+   * @returns {{ message: string }} Confirmation message
+   */
+  @Delete('connection')
+  @ApiOperation({
+    summary: 'Disconnect the tenant connection',
+    description:
+      'Deactivates the stored app-only tenant connection and invalidates the cached access token. Falls back to the module-configured tenant when tenantId is omitted.',
+  })
+  @ApiQuery({
+    name: 'tenantId',
+    description: 'Azure AD tenant ID to disconnect (defaults to the configured tenant)',
+    required: false,
+    type: String,
+    example: '12345678-1234-1234-1234-123456789abc',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Tenant disconnected (or nothing to disconnect)',
+  })
+  async disconnect(@Query('tenantId') tenantId?: string): Promise<{ message: string }> {
+    if (!this.appOnlyAuthService || !this.tenantConnectionRepository) {
+      throw new Error('Tenant-wide authentication is not configured for this application');
+    }
+
+    const resolvedTenantId = tenantId ?? this.appOnlyAuthService.getTenantId();
+    if (!resolvedTenantId) {
+      return { message: 'No tenant connection to disconnect.' };
+    }
+
+    await this.tenantConnectionRepository.deactivate(resolvedTenantId);
+    this.appOnlyAuthService.invalidateCache(resolvedTenantId);
+    this.logger.log(`Tenant connection disconnected: ${resolvedTenantId}`);
+
+    return { message: 'Microsoft 365 tenant disconnected successfully.' };
   }
 
   /**

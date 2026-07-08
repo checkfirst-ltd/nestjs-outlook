@@ -5,18 +5,25 @@ import axios from 'axios';
 import { TenantUserService } from './tenant-user.service';
 import { AppOnlyAuthService } from '../auth/app-only-auth.service';
 import { MicrosoftTenant } from '../../entities/microsoft-tenant.entity';
-import { MicrosoftTenantUser } from '../../entities/microsoft-tenant-user.entity';
+import { MicrosoftUser } from '../../entities/microsoft-user.entity';
 import { MICROSOFT_CONFIG } from '../../constants';
 import { MicrosoftOutlookConfig } from '../../interfaces/config/outlook-config.interface';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
 
+// executeGraphApiCall retries transient failures, so a plain Error would be retried
+// (and, because jest.clearAllMocks keeps mock implementations, could hit a prior test's
+// persistent success mock). Shape API failures as non-retryable Graph errors (status 403)
+// so the service surfaces them immediately.
+const graphError = (message: string, status = 403): Error =>
+  Object.assign(new Error(message), { response: { status } });
+
 describe('TenantUserService', () => {
   let service: TenantUserService;
   let appOnlyAuthService: jest.Mocked<AppOnlyAuthService>;
   let tenantRepository: jest.Mocked<Repository<MicrosoftTenant>>;
-  let tenantUserRepository: jest.Mocked<Repository<MicrosoftTenantUser>>;
+  let tenantUserRepository: jest.Mocked<Repository<MicrosoftUser>>;
 
   const mockTenantId = '12345678-1234-1234-1234-123456789abc';
   const mockMicrosoftUserId = 'user-guid-12345';
@@ -49,7 +56,7 @@ describe('TenantUserService', () => {
     isActive: true,
   };
 
-  const mockTenantUser: Partial<MicrosoftTenantUser> = {
+  const mockTenantUser: Partial<MicrosoftUser> = {
     id: 1,
     externalUserId: mockExternalUserId,
     microsoftUserId: mockMicrosoftUserId,
@@ -85,7 +92,7 @@ describe('TenantUserService', () => {
           useValue: mockTenantRepository,
         },
         {
-          provide: getRepositoryToken(MicrosoftTenantUser),
+          provide: getRepositoryToken(MicrosoftUser),
           useValue: mockTenantUserRepository,
         },
         {
@@ -98,7 +105,7 @@ describe('TenantUserService', () => {
     service = module.get<TenantUserService>(TenantUserService);
     appOnlyAuthService = module.get(AppOnlyAuthService);
     tenantRepository = module.get(getRepositoryToken(MicrosoftTenant));
-    tenantUserRepository = module.get(getRepositoryToken(MicrosoftTenantUser));
+    tenantUserRepository = module.get(getRepositoryToken(MicrosoftUser));
 
     jest.clearAllMocks();
     // Clear the internal cache before each test
@@ -181,7 +188,7 @@ describe('TenantUserService', () => {
     });
 
     it('should throw error on Graph API failure', async () => {
-      mockedAxios.get.mockRejectedValueOnce(new Error('Network error'));
+      mockedAxios.get.mockRejectedValueOnce(graphError('Network error'));
 
       await expect(
         service.lookupUserByEmail(mockTenantId, mockEmail)
@@ -304,7 +311,7 @@ describe('TenantUserService', () => {
       });
       tenantRepository.findOne.mockResolvedValueOnce(mockTenant as MicrosoftTenant);
       tenantUserRepository.findOne.mockResolvedValueOnce(null);
-      tenantUserRepository.save.mockResolvedValueOnce(mockTenantUser as MicrosoftTenantUser);
+      tenantUserRepository.save.mockResolvedValueOnce(mockTenantUser as MicrosoftUser);
 
       const result = await service.registerUserMapping(
         mockTenantId,
@@ -323,7 +330,7 @@ describe('TenantUserService', () => {
       });
       tenantRepository.findOne.mockResolvedValueOnce(mockTenant as MicrosoftTenant);
       tenantUserRepository.findOne.mockResolvedValueOnce(null);
-      tenantUserRepository.save.mockResolvedValueOnce(mockTenantUser as MicrosoftTenantUser);
+      tenantUserRepository.save.mockResolvedValueOnce(mockTenantUser as MicrosoftUser);
 
       await service.registerUserMapping(mockTenantId, mockExternalUserId, mockEmail);
 
@@ -356,8 +363,8 @@ describe('TenantUserService', () => {
         data: { value: [mockGraphUser] },
       });
       tenantRepository.findOne.mockResolvedValueOnce(mockTenant as MicrosoftTenant);
-      tenantUserRepository.findOne.mockResolvedValueOnce(mockTenantUser as MicrosoftTenantUser);
-      tenantUserRepository.save.mockResolvedValueOnce(mockTenantUser as MicrosoftTenantUser);
+      tenantUserRepository.findOne.mockResolvedValueOnce(mockTenantUser as MicrosoftUser);
+      tenantUserRepository.save.mockResolvedValueOnce(mockTenantUser as MicrosoftUser);
 
       await service.registerUserMapping(mockTenantId, mockExternalUserId, mockEmail);
 
@@ -373,7 +380,7 @@ describe('TenantUserService', () => {
   describe('getMicrosoftUserId', () => {
     it('should get Microsoft user ID from database mapping', async () => {
       tenantRepository.findOne.mockResolvedValueOnce(mockTenant as MicrosoftTenant);
-      tenantUserRepository.findOne.mockResolvedValueOnce(mockTenantUser as MicrosoftTenantUser);
+      tenantUserRepository.findOne.mockResolvedValueOnce(mockTenantUser as MicrosoftUser);
 
       const result = await service.getMicrosoftUserId(mockTenantId, mockExternalUserId);
 
@@ -491,7 +498,7 @@ describe('TenantUserService', () => {
     });
 
     it('should throw error on Graph API failure', async () => {
-      mockedAxios.get.mockRejectedValueOnce(new Error('Forbidden'));
+      mockedAxios.get.mockRejectedValueOnce(graphError('Forbidden'));
 
       await expect(
         service.listUsers(mockTenantId)
@@ -588,7 +595,7 @@ describe('TenantUserService', () => {
 
   describe('error handling', () => {
     it('should throw descriptive error on lookup failure', async () => {
-      mockedAxios.get.mockRejectedValueOnce(new Error('Network timeout'));
+      mockedAxios.get.mockRejectedValueOnce(graphError('Network timeout'));
 
       await expect(
         service.lookupUserByEmail(mockTenantId, mockEmail)
@@ -596,7 +603,7 @@ describe('TenantUserService', () => {
     });
 
     it('should throw descriptive error when getting user by ID fails', async () => {
-      mockedAxios.get.mockRejectedValueOnce(new Error('Server error'));
+      mockedAxios.get.mockRejectedValueOnce(graphError('Server error'));
 
       await expect(
         service.getUserById(mockTenantId, mockMicrosoftUserId)
@@ -604,9 +611,7 @@ describe('TenantUserService', () => {
     });
 
     it('should handle Graph API 403 error', async () => {
-      const forbiddenError = new Error('Forbidden');
-      (forbiddenError as NodeJS.ErrnoException).code = '403';
-      mockedAxios.get.mockRejectedValueOnce(forbiddenError);
+      mockedAxios.get.mockRejectedValueOnce(graphError('Forbidden', 403));
 
       await expect(
         service.listUsers(mockTenantId)
