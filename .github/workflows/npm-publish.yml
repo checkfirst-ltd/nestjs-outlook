@@ -7,10 +7,11 @@ on:
       - completed
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   publish-npm:
-    if: ${{ github.event.workflow_run.conclusion == 'success' && contains(github.event.workflow_run.head_branch, 'main') }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && contains(github.event.workflow_run.head_branch, 'main')) }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -35,15 +36,28 @@ jobs:
       - name: Check if tag was created in the trigger workflow
         id: check-tag-in-workflow
         run: |
-          TRIGGER_SHA="${{ github.event.workflow_run.head_sha }}"
-          TAG_SHA=$(git rev-list -n 1 $LATEST_TAG)
-          echo "Trigger SHA: $TRIGGER_SHA, Tag SHA: $TAG_SHA"
-          if [ "$TRIGGER_SHA" = "$TAG_SHA" ]; then
-            echo "SHOULD_PUBLISH=true" >> $GITHUB_ENV
-            echo "Tag was created in the triggering workflow run"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            PACKAGE_NAME=$(node -p "require('./package.json').name")
+            TAG_VERSION=${LATEST_TAG#v}
+            PUBLISHED=$(npm view "${PACKAGE_NAME}@${TAG_VERSION}" version 2>/dev/null || true)
+            if [ "$PUBLISHED" = "$TAG_VERSION" ]; then
+              echo "SHOULD_PUBLISH=false" >> $GITHUB_ENV
+              echo "Version $TAG_VERSION is already published to npm, skipping"
+            else
+              echo "SHOULD_PUBLISH=true" >> $GITHUB_ENV
+              echo "Manually dispatched — publishing latest tag $LATEST_TAG"
+            fi
           else
-            echo "SHOULD_PUBLISH=false" >> $GITHUB_ENV
-            echo "Tag was not created in the triggering workflow run, skipping publish"
+            TRIGGER_SHA="${{ github.event.workflow_run.head_sha }}"
+            TAG_SHA=$(git rev-list -n 1 $LATEST_TAG)
+            echo "Trigger SHA: $TRIGGER_SHA, Tag SHA: $TAG_SHA"
+            if [ "$TRIGGER_SHA" = "$TAG_SHA" ]; then
+              echo "SHOULD_PUBLISH=true" >> $GITHUB_ENV
+              echo "Tag was created in the triggering workflow run"
+            else
+              echo "SHOULD_PUBLISH=false" >> $GITHUB_ENV
+              echo "Tag was not created in the triggering workflow run, skipping publish"
+            fi
           fi
       - name: Ensure npm 11.5.1+ for OIDC support
         if: env.SHOULD_PUBLISH == 'true'
