@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.0.3](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.0.2...v10.0.3) (2026-07-12)
+
+
+### Bug Fixes
+
+* validate required config fields at startup with clear error mess… ([#168](https://github.com/checkfirst-ltd/nestjs-outlook/issues/168)) ([82d368a](https://github.com/checkfirst-ltd/nestjs-outlook/commit/82d368a5682ba5c1133c1be443b402fd799758c5))
+
 ## [10.0.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.0.1...v10.0.2) (2026-07-12)
 
 
