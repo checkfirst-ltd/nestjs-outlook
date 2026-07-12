@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.0.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.0.0...v10.0.1) (2026-07-12)
+
+
+### Bug Fixes
+
+* upgrade Node.js to 22.x and actions/checkout to v4 in npm-publish workflow ([#164](https://github.com/checkfirst-ltd/nestjs-outlook/issues/164)) ([bd3d20d](https://github.com/checkfirst-ltd/nestjs-outlook/commit/bd3d20d24770deb132401269002b6710fd19ac2f))
+
 ## [10.0.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v9.0.3...v10.0.0) (2026-07-12)
 
 
