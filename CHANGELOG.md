@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.0.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.0.1...v10.0.2) (2026-07-12)
+
+
+### Bug Fixes
+
+* restore ioredis peer deps dropped from package-lock.json ([#166](https://github.com/checkfirst-ltd/nestjs-outlook/issues/166)) ([cba2db6](https://github.com/checkfirst-ltd/nestjs-outlook/commit/cba2db61fa5cab8cd8f7d47b73d58b6ac0856b1d))
+
 ## [10.0.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.0.0...v10.0.1) (2026-07-12)
 
 
