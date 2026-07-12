@@ -3,6 +3,7 @@ import { Response } from 'express';
 import { ApiTags, ApiResponse, ApiQuery, ApiOperation, ApiProduces } from '@nestjs/swagger';
 import { AppOnlyAuthService } from '../services/auth/app-only-auth.service';
 import { MicrosoftTenantRepository } from '../repositories/microsoft-tenant.repository';
+import { MicrosoftTenant } from '../entities/microsoft-tenant.entity';
 import { MicrosoftTenantStatus } from '../enums/microsoft-tenant-status.enum';
 
 /**
@@ -248,16 +249,38 @@ export class TenantAuthController {
         `[${correlationId}] Admin consent granted for tenant ${microsoftTenantId} (external: ${externalTenantId})`
       );
 
-      // Update tenant connection status
-      const connection = await this.tenantConnectionRepository.findByExternalTenantId(externalTenantId);
+      // Look up an existing connection for this tenant. It may not exist yet:
+      // callers can initiate admin consent by simply supplying a tenant ID, without
+      // pre-registering a MicrosoftTenant row. In that case we record the tenant here,
+      // after consent has been confirmed, rather than failing.
+      let connection = await this.tenantConnectionRepository.findByExternalTenantId(externalTenantId);
 
       if (!connection) {
-        this.logger.error(`[${correlationId}] Tenant connection not found: ${externalTenantId}`);
-        return res.status(HttpStatus.OK).send(this.renderErrorPage(
-          'Tenant Not Found',
-          'The tenant connection was not found in our system.',
-          'Please ensure the tenant was properly registered before requesting admin consent.',
-        ));
+        this.logger.log(
+          `[${correlationId}] No existing tenant connection for ${microsoftTenantId}; recording a new one from admin-consent callback`
+        );
+
+        // Inherit the module-level (shared app) certificate so app-only token
+        // acquisition can resolve credentials from the new row below. Configuration
+        // Error is only reachable if the module has no certificate configured.
+        const moduleCertificate = this.appOnlyAuthService.getModuleCertificate();
+        if (!moduleCertificate) {
+          this.logger.error(
+            `[${correlationId}] Cannot record tenant ${microsoftTenantId}: no module certificate configured`
+          );
+          return res.status(HttpStatus.OK).send(this.renderErrorPage(
+            'Configuration Error',
+            'Admin consent was granted, but the application has no certificate configured to complete the connection.',
+            'Please contact your administrator to configure the application certificate.',
+          ));
+        }
+
+        connection = new MicrosoftTenant();
+        connection.tenantId = microsoftTenantId;
+        connection.clientId = this.appOnlyAuthService.getClientId();
+        connection.certificateThumbprint = moduleCertificate.thumbprint;
+        connection.certificatePath = moduleCertificate.certificatePath ?? null;
+        connection.certificateKeyPath = moduleCertificate.privateKeyPath ?? null;
       }
 
       // Verify the Microsoft tenant ID matches
@@ -275,7 +298,9 @@ export class TenantAuthController {
       // Update tenant connection with Microsoft tenant ID and activate
       connection.tenantId = microsoftTenantId;
       connection.status = MicrosoftTenantStatus.ACTIVE;
-      await this.tenantConnectionRepository.save(connection);
+      connection.isActive = true;
+      connection.adminConsentGrantedAt = new Date();
+      connection = await this.tenantConnectionRepository.save(connection);
 
       // Test that we can obtain a token for this tenant.
       // Pass the tenant ENTITY (not the tenant-ID string) so credentials are
@@ -351,13 +376,26 @@ export class TenantAuthController {
       return null;
     }
 
-    const resolvedTenantId = tenantId ?? this.appOnlyAuthService.getTenantId();
-    if (!resolvedTenantId) {
-      return null;
+    // An explicit tenantId is looked up directly (and only that one).
+    // findByTenantId only returns active rows, so a disconnected tenant reads as null.
+    if (tenantId) {
+      return (await this.tenantConnectionRepository.findByTenantId(tenantId)) ?? null;
     }
 
-    // findByTenantId only returns active rows, so a disconnected tenant reads as null.
-    return (await this.tenantConnectionRepository.findByTenantId(resolvedTenantId)) ?? null;
+    // No tenantId supplied: prefer the module-configured tenant when it is a concrete
+    // tenant. When it is 'common' (or has no row), this is the dynamic-tenant flow where
+    // the tenant is chosen at consent time — fall back to the single active connection so
+    // callers (e.g. the dashboard) reflect it without knowing the tenant id up front.
+    const configuredTenantId = this.appOnlyAuthService.getTenantId();
+    if (configuredTenantId && configuredTenantId !== 'common') {
+      const byConfigured = await this.tenantConnectionRepository.findByTenantId(configuredTenantId);
+      if (byConfigured) {
+        return byConfigured;
+      }
+    }
+
+    const activeConnections = await this.tenantConnectionRepository.findAllActive();
+    return activeConnections[0] ?? null;
   }
 
   /**
@@ -392,7 +430,26 @@ export class TenantAuthController {
       throw new Error('Tenant-wide authentication is not configured for this application');
     }
 
-    const resolvedTenantId = tenantId ?? this.appOnlyAuthService.getTenantId();
+    // Resolve which tenant to disconnect, mirroring getConnection: an explicit tenantId
+    // wins; otherwise use the module-configured tenant when concrete; otherwise (the
+    // 'common' dynamic-tenant flow) fall back to the active connection. Without this
+    // fallback a no-tenantId disconnect would deactivate 'common' — a no-op — and the
+    // real connection would stay active.
+    let resolvedTenantId = tenantId;
+    if (!resolvedTenantId) {
+      const configuredTenantId = this.appOnlyAuthService.getTenantId();
+      if (
+        configuredTenantId &&
+        configuredTenantId !== 'common' &&
+        (await this.tenantConnectionRepository.findByTenantId(configuredTenantId))
+      ) {
+        resolvedTenantId = configuredTenantId;
+      } else {
+        const activeConnections = await this.tenantConnectionRepository.findAllActive();
+        resolvedTenantId = activeConnections[0]?.tenantId;
+      }
+    }
+
     if (!resolvedTenantId) {
       return { message: 'No tenant connection to disconnect.' };
     }
