@@ -293,7 +293,7 @@ export class AppOnlyAuthService implements OnModuleInit {
         privateKey = this.loadPrivateKeyFromFile(tenant.certificateKeyPath);
         this.privateKeyCache.set(tenant.tenantId, privateKey);
       }
-      const thumbprint = tenant.certificateThumbprint ?? this.appOnlyConfig?.certificate?.thumbprint;
+      const thumbprint = tenant.certificateThumbprint || this.appOnlyConfig?.certificate?.thumbprint;
       if (thumbprint) {
         return { tenantId: tenant.tenantId, clientId: tenant.clientId, privateKey, thumbprint };
       }

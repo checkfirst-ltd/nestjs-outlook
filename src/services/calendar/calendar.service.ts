@@ -924,7 +924,7 @@ export class CalendarService {
     }
   ): Promise<Event[]> {
     const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
-    const client = Client.init({ authProvider: (done) => done(null, accessToken) });
+    const client = Client.init({ authProvider: (done) => { done(null, accessToken); } });
     const requestUrl = `${resourceBase}/events/delta`;
 
     try {
@@ -1070,7 +1070,7 @@ export class CalendarService {
     skipCursorAdvanceOnEmpty: boolean = false
   ): AsyncGenerator<Event[], string | null, unknown> {
     const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
-    const client = Client.init({ authProvider: (done) => done(null, accessToken) });
+    const client = Client.init({ authProvider: (done) => { done(null, accessToken); } });
     const requestUrl = `${resourceBase}/events/delta`;
 
     try {
@@ -1436,7 +1436,7 @@ export class CalendarService {
       );
 
       const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
-      const client = Client.init({ authProvider: (done) => done(null, accessToken) });
+      const client = Client.init({ authProvider: (done) => { done(null, accessToken); } });
 
       // Build request URL
       const requestUrl = this.buildRequestUrl(options, batchSize, resourceBase);
@@ -1568,7 +1568,7 @@ export class CalendarService {
 
     try {
       const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
-      const client = Client.init({ authProvider: (done) => done(null, accessToken) });
+      const client = Client.init({ authProvider: (done) => { done(null, accessToken); } });
 
       const now = new Date();
       const startDate = options?.startDate ?? new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
@@ -1658,7 +1658,7 @@ export class CalendarService {
 
     try {
       const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
-      const client = Client.init({ authProvider: (done) => done(null, accessToken) });
+      const client = Client.init({ authProvider: (done) => { done(null, accessToken); } });
 
       // Convert external ID to internal ID
       const internalUserId = await this.userIdConverter.externalToInternal(externalUserId, {cache: false});
