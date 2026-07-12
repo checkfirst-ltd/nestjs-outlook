@@ -7,7 +7,7 @@ import {
   TenantUserService,
   AppOnlyAuthService,
   MicrosoftTenant,
-  MicrosoftTenantUser,
+  MicrosoftUser,
   MicrosoftTenantStatus,
 } from '@checkfirst/nestjs-outlook';
 import { CreateTenantEventDto } from './dto/create-tenant-event.dto';
@@ -37,8 +37,8 @@ export class TenantService {
     private readonly configService: ConfigService,
     @InjectRepository(MicrosoftTenant)
     private readonly tenantRepository: Repository<MicrosoftTenant>,
-    @InjectRepository(MicrosoftTenantUser)
-    private readonly tenantUserRepository: Repository<MicrosoftTenantUser>,
+    @InjectRepository(MicrosoftUser)
+    private readonly tenantUserRepository: Repository<MicrosoftUser>,
   ) {}
 
   /**
@@ -353,7 +353,7 @@ export class TenantService {
       },
     });
 
-    if (!tenantUser) {
+    if (!tenantUser || !tenantUser.microsoftUserId) {
       throw new NotFoundException(
         `No user mapping found for external user ID: ${externalUserId}. ` +
         'Register the user mapping first using POST /tenant/users/register.',

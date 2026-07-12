@@ -4,7 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import {
   MicrosoftOutlookModule,
   MicrosoftTenant,
-  MicrosoftTenantUser,
+  MicrosoftUser,
   AppOnlyAuthConfig,
 } from '@checkfirst/nestjs-outlook';
 import { TenantController } from './tenant.controller';
@@ -50,7 +50,7 @@ function buildAppOnlyConfig(configService: ConfigService): AppOnlyAuthConfig | u
  */
 @Module({
   imports: [
-    TypeOrmModule.forFeature([MicrosoftTenant, MicrosoftTenantUser]),
+    TypeOrmModule.forFeature([MicrosoftTenant, MicrosoftUser]),
     MicrosoftOutlookModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
