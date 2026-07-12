@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef, Optional } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Cron } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -7,6 +7,7 @@ import { Repository, Not } from 'typeorm';
 import axios from 'axios';
 import { Subscription, BatchRequestPayload, BatchResponsePayload, BatchResponse } from '../../types';
 import { MicrosoftAuthService } from '../auth/microsoft-auth.service';
+import { AppOnlyAuthService } from '../auth/app-only-auth.service';
 import { OutlookWebhookSubscriptionRepository } from '../../repositories/outlook-webhook-subscription.repository';
 import { OutlookWebhookSubscription } from '../../entities/outlook-webhook-subscription.entity';
 import { MicrosoftUser } from '../../entities/microsoft-user.entity';
@@ -67,6 +68,37 @@ export interface BulkSubscriptionDeleteResult {
   errors: Array<{ subscriptionId: string; error: string }>;
 }
 
+/**
+ * Options for creating an app-only webhook subscription.
+ * Used when the application authenticates on behalf of a tenant
+ * rather than a specific user.
+ */
+export interface AppOnlySubscriptionOptions {
+  /**
+   * Microsoft tenant ID (Azure AD tenant/directory ID).
+   * Format: GUID (e.g., "12345678-1234-1234-1234-123456789abc")
+   */
+  tenantId: string;
+
+  /**
+   * Microsoft user ID (immutable ID) for the user whose events to subscribe to.
+   * This is the Azure AD object ID or immutable ID of the user.
+   */
+  microsoftUserId: string;
+
+  /**
+   * External user ID from the host application.
+   * Used for correlation and stored in the subscription record.
+   */
+  externalUserId: string;
+
+  /**
+   * Optional: Internal user ID if already known.
+   * If not provided, will be resolved from externalUserId.
+   */
+  internalUserId?: number;
+}
+
 // ─── Health-check tuning constants ──────────────────────────────────
 /** Microsoft Graph batch API allows at most 20 inner requests per /$batch call. */
 const GRAPH_BATCH_SIZE = 20;
@@ -103,6 +135,9 @@ export class MicrosoftSubscriptionService {
   constructor(
     @Inject(forwardRef(() => MicrosoftAuthService))
     private readonly microsoftAuthService: MicrosoftAuthService,
+    @Optional()
+    @Inject(forwardRef(() => AppOnlyAuthService))
+    private readonly appOnlyAuthService: AppOnlyAuthService | null,
     private readonly webhookSubscriptionRepository: OutlookWebhookSubscriptionRepository,
     private readonly eventEmitter: EventEmitter2,
     @Inject(MICROSOFT_CONFIG)
@@ -1437,6 +1472,445 @@ export class MicrosoftSubscriptionService {
         error: recreateMsg,
       });
       return 'failed';
+    }
+  }
+
+  // ─── App-only subscription methods ──────────────────────────────────
+
+  /**
+   * Creates a webhook subscription using app-only authentication.
+   *
+   * Unlike delegated subscriptions that use /me/events, app-only subscriptions
+   * use /users/{microsoftUserId}/events to subscribe to a specific user's
+   * calendar events on behalf of the tenant.
+   *
+   * @param options - App-only subscription options including tenant ID and Microsoft user ID
+   * @returns The created subscription data
+   * @throws Error if app-only auth is not configured or subscription creation fails
+   */
+  async createAppOnlyWebhookSubscription(
+    options: AppOnlySubscriptionOptions,
+  ): Promise<Subscription> {
+    const { tenantId, microsoftUserId, externalUserId } = options;
+    let { internalUserId } = options;
+
+    // Ensure app-only auth is available
+    if (!this.appOnlyAuthService) {
+      throw new Error('App-only authentication is not configured');
+    }
+
+    const correlationId = `app-only-webhook-${microsoftUserId}-${Date.now()}`;
+    this.logger.log(
+      `[${correlationId}] Creating app-only webhook subscription for Microsoft user ${microsoftUserId} in tenant ${tenantId}`
+    );
+
+    try {
+      // Resolve internal user ID if not provided
+      if (internalUserId === undefined) {
+        internalUserId = await this.userIdConverter.externalToInternal(externalUserId, { cache: false });
+      }
+
+      // Get app-only access token for the tenant
+      const accessToken = await this.appOnlyAuthService.getAccessToken(tenantId);
+      this.logger.log(`[${correlationId}] Successfully obtained app-only access token`);
+
+      // Set expiration date (max 3 days as per Microsoft documentation)
+      const expirationDateTime = new Date();
+      expirationDateTime.setHours(expirationDateTime.getHours() + 72);
+
+      // Build notification URL
+      const appUrl = this.microsoftConfig.backendBaseUrl || 'http://localhost:3000';
+      const basePath = this.microsoftConfig.basePath;
+      const basePathUrl = basePath ? `${appUrl}/${basePath}` : appUrl;
+      const webhookPath = this.microsoftConfig.calendarWebhookPath || '/calendar/webhook';
+      const notificationUrl = `${basePathUrl}${webhookPath}`;
+
+      // Generate clientState with tenant context
+      const clientState = `tenant_${tenantId}_user_${internalUserId}_${randomUUID()}`;
+
+      // Create subscription payload - use /users/{id}/events instead of /me/events
+      const subscriptionData = {
+        changeType: 'created,updated,deleted',
+        notificationUrl,
+        lifecycleNotificationUrl: notificationUrl,
+        resource: `/users/${microsoftUserId}/events`,
+        expirationDateTime: expirationDateTime.toISOString(),
+        clientState,
+      };
+
+      this.logger.debug(
+        `[${correlationId}] App-only subscription data: ${JSON.stringify(subscriptionData)}`
+      );
+
+      // Create the subscription with Microsoft Graph API
+      const response = await executeGraphApiCall(
+        () => axios.post<Subscription>(
+          `${this.graphApiBaseUrl}/subscriptions`,
+          subscriptionData,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              'Content-Type': 'application/json',
+              'Prefer': 'IdType="ImmutableId"',
+            },
+          }
+        ),
+        {
+          logger: this.logger,
+          resourceName: `create app-only webhook subscription for user ${microsoftUserId}`,
+          maxRetries: 7,
+        }
+      );
+
+      if (!response?.data) {
+        throw new Error('App-only subscription creation returned null response');
+      }
+
+      this.logger.log(
+        `[${correlationId}] Created app-only webhook subscription ${response.data.id || 'unknown'} for Microsoft user ${microsoftUserId}`
+      );
+
+      // Persist the clientState
+      const storedClientState = response.data.clientState || clientState;
+      if (!storedClientState) {
+        throw new Error('Refusing to persist app-only subscription with empty clientState');
+      }
+
+      // Save the subscription to the database with tenant context
+      await this.webhookSubscriptionRepository.saveSubscription({
+        subscriptionId: response.data.id,
+        userId: internalUserId,
+        tenantId,
+        microsoftUserId,
+        resource: response.data.resource,
+        changeType: response.data.changeType,
+        clientState: storedClientState,
+        notificationUrl: response.data.notificationUrl,
+        expirationDateTime: response.data.expirationDateTime
+          ? new Date(response.data.expirationDateTime)
+          : new Date(),
+      });
+
+      this.logger.log(`[${correlationId}] Successfully stored app-only subscription in database`);
+
+      return response.data;
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        this.logger.error(
+          `[${correlationId}] Microsoft Graph API error: Status ${error.response?.status}, ` +
+          `Message: ${JSON.stringify(error.response?.data)}`
+        );
+      } else {
+        this.logger.error(`[${correlationId}] Failed to create app-only webhook subscription:`, error);
+      }
+      throw new Error(
+        `Failed to create app-only webhook subscription: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
+    }
+  }
+
+  /**
+   * Renew an app-only webhook subscription.
+   *
+   * @param subscriptionId - ID of the subscription to renew at Microsoft
+   * @param tenantId - Microsoft tenant ID for obtaining app-only token
+   * @returns The renewed subscription data from Microsoft Graph API
+   */
+  async renewAppOnlyWebhookSubscription(
+    subscriptionId: string,
+    tenantId: string,
+  ): Promise<Subscription> {
+    const correlationId = `app-only-renew-${subscriptionId}-${Date.now()}`;
+
+    if (!this.appOnlyAuthService) {
+      throw new Error('App-only authentication is not configured');
+    }
+
+    try {
+      this.logger.log(
+        `[${correlationId}] Attempting to renew app-only subscription ${subscriptionId} for tenant ${tenantId}`
+      );
+
+      // Get app-only access token
+      const accessToken = await this.appOnlyAuthService.getAccessToken(tenantId);
+
+      // Set new expiration date (max 3 days from now per Microsoft limits)
+      const expirationDateTime = new Date();
+      expirationDateTime.setHours(expirationDateTime.getHours() + 72);
+
+      const renewalData = {
+        expirationDateTime: expirationDateTime.toISOString(),
+      };
+
+      // Make the request to Microsoft Graph API to renew the subscription
+      const response = await executeGraphApiCall(
+        () => axios.patch<Subscription>(
+          `${this.graphApiBaseUrl}/subscriptions/${subscriptionId}`,
+          renewalData,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              'Content-Type': 'application/json',
+              'Prefer': 'IdType="ImmutableId"',
+            },
+          }
+        ),
+        {
+          logger: this.logger,
+          resourceName: `renew app-only webhook subscription ${subscriptionId}`,
+          maxRetries: 7,
+        }
+      );
+
+      if (!response?.data) {
+        throw new Error('App-only subscription renewal returned null response');
+      }
+
+      // Update the expiration date in our local database
+      if (response.data.expirationDateTime) {
+        await this.webhookSubscriptionRepository.updateSubscriptionExpiration(
+          subscriptionId,
+          new Date(response.data.expirationDateTime)
+        );
+      }
+
+      this.logger.log(
+        `[${correlationId}] Successfully renewed app-only subscription ${subscriptionId}. ` +
+        `New expiration: ${response.data.expirationDateTime}`
+      );
+
+      return response.data;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+      if (axios.isAxiosError(error)) {
+        const statusCode = error.response?.status;
+
+        if (statusCode === 404) {
+          this.logger.warn(
+            `[${correlationId}] App-only subscription ${subscriptionId} not found at Microsoft. Deactivating.`
+          );
+          await this.webhookSubscriptionRepository.deactivateSubscription(subscriptionId);
+          throw new Error(`App-only subscription ${subscriptionId} not found at Microsoft`);
+        }
+      }
+
+      this.logger.error(
+        `[${correlationId}] Failed to renew app-only subscription ${subscriptionId}: ${errorMessage}`
+      );
+      throw new Error(`Failed to renew app-only webhook subscription: ${errorMessage}`);
+    }
+  }
+
+  /**
+   * Delete an app-only webhook subscription.
+   *
+   * @param subscriptionId - ID of the subscription to delete at Microsoft
+   * @param tenantId - Microsoft tenant ID for obtaining app-only token
+   * @returns True if deletion was successful
+   */
+  async deleteAppOnlyWebhookSubscription(
+    subscriptionId: string,
+    tenantId: string,
+  ): Promise<boolean> {
+    const correlationId = `app-only-delete-${subscriptionId}-${Date.now()}`;
+
+    if (!this.appOnlyAuthService) {
+      throw new Error('App-only authentication is not configured');
+    }
+
+    try {
+      this.logger.log(
+        `[${correlationId}] Deleting app-only subscription ${subscriptionId} for tenant ${tenantId}`
+      );
+
+      // Get app-only access token
+      const accessToken = await this.appOnlyAuthService.getAccessToken(tenantId);
+
+      // Delete subscription at Microsoft
+      await this.deleteSubscription(subscriptionId, accessToken);
+
+      // Deactivate locally
+      await this.webhookSubscriptionRepository.deactivateSubscription(subscriptionId);
+
+      this.logger.log(
+        `[${correlationId}] Successfully deleted app-only subscription ${subscriptionId}`
+      );
+
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+      // If 404, subscription doesn't exist at Microsoft - still clean up locally
+      if (axios.isAxiosError(error) && error.response?.status === 404) {
+        this.logger.log(
+          `[${correlationId}] App-only subscription ${subscriptionId} not found at Microsoft, cleaning up locally`
+        );
+        await this.webhookSubscriptionRepository.deactivateSubscription(subscriptionId);
+        return true;
+      }
+
+      this.logger.error(
+        `[${correlationId}] Failed to delete app-only subscription ${subscriptionId}: ${errorMessage}`
+      );
+      throw new Error(`Failed to delete app-only webhook subscription: ${errorMessage}`);
+    }
+  }
+
+  /**
+   * Get all active app-only subscriptions for a tenant.
+   *
+   * @param tenantId - Microsoft tenant ID to filter by
+   * @returns Array of active subscriptions for the tenant
+   */
+  async getAppOnlySubscriptionsForTenant(
+    tenantId: string,
+  ): Promise<OutlookWebhookSubscription[]> {
+    return this.webhookSubscriptionRepository.findAllActiveByTenantId(tenantId);
+  }
+
+  /**
+   * Get active app-only subscription for a specific Microsoft user.
+   *
+   * @param tenantId - Microsoft tenant ID
+   * @param microsoftUserId - Microsoft user ID
+   * @returns Subscription ID if active subscription exists, null otherwise
+   */
+  async getActiveAppOnlySubscriptionForUser(
+    tenantId: string,
+    microsoftUserId: string,
+  ): Promise<string | null> {
+    const subscription = await this.webhookSubscriptionRepository.findActiveByTenantAndMicrosoftUser(
+      tenantId,
+      microsoftUserId
+    );
+    return subscription?.subscriptionId ?? null;
+  }
+
+  /**
+   * Delete ALL active app-only webhook subscriptions for a tenant.
+   *
+   * Used during tenant disconnect flow to clean up all subscriptions.
+   * Continues processing even if some deletions fail.
+   *
+   * @param tenantId - Microsoft tenant ID
+   * @returns Result summary with success/failure counts
+   */
+  async deleteAllAppOnlySubscriptionsForTenant(
+    tenantId: string,
+  ): Promise<BulkSubscriptionDeleteResult> {
+    const correlationId = `app-only-bulk-delete-${tenantId}-${Date.now()}`;
+
+    const result: BulkSubscriptionDeleteResult = {
+      totalFound: 0,
+      successfullyDeleted: 0,
+      failedToDelete: 0,
+      localOnlyDeactivated: 0,
+      deletedSubscriptionIds: [],
+      errors: [],
+    };
+
+    try {
+      this.logger.log(
+        `[${correlationId}] Starting bulk subscription deletion for tenant ${tenantId}`
+      );
+
+      // Find all active subscriptions for this tenant
+      const activeSubscriptions = await this.webhookSubscriptionRepository.findAllActiveByTenantId(
+        tenantId
+      );
+
+      result.totalFound = activeSubscriptions.length;
+
+      if (activeSubscriptions.length === 0) {
+        this.logger.log(`[${correlationId}] No active subscriptions found for tenant ${tenantId}`);
+        return result;
+      }
+
+      this.logger.log(
+        `[${correlationId}] Found ${activeSubscriptions.length} active subscription(s) to delete`
+      );
+
+      // Try to get access token
+      let accessToken: string | null = null;
+      if (this.appOnlyAuthService) {
+        try {
+          accessToken = await this.appOnlyAuthService.getAccessToken(tenantId);
+          this.logger.debug(`[${correlationId}] App-only access token obtained`);
+        } catch (tokenError) {
+          const tokenErrorMsg = tokenError instanceof Error ? tokenError.message : 'Unknown error';
+          this.logger.warn(
+            `[${correlationId}] Could not obtain app-only token: ${tokenErrorMsg}. ` +
+            `Will deactivate subscriptions locally only.`
+          );
+        }
+      }
+
+      // Process each subscription
+      for (const subscription of activeSubscriptions) {
+        const subId = subscription.subscriptionId;
+
+        try {
+          // Try to delete at Microsoft if we have a token
+          if (accessToken) {
+            try {
+              await this.deleteSubscription(subId, accessToken);
+              this.logger.debug(
+                `[${correlationId}] Deleted subscription ${subId} at Microsoft`
+              );
+            } catch (deleteError) {
+              // Handle 404 gracefully (subscription already gone)
+              if (axios.isAxiosError(deleteError) && deleteError.response?.status === 404) {
+                this.logger.debug(
+                  `[${correlationId}] Subscription ${subId} not found at Microsoft (already deleted)`
+                );
+              } else {
+                const deleteErrorMsg = deleteError instanceof Error ? deleteError.message : 'Unknown error';
+                this.logger.warn(
+                  `[${correlationId}] Failed to delete subscription ${subId} at Microsoft: ${deleteErrorMsg}`
+                );
+                result.errors.push({ subscriptionId: subId, error: deleteErrorMsg });
+              }
+            }
+          }
+
+          // Always deactivate locally
+          await this.webhookSubscriptionRepository.deactivateSubscription(subId);
+
+          if (accessToken) {
+            result.successfullyDeleted++;
+          } else {
+            result.localOnlyDeactivated++;
+          }
+          result.deletedSubscriptionIds.push(subId);
+
+          this.logger.debug(
+            `[${correlationId}] Deactivated subscription ${subId} in local database`
+          );
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+          result.failedToDelete++;
+          result.errors.push({ subscriptionId: subId, error: errorMsg });
+          this.logger.error(
+            `[${correlationId}] Failed to process subscription ${subId}: ${errorMsg}`
+          );
+        }
+      }
+
+      this.logger.log(
+        `[${correlationId}] Bulk deletion complete for tenant ${tenantId}: ` +
+        `${result.successfullyDeleted} deleted at Microsoft, ` +
+        `${result.localOnlyDeactivated} deactivated locally only, ` +
+        `${result.failedToDelete} failed.`
+      );
+
+      return result;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(
+        `[${correlationId}] Bulk subscription deletion failed for tenant ${tenantId}: ${errorMessage}`
+      );
+      throw new Error(`Failed to delete all app-only webhook subscriptions: ${errorMessage}`);
     }
   }
 }

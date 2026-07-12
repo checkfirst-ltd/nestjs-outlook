@@ -169,4 +169,66 @@ export class OutlookWebhookSubscriptionRepository {
   async count(options: Parameters<Repository<OutlookWebhookSubscription>['count']>[0]): Promise<number> {
     return await this.repository.count(options);
   }
+
+  // ─── App-only subscription methods ──────────────────────────────────
+
+  /**
+   * Find all active subscriptions for a specific tenant.
+   * @param tenantId - Microsoft tenant ID
+   * @returns Array of active subscriptions for the tenant
+   */
+  async findAllActiveByTenantId(tenantId: string): Promise<OutlookWebhookSubscription[]> {
+    const now = new Date();
+    return this.repository.find({
+      where: {
+        tenantId,
+        isActive: true,
+        expirationDateTime: MoreThan(now),
+      },
+    });
+  }
+
+  /**
+   * Find active subscription for a specific Microsoft user within a tenant.
+   * @param tenantId - Microsoft tenant ID
+   * @param microsoftUserId - Microsoft user ID
+   * @returns Active subscription or null
+   */
+  async findActiveByTenantAndMicrosoftUser(
+    tenantId: string,
+    microsoftUserId: string,
+  ): Promise<OutlookWebhookSubscription | null> {
+    const now = new Date();
+    return this.repository.findOne({
+      where: {
+        tenantId,
+        microsoftUserId,
+        isActive: true,
+        expirationDateTime: MoreThan(now),
+      },
+    });
+  }
+
+  /**
+   * Find all app-only subscriptions (those with a tenantId set).
+   * Used for health checks and renewal operations.
+   * @param excludeTenantIds - Optional tenant IDs to exclude
+   * @returns Array of active app-only subscriptions
+   */
+  async findActiveAppOnlySubscriptions(
+    excludeTenantIds?: string[],
+  ): Promise<OutlookWebhookSubscription[]> {
+    const now = new Date();
+    const queryBuilder = this.repository
+      .createQueryBuilder('sub')
+      .where('sub.isActive = :active', { active: true })
+      .andWhere('sub.expirationDateTime > :now', { now })
+      .andWhere('sub.tenantId IS NOT NULL');
+
+    if (excludeTenantIds && excludeTenantIds.length > 0) {
+      queryBuilder.andWhere('sub.tenantId NOT IN (:...excludeTenantIds)', { excludeTenantIds });
+    }
+
+    return queryBuilder.getMany();
+  }
 }

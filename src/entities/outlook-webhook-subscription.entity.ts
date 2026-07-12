@@ -4,6 +4,7 @@ import {
   Column,
   CreateDateColumn,
   UpdateDateColumn,
+  Index,
 } from 'typeorm';
 
 @Entity('outlook_webhook_subscriptions')
@@ -16,6 +17,24 @@ export class OutlookWebhookSubscription {
 
   @Column({ name: 'user_id' })
   userId: number = 0;
+
+  /**
+   * Microsoft tenant ID for app-only subscriptions.
+   * Null for delegated (user) subscriptions.
+   * Format: GUID (e.g., "12345678-1234-1234-1234-123456789abc")
+   */
+  @Column({ name: 'tenant_id', type: 'varchar', length: 36, nullable: true })
+  @Index()
+  tenantId: string | null = null;
+
+  /**
+   * Microsoft user ID (immutable ID) for app-only subscriptions.
+   * Used in the resource path: /users/{microsoftUserId}/events
+   * Null for delegated subscriptions which use /me/events.
+   */
+  @Column({ name: 'microsoft_user_id', type: 'varchar', length: 255, nullable: true })
+  @Index()
+  microsoftUserId: string | null = null;
 
   @Column({ length: 255 })
   resource: string = '';

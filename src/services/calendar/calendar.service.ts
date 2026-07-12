@@ -1,9 +1,10 @@
-import { Injectable, Logger, Inject, forwardRef } from "@nestjs/common";
+import { Injectable, Logger, Inject, forwardRef, Optional } from "@nestjs/common";
 import { EventEmitter2 } from "@nestjs/event-emitter";
 import { Client } from "@microsoft/microsoft-graph-client";
 import axios from "axios";
 import { Event, Calendar, ChangeNotification, BatchRequestPayload, BatchResponsePayload } from "../../types";
 import { MicrosoftAuthService } from "../auth/microsoft-auth.service";
+import { AppOnlyAuthService } from "../auth/app-only-auth.service";
 import { OutlookDeltaLinkRepository } from "../../repositories/outlook-delta-link.repository";
 import { OutlookResourceData } from "../../dto/outlook-webhook-notification.dto";
 import { MICROSOFT_CONFIG } from "../../constants";
@@ -81,8 +82,37 @@ export class CalendarService {
     private readonly deltaSyncService: DeltaSyncService,
     private readonly userIdConverter: UserIdConverterService,
     private readonly subscriptionService: MicrosoftSubscriptionService,
-    private readonly rateLimiter: GraphRateLimiterService
+    private readonly rateLimiter: GraphRateLimiterService,
+    @Optional()
+    @Inject(forwardRef(() => AppOnlyAuthService))
+    private readonly appOnlyAuthService: AppOnlyAuthService | null = null
   ) {}
+
+  /**
+   * Resolve the Graph access token + resource base for a user, transparently supporting both
+   * delegated (per-user OAuth, `/me`) and app-only (tenant-wide, `/users/{microsoftUserId}`) auth.
+   * App-only is used when the user has been mapped into a Microsoft tenant
+   * (microsoft_users.tenant_id set); otherwise the delegated path is used unchanged.
+   */
+  private async resolveGraphAuth(
+    externalUserId: string,
+  ): Promise<{ accessToken: string; resourceBase: string }> {
+    const user = await this.microsoftUserRepository.findOne({
+      where: { externalUserId, isActive: true },
+      relations: ['tenant'],
+    });
+    if (user?.tenant && user.microsoftUserId) {
+      if (!this.appOnlyAuthService) {
+        throw new Error(
+          `App-only authentication is not configured but user ${externalUserId} is tenant-mapped`,
+        );
+      }
+      const accessToken = await this.appOnlyAuthService.getAccessToken(user.tenant);
+      return { accessToken, resourceBase: `/users/${user.microsoftUserId}` };
+    }
+    const accessToken = await this.microsoftAuthService.getUserAccessToken({ externalUserId });
+    return { accessToken, resourceBase: '/me' };
+  }
 
   /**
    * Get the user's default calendar ID
@@ -116,9 +146,8 @@ export class CalendarService {
 
       this.logger.debug(`Fetching calendar ID from Microsoft for user ${externalUserId}`);
 
-      // Get a valid access token (with caching)
-      const accessToken =
-        await this.microsoftAuthService.getUserAccessToken({ externalUserId, cache: true });
+      // Get a valid access token + resource base (delegated `/me` or app-only `/users/{id}`)
+      const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
 
       // Acquire rate limit permit before making API call
       await this.rateLimiter.acquirePermit(externalUserId);
@@ -126,7 +155,7 @@ export class CalendarService {
       // Fetch calendar ID from Microsoft Graph API with retry logic
       const response = await executeGraphApiCall(
         () => axios.get<Calendar>(
-          "https://graph.microsoft.com/v1.0/me/calendar",
+          `https://graph.microsoft.com/v1.0${resourceBase}/calendar`,
           {
             headers: {
               Authorization: `Bearer ${accessToken}`,
@@ -137,7 +166,7 @@ export class CalendarService {
         ),
         {
           logger: this.logger,
-          resourceName: `me/calendar for user ${externalUserId}`,
+          resourceName: `${resourceBase}/calendar for user ${externalUserId}`,
           maxRetries: 7,
         }
       );
@@ -175,9 +204,8 @@ export class CalendarService {
     calendarId: string
   ): Promise<{ event: Event }> {
     try {
-      // Get a valid access token for this user
-      const accessToken =
-        await this.microsoftAuthService.getUserAccessToken({externalUserId});
+      // Get a valid access token + resource base (delegated `/me` or app-only `/users/{id}`)
+      const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
 
       // Initialize Microsoft Graph client
       const client = Client.init({
@@ -188,7 +216,7 @@ export class CalendarService {
 
       // Create the event with retry and rate limiting
       const createdEvent = (await executeGraphApiCall(
-        () => client.api(`/me/calendars/${calendarId}/events`)
+        () => client.api(`${resourceBase}/calendars/${calendarId}/events`)
           .header('Prefer', 'IdType="ImmutableId"')
           .post(event),
         {
@@ -231,9 +259,8 @@ export class CalendarService {
     calendarId: string
   ): Promise<{ event: Event }> {
     try {
-      // Get a valid access token for this user
-      const accessToken =
-        await this.microsoftAuthService.getUserAccessToken({externalUserId});
+      // Get a valid access token + resource base (delegated `/me` or app-only `/users/{id}`)
+      const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
 
       // Initialize Microsoft Graph client
       const client = Client.init({
@@ -246,7 +273,7 @@ export class CalendarService {
 
       // PATCH the existing event with retry and rate limiting
       const updatedEvent = (await executeGraphApiCall(
-        () => client.api(`/me/calendars/${calendarId}/events/${eventId}`)
+        () => client.api(`${resourceBase}/calendars/${calendarId}/events/${eventId}`)
           .header('Prefer', 'IdType="ImmutableId"')
           .patch(updates),
         {
@@ -286,9 +313,8 @@ export class CalendarService {
     eventId: string
   ): Promise<Event | null> {
     try {
-      // Get a valid access token for this user
-      const accessToken =
-        await this.microsoftAuthService.getUserAccessToken({externalUserId});
+      // Get a valid access token + resource base (delegated `/me` or app-only `/users/{id}`)
+      const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
 
       // Initialize Microsoft Graph client
       const client = Client.init({
@@ -301,7 +327,7 @@ export class CalendarService {
 
       // GET the event with retry and rate limiting
       const event = (await executeGraphApiCall(
-        () => client.api(`/me/events/${eventId}`)
+        () => client.api(`${resourceBase}/events/${eventId}`)
           .header('Prefer', 'IdType="ImmutableId"')
           .get(),
         {
@@ -333,10 +359,8 @@ export class CalendarService {
     calendarId: string
   ): Promise<void> {
     try {
-      // Get a valid access token for this user
-      const internalUserId = await this.userIdConverter.toInternalUserId(externalUserId);
-      const accessToken =
-        await this.microsoftAuthService.getUserAccessToken({internalUserId});
+      // Get a valid access token + resource base (delegated `/me` or app-only `/users/{id}`)
+      const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
 
       // Initialize Microsoft Graph client
       const client = Client.init({
@@ -348,7 +372,7 @@ export class CalendarService {
 
       // Delete the event with retry and rate limiting
       await executeGraphApiCall(
-        () => client.api(`/me/calendars/${calendarId}/events/${event.id}`)
+        () => client.api(`${resourceBase}/calendars/${calendarId}/events/${event.id}`)
           .header('Prefer', 'IdType="ImmutableId"')
           .delete(),
         {
@@ -410,8 +434,8 @@ export class CalendarService {
     }
 
     try {
-      const internalUserId = await this.userIdConverter.toInternalUserId(externalUserId);
-      const accessToken = await this.microsoftAuthService.getUserAccessToken({ internalUserId });
+      // Get a valid access token + resource base (delegated `/me` or app-only `/users/{id}`)
+      const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
 
       const results: { index: number; success: boolean; event?: Event; error?: string }[] = [];
 
@@ -430,7 +454,7 @@ export class CalendarService {
             requests: batchEvents.map((event, index) => ({
               id: `${index}`,
               method: 'POST',
-              url: `/me/calendars/${calendarId}/events`,
+              url: `${resourceBase}/calendars/${calendarId}/events`,
               body: event,
               headers: {
                 'Content-Type': 'application/json',
@@ -562,8 +586,8 @@ export class CalendarService {
     }
 
     try {
-      const internalUserId = await this.userIdConverter.toInternalUserId(externalUserId);
-      const accessToken = await this.microsoftAuthService.getUserAccessToken({ internalUserId });
+      // Get a valid access token + resource base (delegated `/me` or app-only `/users/{id}`)
+      const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
 
       const results: { index: number; success: boolean; event?: Event; error?: string }[] = [];
 
@@ -578,7 +602,7 @@ export class CalendarService {
           requests: batchUpdates.map((update, index) => ({
             id: `${index}`,
             method: 'PATCH',
-            url: `/me/calendars/${calendarId}/events/${update.eventId}`,
+            url: `${resourceBase}/calendars/${calendarId}/events/${update.eventId}`,
             body: update.updates,
             headers: {
               'Content-Type': 'application/json',
@@ -695,8 +719,8 @@ export class CalendarService {
     }
 
     try {
-      const internalUserId = await this.userIdConverter.toInternalUserId(externalUserId);
-      const accessToken = await this.microsoftAuthService.getUserAccessToken({ internalUserId });
+      // Get a valid access token + resource base (delegated `/me` or app-only `/users/{id}`)
+      const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
 
       const results: { id: string; success: boolean; error?: string }[] = [];
 
@@ -711,7 +735,7 @@ export class CalendarService {
           requests: batchEventIds.map((eventId, index) => ({
             id: `${index}`,
             method: 'DELETE',
-            url: `/me/calendars/${calendarId}/events/${eventId}`,
+            url: `${resourceBase}/calendars/${calendarId}/events/${eventId}`,
             headers: {
               'Prefer': 'IdType="ImmutableId"',
             },
@@ -899,8 +923,9 @@ export class CalendarService {
       endDate: Date;
     }
   ): Promise<Event[]> {
-    const client = await this.getAuthenticatedClient(externalUserId);
-    const requestUrl = "/me/events/delta";
+    const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
+    const client = Client.init({ authProvider: (done) => { done(null, accessToken); } });
+    const requestUrl = `${resourceBase}/events/delta`;
 
     try {
       this.logger.log(`[fetchAndSortChanges] Starting delta fetch for user ${externalUserId} (forceReset: ${forceReset})`);
@@ -1044,8 +1069,9 @@ export class CalendarService {
     saveDeltaLink: boolean = true,
     skipCursorAdvanceOnEmpty: boolean = false
   ): AsyncGenerator<Event[], string | null, unknown> {
-    const client = await this.getAuthenticatedClient(externalUserId);
-    const requestUrl = "/me/events/delta";
+    const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
+    const client = Client.init({ authProvider: (done) => { done(null, accessToken); } });
+    const requestUrl = `${resourceBase}/events/delta`;
 
     try {
       this.logger.log(`[streamCalendarChanges] Starting stream for user ${externalUserId} (saveDeltaLink: ${saveDeltaLink}, skipCursorAdvanceOnEmpty: ${skipCursorAdvanceOnEmpty})`);
@@ -1070,8 +1096,7 @@ export class CalendarService {
   }
 
   async getAuthenticatedClient(externalUserId: string): Promise<Client> {
-    const accessToken =
-      await this.microsoftAuthService.getUserAccessToken({externalUserId});
+    const { accessToken } = await this.resolveGraphAuth(externalUserId);
 
     return Client.init({
       authProvider: (done) => {
@@ -1096,9 +1121,10 @@ export class CalendarService {
     externalUserId: string
   ): Promise<Event | null> {
     try {
-      // Get a valid access token for this user
-      const accessToken =
-        await this.microsoftAuthService.getUserAccessToken({externalUserId});
+      // Get a valid access token (delegated or app-only). The `resource` path is caller-supplied
+      // and already absolute (e.g. `users/{id}/events/{id}` from a webhook), so only the token
+      // source is auth-aware here.
+      const { accessToken } = await this.resolveGraphAuth(externalUserId);
 
       const response = await executeGraphApiCall(
         () => axios.get(
@@ -1191,16 +1217,15 @@ export class CalendarService {
     await this.rateLimiter.acquirePermit(externalUserId);
 
     try {
-      // Get a valid access token for this user
-      const accessToken =
-        await this.microsoftAuthService.getUserAccessToken({externalUserId});
+      // Get a valid access token + resource base (delegated `/me` or app-only `/users/{id}`)
+      const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
 
       // Build batch request payload (max 20 requests)
       const batchPayload: BatchRequestPayload = {
         requests: eventIds.slice(0, 20).map((eventId, index) => ({
           id: `${index}`,
           method: 'GET',
-          url: `/me/events/${eventId}`,
+          url: `${resourceBase}/events/${eventId}`,
         })),
       };
 
@@ -1410,10 +1435,11 @@ export class CalendarService {
         `Starting event stream for user ${externalUserId} (batchSize: ${batchSize})`
       );
 
-      const client = await this.getAuthenticatedClient(externalUserId);
+      const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
+      const client = Client.init({ authProvider: (done) => { done(null, accessToken); } });
 
       // Build request URL
-      const requestUrl = this.buildRequestUrl(options, batchSize);
+      const requestUrl = this.buildRequestUrl(options, batchSize, resourceBase);
 
       let nextLink: string | undefined = requestUrl;
       const buffer: Event[] = [];
@@ -1541,7 +1567,8 @@ export class CalendarService {
     const batchSize = options?.batchSize ?? 100;
 
     try {
-      const client = await this.getAuthenticatedClient(externalUserId);
+      const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
+      const client = Client.init({ authProvider: (done) => { done(null, accessToken); } });
 
       const now = new Date();
       const startDate = options?.startDate ?? new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
@@ -1559,7 +1586,7 @@ export class CalendarService {
       );
 
       let nextLink: string | undefined =
-        `/me/events/${seriesMasterId}/instances?startDateTime=${startDate.toISOString()}&endDateTime=${inclusiveEndDate.toISOString()}&$top=${batchSize}`;
+        `${resourceBase}/events/${seriesMasterId}/instances?startDateTime=${startDate.toISOString()}&endDateTime=${inclusiveEndDate.toISOString()}&$top=${batchSize}`;
 
       const buffer: Event[] = [];
       let totalFetched = 0;
@@ -1630,7 +1657,8 @@ export class CalendarService {
     this.logger.log(`Initializing delta sync tracking for user ${externalUserId}`);
 
     try {
-      const client = await this.getAuthenticatedClient(externalUserId);
+      const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
+      const client = Client.init({ authProvider: (done) => { done(null, accessToken); } });
 
       // Convert external ID to internal ID
       const internalUserId = await this.userIdConverter.externalToInternal(externalUserId, {cache: false});
@@ -1639,7 +1667,7 @@ export class CalendarService {
       // Events returned are intentionally ignored - we only need the delta token
       await this.deltaSyncService.initializeDeltaLink(
         client,
-        "/me/events/delta",
+        `${resourceBase}/events/delta`,
         internalUserId,
         ResourceType.CALENDAR
       );
@@ -1889,7 +1917,8 @@ export class CalendarService {
       startDate?: Date;
       endDate?: Date;
     },
-    batchSize?: number
+    batchSize?: number,
+    resourceBase: string = '/me'
   ): string {
     // Build the request URL for full import with date range
     // Use calendarView for proper date range queries and recurring event handling
@@ -1904,7 +1933,7 @@ export class CalendarService {
     const endDateStr = endDate.toISOString();
 
     // Build base URL with required parameters
-    let url = `/me/calendarView?startDateTime=${startDateStr}&endDateTime=${endDateStr}`;
+    let url = `${resourceBase}/calendarView?startDateTime=${startDateStr}&endDateTime=${endDateStr}`;
 
     // Add ordering and pagination
     url += `&$orderby=start/dateTime&$top=${batchSize ?? 100}`;
