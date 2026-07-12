@@ -16,7 +16,7 @@ describe('TenantCalendarService', () => {
   let service: TenantCalendarService;
   let appOnlyAuthService: jest.Mocked<AppOnlyAuthService>;
   let tenantUserRepository: jest.Mocked<Repository<MicrosoftUser>>;
-  let eventEmitter: jest.Mocked<EventEmitter2>;
+  let _eventEmitter: jest.Mocked<EventEmitter2>;
 
   const mockConfig: MicrosoftOutlookConfig = {
     clientId: 'test-client-id',
@@ -70,7 +70,7 @@ describe('TenantCalendarService', () => {
     service = module.get<TenantCalendarService>(TenantCalendarService);
     appOnlyAuthService = module.get(AppOnlyAuthService);
     tenantUserRepository = module.get(getRepositoryToken(MicrosoftUser));
-    eventEmitter = module.get(EventEmitter2);
+    _eventEmitter = module.get(EventEmitter2);
 
     jest.clearAllMocks();
     // clearAllMocks does not drain mockResolvedValueOnce queues; reset the shared axios
