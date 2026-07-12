@@ -1,5 +1,16 @@
 # Changelog
 
+## [10.0.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v9.0.3...v10.0.0) (2026-07-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* **tenant:** tenant-wide calendar access via app-only auth ([#161](https://github.com/checkfirst-ltd/nestjs-outlook/issues/161))
+
+### Features
+
+* **tenant:** tenant-wide calendar access via app-only auth ([#161](https://github.com/checkfirst-ltd/nestjs-outlook/issues/161)) ([3a1dbeb](https://github.com/checkfirst-ltd/nestjs-outlook/commit/3a1dbebd21abe8b3fa763cedc1c6215cdd206286))
+
 ## [9.0.3](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v9.0.2...v9.0.3) (2026-06-30)
 
 
