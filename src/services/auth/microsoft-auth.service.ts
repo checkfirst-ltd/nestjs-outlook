@@ -93,21 +93,29 @@ export class MicrosoftAuthService {
     @Inject(OUTLOOK_LOCK_STORE)
     private readonly lockStore: OutlookLockStore,
   ) {
-    console.log('MicrosoftAuthService constructor - microsoftConfig:', {
-      clientId: this.microsoftConfig.clientId,
-      redirectUri: this.microsoftConfig.redirectPath,
-    });
+    this.validateConfig(this.microsoftConfig);
 
     this.clientId = this.microsoftConfig.clientId;
     this.clientSecret = this.microsoftConfig.clientSecret;
-
-    // Build the redirect URI based on config
     this.redirectUri = this.buildRedirectUri(this.microsoftConfig);
-    console.log('Redirect URI:', this.redirectUri);
     this.tokenEndpoint = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
 
-    // Log the redirect URI to help with debugging
     this.logger.log(`Microsoft OAuth redirect URI set to: ${this.redirectUri}`);
+  }
+
+  private validateConfig(config: MicrosoftOutlookConfig): void {
+    const missing: string[] = [];
+    if (!config.clientId) missing.push('clientId');
+    if (!config.clientSecret) missing.push('clientSecret');
+    if (!config.redirectPath) missing.push('redirectPath');
+    if (!config.backendBaseUrl) missing.push('backendBaseUrl');
+
+    if (missing.length > 0) {
+      throw new Error(
+        `MicrosoftOutlookModule is missing required config field(s): ${missing.join(', ')}. ` +
+        'Ensure all required fields are provided when calling MicrosoftOutlookModule.forRoot() or MicrosoftOutlookModule.forRootAsync().',
+      );
+    }
   }
 
   /**

@@ -527,6 +527,20 @@ export class AppOnlyAuthService implements OnModuleInit {
   private buildAdminConsentRedirectUri(): string {
     const config = this.microsoftConfig;
 
+    if (!config.redirectPath) {
+      throw new Error(
+        'MicrosoftOutlookModule config is missing required field: redirectPath. ' +
+        'Ensure it is provided when calling MicrosoftOutlookModule.forRoot() or MicrosoftOutlookModule.forRootAsync().',
+      );
+    }
+
+    if (!config.backendBaseUrl) {
+      throw new Error(
+        'MicrosoftOutlookModule config is missing required field: backendBaseUrl. ' +
+        'Ensure it is provided when calling MicrosoftOutlookModule.forRoot() or MicrosoftOutlookModule.forRootAsync().',
+      );
+    }
+
     // If redirectPath already contains a full URL, use it directly
     if (config.redirectPath.startsWith('http')) {
       // Replace the user auth callback path with admin consent path
