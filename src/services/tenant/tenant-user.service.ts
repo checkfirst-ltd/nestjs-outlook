@@ -111,9 +111,13 @@ export class TenantUserService {
       const accessToken = await this.appOnlyAuthService.getAccessToken(tenantId);
 
       // Use $filter to find user by mail or userPrincipalName
-      // Note: mail property may be null for some users, UPN is always present
-      const encodedEmail = encodeURIComponent(email);
-      const filterQuery = `mail eq '${encodedEmail}' or userPrincipalName eq '${encodedEmail}'`;
+      // Note: mail property may be null for some users, UPN is always present.
+      // Do NOT percent-encode the email here: it goes inside an OData string literal and axios
+      // encodes the whole $filter param once. Pre-encoding turned '@' into '%40' inside the
+      // literal, so `userPrincipalName eq 'user%40domain'` never matched the real UPN. Only
+      // OData-escape single quotes (double them) per the OData literal spec.
+      const escapedEmail = email.replace(/'/g, "''");
+      const filterQuery = `mail eq '${escapedEmail}' or userPrincipalName eq '${escapedEmail}'`;
 
       const response = await executeGraphApiCall(
         () => axios.get<{ value: GraphUser[] }>(
