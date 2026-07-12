@@ -33,7 +33,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@checkfirst/nestjs-outlook": "^9.0.3",
+    "@checkfirst/nestjs-outlook": "^10.0.2",
     "@nestjs/common": "^10.0.0",
     "@nestjs/config": "^3.0.0",
     "@nestjs/core": "^10.0.0",
