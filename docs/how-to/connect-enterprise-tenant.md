@@ -195,6 +195,33 @@ Microsoft redirects to `/auth/microsoft/tenant/admin-callback` with
 `state == tenantId`, sets its status to `ACTIVE`, and verifies it can acquire a
 token. The tenant is then ready for `TenantCalendarService` / `TenantUserService`.
 
+## Disconnecting a tenant
+
+`DELETE /auth/microsoft/tenant/connection` tears down a tenant connection. It has two modes,
+controlled by query flags:
+
+| Query | Effect |
+|-------|--------|
+| *(none)* | **Soft disconnect.** Flags the `MicrosoftTenant` row inactive (`is_active = false`) and drops the cached app-only token. Mapped `microsoft_users` rows and Outlook webhook subscriptions are **left intact** — re-consent reactivates the tenant and existing mappings keep working. |
+| `?purge=true` | **Full teardown.** Additionally deletes the tenant's Outlook webhook subscriptions at Microsoft (rate-limited) and clears its user mappings: rows that also hold delegated OAuth tokens are unmapped (app-only columns nulled, delegated login preserved), pure app-only rows are deleted — both via bulk SQL. |
+| `?revokeUserTokens=true` | Implies `purge`. Also revokes each delegated refresh token at Microsoft (bounded concurrency) and deletes **all** of the tenant's rows. |
+
+```bash
+# Soft disconnect (default) — keeps mappings and subscriptions
+curl -X DELETE '.../auth/microsoft/tenant/connection?tenantId=<guid>'
+
+# Full teardown — remove subscriptions + user mappings
+curl -X DELETE '.../auth/microsoft/tenant/connection?tenantId=<guid>&purge=true'
+
+# Full teardown + revoke delegated user tokens
+curl -X DELETE '.../auth/microsoft/tenant/connection?tenantId=<guid>&purge=true&revokeUserTokens=true'
+```
+
+When purging, the response includes `subscriptions` and `userMappings` summaries with per-step
+counts. Subscription deletion runs **before** deactivation so it still has a valid app-only
+token; a `404` from Microsoft (subscription already gone) is treated as success and cleaned up
+locally. `tenantId` still defaults to the module-configured tenant when omitted.
+
 ## Using certificate authentication
 
 For production environments, certificate authentication is more secure than client secrets:

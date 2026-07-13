@@ -7,6 +7,7 @@ import { MicrosoftUser } from '../../entities/microsoft-user.entity';
 import { AppOnlyAuthService } from '../auth/app-only-auth.service';
 import { TtlCache } from '../../utils/ttl-cache.util';
 import { executeGraphApiCall } from '../../utils/outlook-api-executor.util';
+import { mapWithConcurrency } from '../../utils/concurrent-map.util';
 import { MICROSOFT_CONFIG } from '../../constants';
 import { MicrosoftOutlookConfig } from '../../interfaces/config/outlook-config.interface';
 
@@ -35,6 +36,20 @@ export interface TenantUserLookupResult {
 }
 
 /**
+ * Summary of a tenant user-mapping teardown (see {@link TenantUserService.clearTenantUserMappings}).
+ */
+export interface ClearTenantMappingsResult {
+  /** Rows that also had delegated OAuth tokens and were unmapped (app-only columns nulled, row kept). */
+  delegatedRowsUnmapped: number;
+  /** Pure app-only rows that were deleted. */
+  appOnlyRowsDeleted: number;
+  /** Delegated refresh tokens successfully revoked at Microsoft (only when `revokeDelegatedTokens` is set). */
+  tokensRevoked: number;
+  /** Delegated refresh-token revocations that failed (best-effort; teardown continues regardless). */
+  tokenRevocationFailures: number;
+}
+
+/**
  * Service for looking up and mapping Microsoft 365 users within a tenant.
  *
  * This service provides tenant-wide user lookup capabilities using app-only
@@ -59,6 +74,13 @@ export class TenantUserService {
    * TTL: 1 hour (user IDs don't change, but we want to handle deletions)
    */
   private readonly userIdCache = new TtlCache<string, TenantUserLookupResult>(60 * 60 * 1000);
+
+  /**
+   * Concurrency ceiling for per-user refresh-token revocation during teardown.
+   * Kept small so a tenant with many mapped users doesn't burst Microsoft's
+   * token endpoint (each revocation is an independent HTTP call).
+   */
+  private readonly REVOCATION_CONCURRENCY = 5;
 
   constructor(
     @InjectRepository(MicrosoftTenant)
@@ -532,6 +554,152 @@ export class TenantUserService {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       this.logger.error(`[listUsers] Failed to list users: ${errorMessage}`);
       throw new Error(`Failed to list users: ${errorMessage}`);
+    }
+  }
+
+  /**
+   * Remove a tenant's app-only footprint from the shared `microsoft_users` table.
+   *
+   * Used by the tenant-disconnect flow. It runs at most two bulk SQL statements
+   * (no per-row database loop, no recursion):
+   *
+   * - **Dual-capability rows** (a row that also carries delegated OAuth tokens): the
+   *   app-only columns (`tenant_id`, `microsoft_user_id`, `user_principal_name`) are
+   *   nulled in a single `UPDATE`, preserving the user's still-valid delegated login.
+   * - **Pure app-only rows** (no delegated tokens): deleted in a single `DELETE`.
+   *
+   * When `revokeDelegatedTokens` is set, the teardown is aggressive: every delegated
+   * refresh token for the tenant is first revoked at Microsoft (bounded concurrency to
+   * respect rate limits), then **all** of the tenant's rows are deleted. Revocation is
+   * best-effort — a failed revocation is counted but never aborts the teardown.
+   *
+   * @param tenantId - Microsoft tenant ID (Azure AD tenant GUID). Matched regardless of
+   *   the tenant's `isActive` flag, so it works after the connection has been deactivated.
+   * @param options.revokeDelegatedTokens - Also revoke and delete delegated rows (default: false).
+   * @returns Counts of what was unmapped, deleted, and revoked.
+   */
+  async clearTenantUserMappings(
+    tenantId: string,
+    options?: { revokeDelegatedTokens?: boolean },
+  ): Promise<ClearTenantMappingsResult> {
+    const revokeDelegatedTokens = options?.revokeDelegatedTokens ?? false;
+    const result: ClearTenantMappingsResult = {
+      delegatedRowsUnmapped: 0,
+      appOnlyRowsDeleted: 0,
+      tokensRevoked: 0,
+      tokenRevocationFailures: 0,
+    };
+
+    // Resolve the internal PK (the FK stored on microsoft_users.tenant_id). Match by GUID
+    // only — disconnect deactivates the tenant first, so an isActive filter would miss it.
+    const tenant = await this.tenantRepository.findOne({ where: { tenantId } });
+    if (!tenant) {
+      this.logger.warn(`[clearTenantUserMappings] Tenant not found: ${tenantId} — nothing to clear`);
+      return result;
+    }
+
+    this.logger.log(
+      `[clearTenantUserMappings] Clearing user mappings for tenant ${tenantId} ` +
+      `(revokeDelegatedTokens=${revokeDelegatedTokens})`,
+    );
+
+    if (revokeDelegatedTokens) {
+      // Aggressive purge: revoke every delegated refresh token, then delete all rows.
+      // Bulk-select only the tokens we need (no entity hydration, no N+1).
+      const rows = await this.tenantUserRepository
+        .createQueryBuilder('u')
+        .select('u.refresh_token', 'refreshToken')
+        .where('u.tenant_id = :id', { id: tenant.id })
+        .andWhere('u.refresh_token IS NOT NULL')
+        .getRawMany<{ refreshToken: string | null }>();
+
+      const refreshTokens = rows
+        .map((row) => row.refreshToken)
+        .filter((token): token is string => Boolean(token));
+
+      if (refreshTokens.length > 0) {
+        const revocations = await mapWithConcurrency(
+          refreshTokens,
+          this.REVOCATION_CONCURRENCY,
+          (token) => this.revokeRefreshToken(token),
+        );
+        for (const ok of revocations) {
+          if (ok) {
+            result.tokensRevoked++;
+          } else {
+            result.tokenRevocationFailures++;
+          }
+        }
+      }
+
+      const deleteResult = await this.tenantUserRepository
+        .createQueryBuilder()
+        .delete()
+        .where('tenant_id = :id', { id: tenant.id })
+        .execute();
+      result.appOnlyRowsDeleted = deleteResult.affected ?? 0;
+    } else {
+      // Safe default: keep delegated logins, drop only the app-only footprint.
+      const now = new Date();
+
+      const unmapResult = await this.tenantUserRepository
+        .createQueryBuilder()
+        .update()
+        .set({
+          tenant: null,
+          microsoftUserId: null,
+          userPrincipalName: null,
+          updatedAt: now,
+        })
+        .where('tenant_id = :id', { id: tenant.id })
+        .andWhere('refresh_token IS NOT NULL')
+        .execute();
+      result.delegatedRowsUnmapped = unmapResult.affected ?? 0;
+
+      const deleteResult = await this.tenantUserRepository
+        .createQueryBuilder()
+        .delete()
+        .where('tenant_id = :id', { id: tenant.id })
+        .andWhere('refresh_token IS NULL')
+        .execute();
+      result.appOnlyRowsDeleted = deleteResult.affected ?? 0;
+    }
+
+    // Cached lookups for this tenant now point at gone/changed rows — drop them.
+    this.userIdCache.clear();
+
+    this.logger.log(
+      `[clearTenantUserMappings] Done for tenant ${tenantId}: ` +
+      `${result.delegatedRowsUnmapped} unmapped, ${result.appOnlyRowsDeleted} deleted, ` +
+      `${result.tokensRevoked} tokens revoked, ${result.tokenRevocationFailures} revocation failures`,
+    );
+
+    return result;
+  }
+
+  /**
+   * Revoke a single delegated refresh token at Microsoft. Best-effort: resolves `true`
+   * on success and `false` on failure (logged, never thrown) so a bad token can't abort
+   * a bulk teardown.
+   */
+  private async revokeRefreshToken(refreshToken: string): Promise<boolean> {
+    try {
+      await axios.post(
+        'https://login.microsoftonline.com/common/oauth2/v2.0/logout',
+        new URLSearchParams({
+          token: refreshToken,
+          token_type_hint: 'refresh_token',
+        }),
+        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
+      );
+      return true;
+    } catch (error) {
+      this.logger.warn(
+        `[revokeRefreshToken] Failed to revoke a delegated token: ${
+          error instanceof Error ? error.message : 'Unknown error'
+        }`,
+      );
+      return false;
     }
   }
 

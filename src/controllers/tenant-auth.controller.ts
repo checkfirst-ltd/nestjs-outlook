@@ -5,6 +5,8 @@ import { AppOnlyAuthService } from '../services/auth/app-only-auth.service';
 import { MicrosoftTenantRepository } from '../repositories/microsoft-tenant.repository';
 import { MicrosoftTenant } from '../entities/microsoft-tenant.entity';
 import { MicrosoftTenantStatus } from '../enums/microsoft-tenant-status.enum';
+import { TenantUserService, ClearTenantMappingsResult } from '../services/tenant/tenant-user.service';
+import { MicrosoftSubscriptionService, BulkSubscriptionDeleteResult } from '../services/subscription/microsoft-subscription.service';
 
 /**
  * Controller for handling tenant-wide (app-only) authentication flows.
@@ -36,6 +38,14 @@ export class TenantAuthController {
     @Optional()
     @Inject(MicrosoftTenantRepository)
     private readonly tenantConnectionRepository: MicrosoftTenantRepository | null,
+    // Optional teardown collaborators — only needed for the `purge` disconnect path.
+    // Same `| null` reflection caveat as above: explicit @Inject token + @Optional.
+    @Optional()
+    @Inject(TenantUserService)
+    private readonly tenantUserService: TenantUserService | null,
+    @Optional()
+    @Inject(MicrosoftSubscriptionService)
+    private readonly subscriptionService: MicrosoftSubscriptionService | null,
   ) {}
 
   /**
@@ -405,14 +415,25 @@ export class TenantAuthController {
    * @description Deactivates the stored tenant connection and invalidates any cached
    * app-only access token so subsequent Graph calls stop working until re-consent.
    *
+   * By default this is a **soft** disconnect: the tenant row is flagged inactive and its
+   * token cache dropped, but the mapped `microsoft_users` rows and any Outlook webhook
+   * subscriptions are left in place. Pass `purge=true` for a **full teardown** that also
+   * deletes the tenant's Outlook subscriptions at Microsoft and clears its user mappings.
+   * Add `revokeUserTokens=true` to additionally revoke and remove delegated user tokens.
+   *
    * @param {string} tenantId - Optional Azure AD tenant ID; defaults to the configured tenant
-   * @returns {{ message: string }} Confirmation message
+   * @param {boolean} purge - Also delete Outlook subscriptions and clear user mappings
+   * @param {boolean} revokeUserTokens - With purge, also revoke/remove delegated user tokens
+   * @returns Confirmation message, plus a teardown summary when purging
    */
   @Delete('connection')
   @ApiOperation({
     summary: 'Disconnect the tenant connection',
     description:
-      'Deactivates the stored app-only tenant connection and invalidates the cached access token. Falls back to the module-configured tenant when tenantId is omitted.',
+      'Deactivates the stored app-only tenant connection and invalidates the cached access token. ' +
+      'With purge=true, also deletes the tenant\'s Outlook webhook subscriptions at Microsoft (rate-limited) ' +
+      'and clears its user mappings; with revokeUserTokens=true it additionally revokes delegated tokens. ' +
+      'Falls back to the module-configured tenant when tenantId is omitted.',
   })
   @ApiQuery({
     name: 'tenantId',
@@ -421,14 +442,41 @@ export class TenantAuthController {
     type: String,
     example: '12345678-1234-1234-1234-123456789abc',
   })
+  @ApiQuery({
+    name: 'purge',
+    description: 'Also delete Outlook subscriptions and clear user mappings for the tenant',
+    required: false,
+    type: Boolean,
+    example: true,
+  })
+  @ApiQuery({
+    name: 'revokeUserTokens',
+    description: 'With purge, revoke and remove delegated user tokens (implies purge)',
+    required: false,
+    type: Boolean,
+    example: false,
+  })
   @ApiResponse({
     status: 200,
     description: 'Tenant disconnected (or nothing to disconnect)',
   })
-  async disconnect(@Query('tenantId') tenantId?: string): Promise<{ message: string }> {
+  async disconnect(
+    @Query('tenantId') tenantId?: string,
+    @Query('purge') purge?: string | boolean,
+    @Query('revokeUserTokens') revokeUserTokens?: string | boolean,
+  ): Promise<{
+    message: string;
+    subscriptions?: BulkSubscriptionDeleteResult;
+    userMappings?: ClearTenantMappingsResult;
+  }> {
     if (!this.appOnlyAuthService || !this.tenantConnectionRepository) {
       throw new Error('Tenant-wide authentication is not configured for this application');
     }
+
+    // Query params arrive as strings ('true'/'false'); coerce leniently. revokeUserTokens
+    // implies purge — you can't revoke tokens without tearing down the mappings.
+    const revokeTokens = this.isTruthyFlag(revokeUserTokens);
+    const shouldPurge = this.isTruthyFlag(purge) || revokeTokens;
 
     // Resolve which tenant to disconnect, mirroring getConnection: an explicit tenantId
     // wins; otherwise use the module-configured tenant when concrete; otherwise (the
@@ -454,11 +502,61 @@ export class TenantAuthController {
       return { message: 'No tenant connection to disconnect.' };
     }
 
+    const response: {
+      message: string;
+      subscriptions?: BulkSubscriptionDeleteResult;
+      userMappings?: ClearTenantMappingsResult;
+    } = { message: 'Microsoft 365 tenant disconnected successfully.' };
+
+    // Full teardown runs BEFORE deactivation so subscription deletion still has a valid
+    // app-only token (findByTenantId only returns active rows once deactivated).
+    if (shouldPurge) {
+      if (this.subscriptionService) {
+        response.subscriptions =
+          await this.subscriptionService.deleteAllAppOnlySubscriptionsForTenant(resolvedTenantId);
+      } else {
+        this.logger.warn(
+          `[disconnect] purge requested but subscription service is unavailable; ` +
+          `skipping Outlook subscription cleanup for ${resolvedTenantId}`,
+        );
+      }
+
+      if (this.tenantUserService) {
+        response.userMappings = await this.tenantUserService.clearTenantUserMappings(
+          resolvedTenantId,
+          { revokeDelegatedTokens: revokeTokens },
+        );
+      } else {
+        this.logger.warn(
+          `[disconnect] purge requested but tenant user service is unavailable; ` +
+          `skipping user-mapping cleanup for ${resolvedTenantId}`,
+        );
+      }
+    }
+
     await this.tenantConnectionRepository.deactivate(resolvedTenantId);
     this.appOnlyAuthService.invalidateCache(resolvedTenantId);
-    this.logger.log(`Tenant connection disconnected: ${resolvedTenantId}`);
+    this.logger.log(
+      `Tenant connection disconnected: ${resolvedTenantId} (purge=${shouldPurge}, revokeUserTokens=${revokeTokens})`,
+    );
 
-    return { message: 'Microsoft 365 tenant disconnected successfully.' };
+    return response;
+  }
+
+  /**
+   * Coerce a query-string flag to boolean. Query params are strings, so treat
+   * 'true'/'1'/'yes' (case-insensitive) and boolean `true` as truthy; everything
+   * else (including undefined and 'false') is false.
+   */
+  private isTruthyFlag(value: string | boolean | undefined): boolean {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      return normalized === 'true' || normalized === '1' || normalized === 'yes';
+    }
+    return false;
   }
 
   /**

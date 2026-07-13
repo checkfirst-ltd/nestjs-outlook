@@ -78,6 +78,7 @@ describe('TenantUserService', () => {
     const mockTenantUserRepository = {
       findOne: jest.fn(),
       save: jest.fn(),
+      createQueryBuilder: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -616,6 +617,117 @@ describe('TenantUserService', () => {
       await expect(
         service.listUsers(mockTenantId)
       ).rejects.toThrow('Failed to list users');
+    });
+  });
+
+  describe('clearTenantUserMappings', () => {
+    // Chainable query-builder stub. UPDATE/DELETE end in .execute(); the revoke SELECT
+    // ends in .getRawMany(). Each call to createQueryBuilder gets its own stub so we can
+    // assert per-statement without cross-talk.
+    const makeQb = (overrides: { affected?: number; rawMany?: unknown[] } = {}) => {
+      const qb: Record<string, jest.Mock> = {};
+      const chain = () => qb;
+      qb.select = jest.fn(chain);
+      qb.update = jest.fn(chain);
+      qb.set = jest.fn(chain);
+      qb.delete = jest.fn(chain);
+      qb.where = jest.fn(chain);
+      qb.andWhere = jest.fn(chain);
+      qb.execute = jest.fn().mockResolvedValue({ affected: overrides.affected ?? 0 });
+      qb.getRawMany = jest.fn().mockResolvedValue(overrides.rawMany ?? []);
+      return qb;
+    };
+
+    it('returns zeros and skips queries when the tenant does not exist', async () => {
+      tenantRepository.findOne.mockResolvedValueOnce(null);
+
+      const result = await service.clearTenantUserMappings(mockTenantId);
+
+      expect(result).toEqual({
+        delegatedRowsUnmapped: 0,
+        appOnlyRowsDeleted: 0,
+        tokensRevoked: 0,
+        tokenRevocationFailures: 0,
+      });
+      expect(tenantUserRepository.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it('matches the tenant regardless of isActive (works after deactivation)', async () => {
+      tenantRepository.findOne.mockResolvedValueOnce(mockTenant as MicrosoftTenant);
+      tenantUserRepository.createQueryBuilder
+        .mockReturnValueOnce(makeQb({ affected: 0 }) as never)
+        .mockReturnValueOnce(makeQb({ affected: 0 }) as never);
+
+      await service.clearTenantUserMappings(mockTenantId);
+
+      expect(tenantRepository.findOne).toHaveBeenCalledWith({ where: { tenantId: mockTenantId } });
+    });
+
+    it('default: unmaps delegated rows and deletes pure app-only rows via bulk queries', async () => {
+      tenantRepository.findOne.mockResolvedValueOnce(mockTenant as MicrosoftTenant);
+      const updateQb = makeQb({ affected: 2 });
+      const deleteQb = makeQb({ affected: 3 });
+      tenantUserRepository.createQueryBuilder
+        .mockReturnValueOnce(updateQb as never)
+        .mockReturnValueOnce(deleteQb as never);
+
+      const result = await service.clearTenantUserMappings(mockTenantId);
+
+      expect(result.delegatedRowsUnmapped).toBe(2);
+      expect(result.appOnlyRowsDeleted).toBe(3);
+      expect(result.tokensRevoked).toBe(0);
+      // UPDATE preserves delegated rows (refresh_token IS NOT NULL); DELETE removes app-only.
+      expect(updateQb.update).toHaveBeenCalled();
+      expect(updateQb.andWhere).toHaveBeenCalledWith('refresh_token IS NOT NULL');
+      expect(deleteQb.delete).toHaveBeenCalled();
+      expect(deleteQb.andWhere).toHaveBeenCalledWith('refresh_token IS NULL');
+      // No token revocation on the default path.
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
+    it('revoke path: revokes each delegated token then deletes all tenant rows', async () => {
+      tenantRepository.findOne.mockResolvedValueOnce(mockTenant as MicrosoftTenant);
+      const selectQb = makeQb({
+        rawMany: [{ refreshToken: 'rt-1' }, { refreshToken: 'rt-2' }, { refreshToken: null }],
+      });
+      const deleteQb = makeQb({ affected: 5 });
+      tenantUserRepository.createQueryBuilder
+        .mockReturnValueOnce(selectQb as never)
+        .mockReturnValueOnce(deleteQb as never);
+      mockedAxios.post.mockResolvedValue({ data: {} } as never);
+
+      const result = await service.clearTenantUserMappings(mockTenantId, {
+        revokeDelegatedTokens: true,
+      });
+
+      // Null refresh token is filtered out — only two revocation calls.
+      expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+      expect(result.tokensRevoked).toBe(2);
+      expect(result.tokenRevocationFailures).toBe(0);
+      expect(result.appOnlyRowsDeleted).toBe(5);
+      expect(result.delegatedRowsUnmapped).toBe(0);
+      expect(deleteQb.delete).toHaveBeenCalled();
+    });
+
+    it('revoke path: counts revocation failures without aborting the teardown', async () => {
+      tenantRepository.findOne.mockResolvedValueOnce(mockTenant as MicrosoftTenant);
+      const selectQb = makeQb({ rawMany: [{ refreshToken: 'rt-1' }, { refreshToken: 'rt-2' }] });
+      const deleteQb = makeQb({ affected: 2 });
+      tenantUserRepository.createQueryBuilder
+        .mockReturnValueOnce(selectQb as never)
+        .mockReturnValueOnce(deleteQb as never);
+      mockedAxios.post
+        .mockResolvedValueOnce({ data: {} } as never)
+        .mockRejectedValueOnce(new Error('revoke failed') as never);
+
+      const result = await service.clearTenantUserMappings(mockTenantId, {
+        revokeDelegatedTokens: true,
+      });
+
+      expect(result.tokensRevoked).toBe(1);
+      expect(result.tokenRevocationFailures).toBe(1);
+      // Teardown still deletes rows despite the failed revocation.
+      expect(result.appOnlyRowsDeleted).toBe(2);
     });
   });
 });
