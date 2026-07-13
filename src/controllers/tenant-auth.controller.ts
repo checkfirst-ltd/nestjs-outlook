@@ -5,8 +5,8 @@ import { AppOnlyAuthService } from '../services/auth/app-only-auth.service';
 import { MicrosoftTenantRepository } from '../repositories/microsoft-tenant.repository';
 import { MicrosoftTenant } from '../entities/microsoft-tenant.entity';
 import { MicrosoftTenantStatus } from '../enums/microsoft-tenant-status.enum';
-import { TenantUserService, ClearTenantMappingsResult } from '../services/tenant/tenant-user.service';
-import { MicrosoftSubscriptionService, BulkSubscriptionDeleteResult } from '../services/subscription/microsoft-subscription.service';
+import { TenantUserService } from '../services/tenant/tenant-user.service';
+import { MicrosoftSubscriptionService } from '../services/subscription/microsoft-subscription.service';
 
 /**
  * Controller for handling tenant-wide (app-only) authentication flows.
@@ -415,25 +415,31 @@ export class TenantAuthController {
    * @description Deactivates the stored tenant connection and invalidates any cached
    * app-only access token so subsequent Graph calls stop working until re-consent.
    *
-   * By default this is a **soft** disconnect: the tenant row is flagged inactive and its
-   * token cache dropped, but the mapped `microsoft_users` rows and any Outlook webhook
-   * subscriptions are left in place. Pass `purge=true` for a **full teardown** that also
-   * deletes the tenant's Outlook subscriptions at Microsoft and clears its user mappings.
-   * Add `revokeUserTokens=true` to additionally revoke and remove delegated user tokens.
+   * By default this is a **soft** disconnect (synchronous, `200`): the tenant row is flagged
+   * inactive and its token cache dropped, but the mapped `microsoft_users` rows and any Outlook
+   * webhook subscriptions are left in place. Pass `purge=true` for a **full teardown** that also
+   * deletes the tenant's Outlook subscriptions at Microsoft and clears its user mappings; add
+   * `revokeUserTokens=true` to additionally revoke and remove delegated user tokens.
+   *
+   * Because a purge can touch thousands of subscriptions/users, it runs in the **background**
+   * and the endpoint returns `202 Accepted` immediately. The tenant is deactivated at the end
+   * of the teardown, so the connection reporting as disconnected (via `GET connection`) is the
+   * completion signal.
    *
    * @param {string} tenantId - Optional Azure AD tenant ID; defaults to the configured tenant
-   * @param {boolean} purge - Also delete Outlook subscriptions and clear user mappings
+   * @param {boolean} purge - Also delete Outlook subscriptions and clear user mappings (async)
    * @param {boolean} revokeUserTokens - With purge, also revoke/remove delegated user tokens
-   * @returns Confirmation message, plus a teardown summary when purging
+   * @returns Confirmation message (`202` when a purge was started, `200` for a soft disconnect)
    */
   @Delete('connection')
   @ApiOperation({
     summary: 'Disconnect the tenant connection',
     description:
-      'Deactivates the stored app-only tenant connection and invalidates the cached access token. ' +
-      'With purge=true, also deletes the tenant\'s Outlook webhook subscriptions at Microsoft (rate-limited) ' +
-      'and clears its user mappings; with revokeUserTokens=true it additionally revokes delegated tokens. ' +
-      'Falls back to the module-configured tenant when tenantId is omitted.',
+      'Soft disconnect (default) deactivates the stored app-only tenant connection and invalidates ' +
+      'the cached access token, synchronously (200). With purge=true it additionally deletes the ' +
+      'tenant\'s Outlook webhook subscriptions at Microsoft (batched) and clears its user mappings; ' +
+      'with revokeUserTokens=true it also revokes delegated tokens. A purge runs in the background ' +
+      'and returns 202 immediately. Falls back to the module-configured tenant when tenantId is omitted.',
   })
   @ApiQuery({
     name: 'tenantId',
@@ -444,7 +450,7 @@ export class TenantAuthController {
   })
   @ApiQuery({
     name: 'purge',
-    description: 'Also delete Outlook subscriptions and clear user mappings for the tenant',
+    description: 'Also delete Outlook subscriptions and clear user mappings (runs in background)',
     required: false,
     type: Boolean,
     example: true,
@@ -458,17 +464,18 @@ export class TenantAuthController {
   })
   @ApiResponse({
     status: 200,
-    description: 'Tenant disconnected (or nothing to disconnect)',
+    description: 'Soft disconnect completed (or nothing to disconnect)',
+  })
+  @ApiResponse({
+    status: 202,
+    description: 'Purge accepted and running in the background',
   })
   async disconnect(
     @Query('tenantId') tenantId?: string,
     @Query('purge') purge?: string | boolean,
     @Query('revokeUserTokens') revokeUserTokens?: string | boolean,
-  ): Promise<{
-    message: string;
-    subscriptions?: BulkSubscriptionDeleteResult;
-    userMappings?: ClearTenantMappingsResult;
-  }> {
+    @Res({ passthrough: true }) res?: Response,
+  ): Promise<{ message: string }> {
     if (!this.appOnlyAuthService || !this.tenantConnectionRepository) {
       throw new Error('Tenant-wide authentication is not configured for this application');
     }
@@ -502,45 +509,104 @@ export class TenantAuthController {
       return { message: 'No tenant connection to disconnect.' };
     }
 
-    const response: {
-      message: string;
-      subscriptions?: BulkSubscriptionDeleteResult;
-      userMappings?: ClearTenantMappingsResult;
-    } = { message: 'Microsoft 365 tenant disconnected successfully.' };
-
-    // Full teardown runs BEFORE deactivation so subscription deletion still has a valid
-    // app-only token (findByTenantId only returns active rows once deactivated).
     if (shouldPurge) {
-      if (this.subscriptionService) {
-        response.subscriptions =
-          await this.subscriptionService.deleteAllAppOnlySubscriptionsForTenant(resolvedTenantId);
-      } else {
-        this.logger.warn(
-          `[disconnect] purge requested but subscription service is unavailable; ` +
-          `skipping Outlook subscription cleanup for ${resolvedTenantId}`,
+      // A full teardown can touch thousands of subscriptions/users — far too slow to run in
+      // the request without blowing the HTTP timeout and pinning a worker. Kick it off in the
+      // background (detached, fully defensive) and return 202 immediately. The tenant is
+      // deactivated at the END of runTenantPurge so subscription deletion still has a valid
+      // app-only token while it runs.
+      const purgeTenantId = resolvedTenantId;
+      this.runTenantPurge(purgeTenantId, revokeTokens).catch((error: unknown) => {
+        this.logger.error(
+          `[disconnect] Background purge failed for ${purgeTenantId}: ${
+            error instanceof Error ? error.message : 'Unknown error'
+          }`,
         );
-      }
+      });
 
-      if (this.tenantUserService) {
-        response.userMappings = await this.tenantUserService.clearTenantUserMappings(
-          resolvedTenantId,
-          { revokeDelegatedTokens: revokeTokens },
-        );
-      } else {
-        this.logger.warn(
-          `[disconnect] purge requested but tenant user service is unavailable; ` +
-          `skipping user-mapping cleanup for ${resolvedTenantId}`,
-        );
+      if (res) {
+        res.status(HttpStatus.ACCEPTED);
       }
+      return {
+        message:
+          'Microsoft 365 tenant disconnect is running in the background. ' +
+          'The connection will report as disconnected once teardown completes.',
+      };
     }
 
+    // Soft disconnect — cheap, so do it synchronously and return 200.
     await this.tenantConnectionRepository.deactivate(resolvedTenantId);
     this.appOnlyAuthService.invalidateCache(resolvedTenantId);
+    this.logger.log(`Tenant connection disconnected: ${resolvedTenantId} (soft)`);
+
+    return { message: 'Microsoft 365 tenant disconnected successfully.' };
+  }
+
+  /**
+   * Run the full tenant teardown in the background: delete Outlook subscriptions at Microsoft
+   * (batched via `$batch`), clear user mappings, then deactivate the tenant and drop its token
+   * cache LAST — so the earlier steps still had a live token/tenant to work with. Fully
+   * defensive: each step is isolated, logs on failure, and never rejects the caller. Progress
+   * is observable via the tenant flipping to inactive (`GET connection`) once this completes.
+   *
+   * @param tenantId - Azure AD tenant GUID being torn down.
+   * @param revokeTokens - Whether to revoke + delete delegated user tokens as well.
+   */
+  private async runTenantPurge(tenantId: string, revokeTokens: boolean): Promise<void> {
     this.logger.log(
-      `Tenant connection disconnected: ${resolvedTenantId} (purge=${shouldPurge}, revokeUserTokens=${revokeTokens})`,
+      `[purge] Starting background teardown for tenant ${tenantId} (revokeUserTokens=${revokeTokens})`,
     );
 
-    return response;
+    if (this.subscriptionService) {
+      try {
+        const subs = await this.subscriptionService.deleteAllAppOnlySubscriptionsForTenant(tenantId);
+        this.logger.log(
+          `[purge] ${tenantId} subscriptions: ${subs.totalFound} found, ` +
+          `${subs.successfullyDeleted} deleted, ${subs.failedToDelete} failed`,
+        );
+      } catch (error) {
+        this.logger.error(
+          `[purge] Subscription cleanup failed for ${tenantId}: ${
+            error instanceof Error ? error.message : 'Unknown error'
+          }`,
+        );
+      }
+    } else {
+      this.logger.warn(
+        `[purge] Subscription service unavailable; skipping subscription cleanup for ${tenantId}`,
+      );
+    }
+
+    if (this.tenantUserService) {
+      try {
+        const mappings = await this.tenantUserService.clearTenantUserMappings(tenantId, {
+          revokeDelegatedTokens: revokeTokens,
+        });
+        this.logger.log(
+          `[purge] ${tenantId} mappings: ${mappings.delegatedRowsUnmapped} unmapped, ` +
+          `${mappings.appOnlyRowsDeleted} deleted, ${mappings.tokensRevoked} tokens revoked`,
+        );
+      } catch (error) {
+        this.logger.error(
+          `[purge] User-mapping cleanup failed for ${tenantId}: ${
+            error instanceof Error ? error.message : 'Unknown error'
+          }`,
+        );
+      }
+    } else {
+      this.logger.warn(
+        `[purge] Tenant user service unavailable; skipping user-mapping cleanup for ${tenantId}`,
+      );
+    }
+
+    // Deactivate + invalidate LAST so the steps above had a live token/tenant to work with.
+    if (this.tenantConnectionRepository && this.appOnlyAuthService) {
+      await this.tenantConnectionRepository.deactivate(tenantId);
+      this.appOnlyAuthService.invalidateCache(tenantId);
+    }
+    this.logger.log(
+      `[purge] Background teardown complete for tenant ${tenantId}; connection deactivated`,
+    );
   }
 
   /**
