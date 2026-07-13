@@ -43,6 +43,7 @@ import {
 import { WebhookClientStateGuard } from "./guards/webhook-client-state.guard";
 import { TenantCalendarService } from "./services/tenant/tenant-calendar.service";
 import { TenantUserService } from "./services/tenant/tenant-user.service";
+import { TenantProvisioningService } from "./services/tenant/tenant-provisioning.service";
 import { MicrosoftTenantRepository } from "./repositories/microsoft-tenant.repository";
 
 export const { ConfigurableModuleClass, MODULE_OPTIONS_TOKEN } =
@@ -175,6 +176,7 @@ async function buildRateLimitStore(
     // Tenant services for app-only authentication
     TenantCalendarService,
     TenantUserService,
+    TenantProvisioningService,
     MicrosoftTenantRepository,
   ],
   exports: [
@@ -194,6 +196,7 @@ async function buildRateLimitStore(
     // Tenant services for app-only authentication
     TenantCalendarService,
     TenantUserService,
+    TenantProvisioningService,
     MicrosoftTenantRepository,
   ],
 })

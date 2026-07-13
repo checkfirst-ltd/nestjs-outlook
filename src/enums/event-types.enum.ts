@@ -40,4 +40,8 @@ export enum OutlookEventTypes {
 
   // Security events
   WEBHOOK_REJECTED = 'outlook.webhook.rejected',
+
+  // Tenant provisioning events
+  TENANT_USERS_BULK_CONNECT_COMPLETED = 'outlook.tenant.users.bulk_connect.completed',
+  TENANT_USERS_BULK_CONNECT_FAILED = 'outlook.tenant.users.bulk_connect.failed',
 }

@@ -13,6 +13,7 @@ export * from './services/shared/outlook-lock.store';
 export * from './services/shared/outlook-rate-limit.store';
 export * from './services/tenant/tenant-calendar.service';
 export * from './services/tenant/tenant-user.service';
+export * from './services/tenant/tenant-provisioning.service';
 
 // Export module
 export * from './microsoft-outlook.module';
@@ -46,6 +47,7 @@ export * from './controllers/email.controller';
 
 // Export DTOs
 export * from './dto/outlook-webhook-notification.dto';
+export * from './dto/bulk-connect-users.dto';
 
 // Entities
 export * from './entities/outlook-webhook-subscription.entity';

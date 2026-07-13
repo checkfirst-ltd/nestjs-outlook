@@ -1,10 +1,12 @@
-import { Controller, Get, Delete, Query, Logger, Res, HttpStatus, Optional, Inject } from '@nestjs/common';
+import { Controller, Get, Delete, Post, Body, Query, Logger, Res, HttpStatus, Optional, Inject, BadRequestException } from '@nestjs/common';
 import { Response } from 'express';
-import { ApiTags, ApiResponse, ApiQuery, ApiOperation, ApiProduces } from '@nestjs/swagger';
+import { ApiTags, ApiResponse, ApiQuery, ApiBody, ApiOperation, ApiProduces } from '@nestjs/swagger';
 import { AppOnlyAuthService } from '../services/auth/app-only-auth.service';
 import { MicrosoftTenantRepository } from '../repositories/microsoft-tenant.repository';
 import { MicrosoftTenant } from '../entities/microsoft-tenant.entity';
 import { MicrosoftTenantStatus } from '../enums/microsoft-tenant-status.enum';
+import { TenantProvisioningService } from '../services/tenant/tenant-provisioning.service';
+import { BulkConnectUsersDto } from '../dto/bulk-connect-users.dto';
 
 /**
  * Controller for handling tenant-wide (app-only) authentication flows.
@@ -36,6 +38,9 @@ export class TenantAuthController {
     @Optional()
     @Inject(MicrosoftTenantRepository)
     private readonly tenantConnectionRepository: MicrosoftTenantRepository | null,
+    @Optional()
+    @Inject(TenantProvisioningService)
+    private readonly provisioningService: TenantProvisioningService | null,
   ) {}
 
   /**
@@ -396,6 +401,102 @@ export class TenantAuthController {
 
     const activeConnections = await this.tenantConnectionRepository.findAllActive();
     return activeConnections[0] ?? null;
+  }
+
+  /**
+   * Bulk-connect users into a tenant (app-only).
+   *
+   * @summary Connect many users into a tenant
+   * @description For each `{ externalUserId, email }` the module upserts the `microsoft_users`
+   * mapping and creates an app-only Outlook calendar webhook subscription. Users who already
+   * have a delegated subscription have it removed (at Microsoft and locally) before the new one
+   * is created, so a mailbox never ends up double-subscribed.
+   *
+   * Because this can span thousands of users, it runs in the **background** and returns
+   * `202 Accepted` immediately. Listen for the
+   * `outlook.tenant.users.bulk_connect.completed` event (payload includes per-user results and
+   * connected/failed tallies) to observe the outcome.
+   *
+   * @param {BulkConnectUsersDto} body - Tenant (optional; defaults to configured) + users list
+   * @returns Acknowledgement with the number of users queued
+   */
+  @Post('users/connect')
+  @ApiOperation({
+    summary: 'Bulk-connect users into a tenant',
+    description:
+      'Upserts each user mapping and creates an app-only Outlook calendar subscription per user; ' +
+      'existing calendar subscriptions are removed before recreation. Runs in the background and ' +
+      "returns 202 — listen for the 'outlook.tenant.users.bulk_connect.completed' event for results.",
+  })
+  @ApiBody({ type: BulkConnectUsersDto })
+  @ApiResponse({
+    status: 202,
+    description: 'Bulk connect accepted and running in the background',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Invalid body, or no tenant to connect into',
+  })
+  connectUsers(
+    @Body() body: BulkConnectUsersDto,
+    @Res({ passthrough: true }) res?: Response,
+  ): { message: string; totalRequested: number } {
+    if (!this.appOnlyAuthService || !this.provisioningService) {
+      throw new Error('Tenant-wide authentication is not configured for this application');
+    }
+
+    // Validate the body here: this package doesn't depend on class-transformer, so the nested
+    // `users` items aren't deep-validated by a global ValidationPipe. Treat items as unknown so
+    // the runtime checks are meaningful (the DTO type alone would make them look redundant).
+    const rawUsers: unknown = body.users;
+    if (!Array.isArray(rawUsers) || rawUsers.length === 0) {
+      throw new BadRequestException('`users` must be a non-empty array');
+    }
+    for (const item of rawUsers) {
+      const user = item as { externalUserId?: unknown; email?: unknown };
+      if (
+        typeof user.externalUserId !== 'string' || user.externalUserId.trim() === '' ||
+        typeof user.email !== 'string' || user.email.trim() === ''
+      ) {
+        throw new BadRequestException('each user must have a non-empty `externalUserId` and `email`');
+      }
+    }
+
+    // Resolve the tenant: explicit body value wins; otherwise the module-configured concrete
+    // tenant ('common' is the dynamic-tenant placeholder and can't be defaulted to).
+    let tenantId = body.tenantId;
+    if (!tenantId) {
+      const configured = this.appOnlyAuthService.getTenantId();
+      if (configured && configured !== 'common') {
+        tenantId = configured;
+      }
+    }
+    if (!tenantId) {
+      throw new BadRequestException(
+        'tenantId is required (no concrete module-configured tenant to default to)',
+      );
+    }
+
+    // Run in the background — a synchronous connect of thousands of users would blow the
+    // request timeout and pin a worker. Detached and fully defensive; results arrive via event.
+    const targetTenantId = tenantId;
+    this.provisioningService.connectUsers(targetTenantId, body.users).catch((error: unknown) => {
+      this.logger.error(
+        `[connectUsers] Background bulk connect failed for ${targetTenantId}: ${
+          error instanceof Error ? error.message : 'Unknown error'
+        }`,
+      );
+    });
+
+    if (res) {
+      res.status(HttpStatus.ACCEPTED);
+    }
+    return {
+      message:
+        'Bulk user connect is running in the background. Listen for the ' +
+        "'outlook.tenant.users.bulk_connect.completed' event for the result.",
+      totalRequested: rawUsers.length,
+    };
   }
 
   /**

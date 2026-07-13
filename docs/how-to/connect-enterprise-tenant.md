@@ -195,6 +195,54 @@ Microsoft redirects to `/auth/microsoft/tenant/admin-callback` with
 `state == tenantId`, sets its status to `ACTIVE`, and verifies it can acquire a
 token. The tenant is then ready for `TenantCalendarService` / `TenantUserService`.
 
+## Bulk-connect users into a tenant
+
+To onboard many users at once, `POST /auth/microsoft/tenant/users/connect` connects a whole list
+in one call. For each user it upserts the `microsoft_users` mapping **and** creates an app-only
+Outlook calendar webhook subscription. Users who already have a delegated subscription have it
+**removed (at Microsoft and locally) before the new one is created**, so a mailbox never ends up
+with two live subscriptions.
+
+Each user must carry an **email/UPN** — an external id alone can't be resolved to a Microsoft
+account (the module looks the user up via Graph `/users?$filter=mail eq …`).
+
+```bash
+curl -X POST '.../auth/microsoft/tenant/users/connect' \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "tenantId": "<guid>",            // optional; defaults to the configured tenant
+        "users": [
+          { "externalUserId": "insp-001", "email": "alice@contoso.com" },
+          { "externalUserId": "insp-002", "email": "bob@contoso.com" }
+        ]
+      }'
+```
+
+Because this can span thousands of users, it runs in the **background** and returns `202 Accepted`
+immediately with `{ message, totalRequested }`. Each user's connect (Graph lookup + optional
+subscription delete + create) runs at **bounded concurrency** — Graph validates each
+subscription's `notificationUrl` at creation, so subscription creation can't be `$batch`ed;
+concurrency is the scale lever. A per-user failure is recorded and never aborts the batch.
+
+Observe the outcome via the emitted event:
+
+```typescript
+import { OnEvent } from '@nestjs/event-emitter';
+import { BulkConnectResult } from '@checkfirst/nestjs-outlook';
+
+@OnEvent('outlook.tenant.users.bulk_connect.completed')
+handleBulkConnect(summary: BulkConnectResult) {
+  // summary: { tenantId, total, connected, failed, results: [{ externalUserId, success, subscriptionId?, error? }] }
+}
+```
+
+A run that can't start (e.g. the tenant isn't connected) emits
+`outlook.tenant.users.bulk_connect.failed` instead. The `TenantProvisioningService.connectUsers()`
+method is also exported for direct (awaitable) use if you'd rather run it inline for small batches.
+
+> **Precondition:** the tenant must already be connected (admin consent granted, `ACTIVE`). See
+> the sections above to register + consent a tenant first.
+
 ## Using certificate authentication
 
 For production environments, certificate authentication is more secure than client secrets:
