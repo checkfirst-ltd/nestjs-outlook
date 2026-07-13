@@ -242,6 +242,110 @@ export class MicrosoftSubscriptionService {
     }
   }
 
+  /**
+   * Classify a stored subscription resource path as a calendar resource. Both delegated
+   * (`/me/events`) and app-only (`/users/{id}/events`) calendar subscriptions end in
+   * `/events`; email resources end in `/messages`.
+   */
+  private isCalendarResource(resource: string | null | undefined): boolean {
+    return typeof resource === 'string' && resource.endsWith('/events');
+  }
+
+  /**
+   * Remove any already-active CALENDAR webhook subscription for a user before a new one
+   * is created, so a mailbox never has two live calendar subscriptions firing duplicate
+   * notifications.
+   *
+   * Runs across BOTH auth modes, keyed by the shared internal `userId` on every
+   * subscription row: a delegated user who joins a tenant (app-only create) has their old
+   * `/me/events` sub removed, and an app-only-mapped user who later connects delegated has
+   * their old `/users/{id}/events` sub removed.
+   *
+   * Best-effort: each stale sub is deleted at Microsoft with the token matching the
+   * subscription's own auth mode (app-only token when `tenantId` is set, the user's
+   * delegated token otherwise) and always deactivated locally. A missing token or a failed
+   * Graph delete is logged and the row is still deactivated — the guard never throws, so it
+   * cannot block creation of the new subscription.
+   *
+   * Uses the low-level `deleteSubscription` + `deactivateSubscription` rather than
+   * `deleteWebhookSubscription`, deliberately skipping the user-lifecycle side effect that
+   * would mark the user inactive when their "last" subscription is removed.
+   *
+   * @param internalUserId - Internal MicrosoftUser id shared by all of the user's subs.
+   * @param correlationId - Correlation id from the calling create flow, for log tracing.
+   */
+  private async removeExistingCalendarSubscriptionsForUser(
+    internalUserId: number,
+    correlationId: string,
+  ): Promise<void> {
+    try {
+      const active = await this.webhookSubscriptionRepository.findAllActiveByUserId(internalUserId);
+      const staleCalendarSubs = active.filter((sub) => this.isCalendarResource(sub.resource));
+
+      if (staleCalendarSubs.length === 0) {
+        return;
+      }
+
+      this.logger.log(
+        `[${correlationId}] Removing ${staleCalendarSubs.length} existing calendar ` +
+        `subscription(s) for user ${internalUserId} before creating a new one`,
+      );
+
+      // Tiny per-user set — process sequentially; deleteSubscription carries its own 429
+      // backoff/retry so we stay within Graph rate limits.
+      for (const sub of staleCalendarSubs) {
+        try {
+          let accessToken: string | null = null;
+          if (sub.tenantId) {
+            // App-only subscription — delete with the tenant's app-only token.
+            accessToken = this.appOnlyAuthService
+              ? await this.appOnlyAuthService.getAccessToken(sub.tenantId)
+              : null;
+          } else {
+            // Delegated subscription — delete with the user's delegated token.
+            accessToken = await this.microsoftAuthService.getUserAccessToken({
+              internalUserId,
+              includeInactive: true,
+              cache: false,
+            });
+          }
+
+          if (accessToken) {
+            await this.deleteSubscription(sub.subscriptionId, accessToken);
+          } else {
+            this.logger.warn(
+              `[${correlationId}] No token available to delete subscription ` +
+              `${sub.subscriptionId} at Microsoft; deactivating locally only`,
+            );
+          }
+        } catch (error) {
+          this.logger.warn(
+            `[${correlationId}] Failed to delete existing subscription ${sub.subscriptionId} ` +
+            `at Microsoft: ${error instanceof Error ? error.message : 'Unknown error'}. ` +
+            `Deactivating locally.`,
+          );
+        } finally {
+          // Always drop the local row so it stops being treated as active, even if the
+          // Microsoft-side delete failed (the sub expires there within ≤3 days).
+          try {
+            await this.webhookSubscriptionRepository.deactivateSubscription(sub.subscriptionId);
+          } catch (deactivateError) {
+            this.logger.warn(
+              `[${correlationId}] Failed to deactivate subscription ${sub.subscriptionId} ` +
+              `locally: ${deactivateError instanceof Error ? deactivateError.message : 'Unknown error'}`,
+            );
+          }
+        }
+      }
+    } catch (error) {
+      // Never let dedup block a fresh subscription — log and continue.
+      this.logger.warn(
+        `[${correlationId}] Error while removing existing calendar subscriptions for user ` +
+        `${internalUserId}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
+    }
+  }
+
   // ─── Webhook subscription lifecycle ─────────────────────────────────
 
   /**
@@ -257,6 +361,10 @@ export class MicrosoftSubscriptionService {
 
     const correlationId = `webhook-${internalUserId}-${Date.now()}`;
     this.logger.log(`[${correlationId}] Starting webhook subscription creation for user ${internalUserId}`);
+
+    // Drop any existing calendar subscription for this user (e.g. an app-only sub from a
+    // prior tenant mapping) so the mailbox isn't double-subscribed. Best-effort, never throws.
+    await this.removeExistingCalendarSubscriptionsForUser(internalUserId, correlationId);
 
     try {
       // Get a valid access token for this user
@@ -1509,6 +1617,10 @@ export class MicrosoftSubscriptionService {
       if (internalUserId === undefined) {
         internalUserId = await this.userIdConverter.externalToInternal(externalUserId, { cache: false });
       }
+
+      // Drop any existing calendar subscription for this user (e.g. a delegated /me/events
+      // sub) so the mailbox isn't double-subscribed after joining the tenant. Best-effort.
+      await this.removeExistingCalendarSubscriptionsForUser(internalUserId, correlationId);
 
       // Get app-only access token for the tenant
       const accessToken = await this.appOnlyAuthService.getAccessToken(tenantId);

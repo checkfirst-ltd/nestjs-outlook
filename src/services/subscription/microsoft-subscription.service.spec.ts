@@ -40,9 +40,12 @@ describe('MicrosoftSubscriptionService - App-Only Methods', () => {
   let service: MicrosoftSubscriptionService;
   let mockWebhookRepo: jest.Mocked<OutlookWebhookSubscriptionRepository>;
   let mockAppOnlyAuthService: jest.Mocked<AppOnlyAuthService>;
+  let mockMicrosoftAuthService: jest.Mocked<MicrosoftAuthService>;
   let mockUserIdConverter: jest.Mocked<UserIdConverterService>;
   let mockRateLimiter: jest.Mocked<GraphRateLimiterService>;
   let mockEventEmitter: jest.Mocked<EventEmitter2>;
+
+  const testDelegatedToken = 'delegated-user-token-abc';
 
   const mockConfig: MicrosoftOutlookConfig = {
     clientId: 'test-client-id',
@@ -73,6 +76,7 @@ describe('MicrosoftSubscriptionService - App-Only Methods', () => {
       findActiveByTenantAndMicrosoftUser: jest.fn(),
       findActiveSubscriptions: jest.fn(),
       findActiveByUserId: jest.fn(),
+      findAllActiveByUserId: jest.fn().mockResolvedValue([]),
     } as unknown as jest.Mocked<OutlookWebhookSubscriptionRepository>;
 
     mockAppOnlyAuthService = {
@@ -93,8 +97,11 @@ describe('MicrosoftSubscriptionService - App-Only Methods', () => {
       emit: jest.fn(),
     } as unknown as jest.Mocked<EventEmitter2>;
 
-    // Create mock MicrosoftAuthService (not used in app-only methods but required)
-    const mockMicrosoftAuthService = {} as unknown as MicrosoftAuthService;
+    // MicrosoftAuthService — supplies the user's delegated token for delegated create
+    // and for deleting a stale delegated subscription during the dedup guard.
+    mockMicrosoftAuthService = {
+      getUserAccessToken: jest.fn().mockResolvedValue(testDelegatedToken),
+    } as unknown as jest.Mocked<MicrosoftAuthService>;
 
     // Create mock MicrosoftUser repository
     const mockMicrosoftUserRepo = {
@@ -452,6 +459,145 @@ describe('MicrosoftSubscriptionService - App-Only Methods', () => {
 
       expect(mockWebhookRepo.findAllActiveByTenantId).toHaveBeenCalledWith(testTenantId);
       expect(result).toHaveLength(2);
+    });
+  });
+
+  describe('duplicate calendar subscription guard', () => {
+    const buildSub = (overrides: Partial<OutlookWebhookSubscription>): OutlookWebhookSubscription =>
+      ({
+        id: 1,
+        subscriptionId: 'old-sub',
+        userId: testInternalUserId,
+        resource: '/me/events',
+        tenantId: null,
+        microsoftUserId: null,
+        isActive: true,
+        ...overrides,
+      }) as OutlookWebhookSubscription;
+
+    const appOnlyGraphResponse = {
+      data: {
+        id: testSubscriptionId,
+        resource: `/users/${testMicrosoftUserId}/events`,
+        changeType: 'created,updated,deleted',
+        clientState: `tenant_${testTenantId}_user_${testInternalUserId}_uuid`,
+        notificationUrl: 'https://api.example.com/api/v1/calendar/webhook',
+        expirationDateTime: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
+      },
+    };
+
+    const appOnlyOptions: AppOnlySubscriptionOptions = {
+      tenantId: testTenantId,
+      microsoftUserId: testMicrosoftUserId,
+      externalUserId: testExternalUserId,
+      internalUserId: testInternalUserId,
+    };
+
+    it('app-only create removes a pre-existing delegated calendar subscription', async () => {
+      mockWebhookRepo.findAllActiveByUserId.mockResolvedValueOnce([
+        buildSub({ subscriptionId: 'old-delegated', resource: '/me/events', tenantId: null }),
+      ]);
+      mockedAxios.delete.mockResolvedValueOnce({ data: {} });
+      mockedAxios.post.mockResolvedValueOnce(appOnlyGraphResponse);
+      mockWebhookRepo.saveSubscription.mockResolvedValueOnce({ id: 2 } as OutlookWebhookSubscription);
+
+      await service.createAppOnlyWebhookSubscription(appOnlyOptions);
+
+      // Deleted the stale delegated sub with the USER's delegated token.
+      expect(mockMicrosoftAuthService.getUserAccessToken).toHaveBeenCalledWith(
+        expect.objectContaining({ internalUserId: testInternalUserId, includeInactive: true }),
+      );
+      expect(mockedAxios.delete).toHaveBeenCalledWith(
+        expect.stringContaining('/subscriptions/old-delegated'),
+        expect.objectContaining({
+          headers: expect.objectContaining({ Authorization: `Bearer ${testDelegatedToken}` }),
+        }),
+      );
+      expect(mockWebhookRepo.deactivateSubscription).toHaveBeenCalledWith('old-delegated');
+      // New app-only sub still created.
+      expect(mockWebhookRepo.saveSubscription).toHaveBeenCalledWith(
+        expect.objectContaining({ subscriptionId: testSubscriptionId, tenantId: testTenantId }),
+      );
+    });
+
+    it('delegated create removes a pre-existing app-only calendar subscription', async () => {
+      mockWebhookRepo.findAllActiveByUserId.mockResolvedValueOnce([
+        buildSub({
+          subscriptionId: 'old-apponly',
+          resource: `/users/${testMicrosoftUserId}/events`,
+          tenantId: testTenantId,
+          microsoftUserId: testMicrosoftUserId,
+        }),
+      ]);
+      mockedAxios.delete.mockResolvedValueOnce({ data: {} });
+      mockedAxios.post.mockResolvedValueOnce({
+        data: {
+          id: testSubscriptionId,
+          resource: '/me/events',
+          changeType: 'created,updated,deleted',
+          clientState: `user_${testInternalUserId}_uuid`,
+          notificationUrl: 'https://api.example.com/api/v1/calendar/webhook',
+          expirationDateTime: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
+        },
+      });
+      mockWebhookRepo.saveSubscription.mockResolvedValueOnce({ id: 3 } as OutlookWebhookSubscription);
+
+      await service.createWebhookSubscription(testExternalUserId);
+
+      // Deleted the stale app-only sub with the tenant's APP-ONLY token.
+      expect(mockAppOnlyAuthService.getAccessToken).toHaveBeenCalledWith(testTenantId);
+      expect(mockedAxios.delete).toHaveBeenCalledWith(
+        expect.stringContaining('/subscriptions/old-apponly'),
+        expect.objectContaining({
+          headers: expect.objectContaining({ Authorization: `Bearer ${testAccessToken}` }),
+        }),
+      );
+      expect(mockWebhookRepo.deactivateSubscription).toHaveBeenCalledWith('old-apponly');
+      // New delegated sub still created.
+      expect(mockWebhookRepo.saveSubscription).toHaveBeenCalled();
+    });
+
+    it('leaves email subscriptions untouched', async () => {
+      mockWebhookRepo.findAllActiveByUserId.mockResolvedValueOnce([
+        buildSub({ subscriptionId: 'email-sub', resource: '/me/messages', tenantId: null }),
+      ]);
+      mockedAxios.post.mockResolvedValueOnce(appOnlyGraphResponse);
+      mockWebhookRepo.saveSubscription.mockResolvedValueOnce({ id: 4 } as OutlookWebhookSubscription);
+
+      await service.createAppOnlyWebhookSubscription(appOnlyOptions);
+
+      expect(mockedAxios.delete).not.toHaveBeenCalled();
+      expect(mockWebhookRepo.deactivateSubscription).not.toHaveBeenCalledWith('email-sub');
+    });
+
+    it('is best-effort: still creates the new sub when deleting the old one fails', async () => {
+      mockWebhookRepo.findAllActiveByUserId.mockResolvedValueOnce([
+        buildSub({ subscriptionId: 'old-delegated', resource: '/me/events', tenantId: null }),
+      ]);
+      // No token available for the stale delegated sub — MS delete is skipped.
+      mockMicrosoftAuthService.getUserAccessToken.mockRejectedValueOnce(new Error('token gone'));
+      mockedAxios.post.mockResolvedValueOnce(appOnlyGraphResponse);
+      mockWebhookRepo.saveSubscription.mockResolvedValueOnce({ id: 5 } as OutlookWebhookSubscription);
+
+      await expect(service.createAppOnlyWebhookSubscription(appOnlyOptions)).resolves.toBeDefined();
+
+      expect(mockedAxios.delete).not.toHaveBeenCalled();
+      // Local deactivation still happens so the row stops counting as active.
+      expect(mockWebhookRepo.deactivateSubscription).toHaveBeenCalledWith('old-delegated');
+      // New sub created despite the failed cleanup.
+      expect(mockWebhookRepo.saveSubscription).toHaveBeenCalled();
+    });
+
+    it('creates normally when there are no existing subscriptions', async () => {
+      mockWebhookRepo.findAllActiveByUserId.mockResolvedValueOnce([]);
+      mockedAxios.post.mockResolvedValueOnce(appOnlyGraphResponse);
+      mockWebhookRepo.saveSubscription.mockResolvedValueOnce({ id: 6 } as OutlookWebhookSubscription);
+
+      await service.createAppOnlyWebhookSubscription(appOnlyOptions);
+
+      expect(mockedAxios.delete).not.toHaveBeenCalled();
+      expect(mockWebhookRepo.deactivateSubscription).not.toHaveBeenCalled();
+      expect(mockWebhookRepo.saveSubscription).toHaveBeenCalled();
     });
   });
 });
