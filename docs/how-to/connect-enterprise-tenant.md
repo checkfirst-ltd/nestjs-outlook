@@ -195,6 +195,136 @@ Microsoft redirects to `/auth/microsoft/tenant/admin-callback` with
 `state == tenantId`, sets its status to `ACTIVE`, and verifies it can acquire a
 token. The tenant is then ready for `TenantCalendarService` / `TenantUserService`.
 
+## Bulk-connect users into a tenant
+
+To onboard many users at once, `POST /auth/microsoft/tenant/users/connect` connects a whole list
+in one call. For each user it upserts the `microsoft_users` mapping **and** creates an app-only
+Outlook calendar webhook subscription. Users who already have a delegated subscription have it
+**removed (at Microsoft and locally) before the new one is created**, so a mailbox never ends up
+with two live subscriptions.
+
+Each user must carry an **email/UPN** — an external id alone can't be resolved to a Microsoft
+account (the module looks the user up via Graph `/users?$filter=mail eq …`).
+
+```bash
+curl -X POST '.../auth/microsoft/tenant/users/connect' \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "tenantId": "<guid>",            // optional; defaults to the configured tenant
+        "users": [
+          { "externalUserId": "insp-001", "email": "alice@contoso.com" },
+          { "externalUserId": "insp-002", "email": "bob@contoso.com" }
+        ]
+      }'
+```
+
+Because this can span thousands of users, it runs in the **background** and returns `202 Accepted`
+immediately with `{ message, totalRequested }`. Each user's connect (Graph lookup + optional
+subscription delete + create) runs at **bounded concurrency** — Graph validates each
+subscription's `notificationUrl` at creation, so subscription creation can't be `$batch`ed;
+concurrency is the scale lever. A per-user failure is recorded and never aborts the batch.
+
+**Already-connected users are skipped.** Before processing, the service checks (in two bulk
+queries) which of the requested users already have an active app-only subscription for the tenant
+and leaves them untouched — so re-running the endpoint (or overlapping batches) never tears down
+and rebuilds a working connection. The summary reports `connected` (newly connected), `skipped`
+(already connected), and `failed`, and each skipped user's result carries `skipped: true`.
+Delegated-only users are **not** treated as connected: they are processed, their `/me/events`
+subscription removed, and an app-only subscription created — after which subsequent runs skip them.
+
+Observe the outcome via the emitted event:
+
+```typescript
+import { OnEvent } from '@nestjs/event-emitter';
+import { BulkConnectResult } from '@checkfirst/nestjs-outlook';
+
+@OnEvent('outlook.tenant.users.bulk_connect.completed')
+handleBulkConnect(summary: BulkConnectResult) {
+  // summary: { tenantId, total, connected, skipped, failed,
+  //            results: [{ externalUserId, success, skipped?, subscriptionId?, error? }] }
+}
+```
+
+A run that can't start (e.g. the tenant isn't connected) emits
+`outlook.tenant.users.bulk_connect.failed` instead. The `TenantProvisioningService.connectUsers()`
+method is also exported for direct (awaitable) use if you'd rather run it inline for small batches.
+
+> **Precondition:** the tenant must already be connected (admin consent granted, `ACTIVE`). See
+> the sections above to register + consent a tenant first.
+
+## Check & recover user health
+
+`HealthService` answers "is this user connected, and if not, why?" by combining the
+`microsoft_users` row and its active Outlook calendar subscription (and, on request, Microsoft
+Graph). It works for one user or a bulk list, covers **delegated and app-only**, and can
+**recover** the fixable states — not just report them.
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET auth/microsoft/health/:externalUserId?verifyAtGraph=` | One user's verdict |
+| `POST auth/microsoft/health/check` `{ externalUserIds, verifyAtGraph? }` | Bulk verdicts (read-only) |
+| `POST auth/microsoft/health/recover` `{ externalUserIds, verifyAtGraph? }` | Bulk check + recover (background, `202`) |
+
+Verdicts (`UserHealthStatus`): `HEALTHY` · `NO_SUBSCRIPTION` · `SUBSCRIPTION_EXPIRED` ·
+`SUBSCRIPTION_STALE` · `MISSING_AT_GRAPH` (only with `verifyAtGraph`) · `NEEDS_REAUTH` (delegated
+token dead) · `NEEDS_ADMIN` (tenant revoked / cert-expired / disabled) · `NOT_MAPPED` · `INACTIVE`
+· `UNKNOWN`. The first five are **recoverable**; the rest are reported for a human to resolve.
+
+```bash
+# One user, authoritative (also confirms the subscription exists at Microsoft)
+curl '.../auth/microsoft/health/insp-001?verifyAtGraph=true'
+
+# Bulk recover — recreates fixable subscriptions, reports the rest (runs in background)
+curl -X POST '.../auth/microsoft/health/recover' \
+  -H 'Content-Type: application/json' \
+  -d '{ "externalUserIds": ["insp-001","insp-002"], "verifyAtGraph": true }'
+```
+
+Recovery is **auth-mode-aware and idempotent**: an app-only user's subscription is recreated via
+the app-only path, a delegated user's via the delegated path — both remove any stale subscription
+first. `recover` returns `202` and emits `outlook.user.health.recovery.completed` with
+`{ total, healthy, recovered, unrecoverable, failed, results[] }`. `NEEDS_REAUTH` / `NEEDS_ADMIN`
+are never auto-looped — they surface for re-auth / admin action (and the existing
+`USER_REFRESH_TOKEN_INVALID` event still fires for dead delegated tokens).
+
+> This sits **alongside** the built-in 6-hour health-check and 3am retry crons — it adds an
+> on-demand, bulk, app-only-aware entry point; it doesn't replace them.
+
+## Disconnecting a tenant
+
+`DELETE /auth/microsoft/tenant/connection` tears down a tenant connection. It has two modes,
+controlled by query flags:
+
+| Query | Effect | Response |
+|-------|--------|----------|
+| *(none)* | **Soft disconnect** (synchronous). Flags the `MicrosoftTenant` row inactive (`is_active = false`) and drops the cached app-only token. Mapped `microsoft_users` rows and Outlook webhook subscriptions are **left intact** — re-consent reactivates the tenant and existing mappings keep working. | `200` |
+| `?purge=true` | **Full teardown** (runs in the background). Additionally deletes the tenant's Outlook webhook subscriptions at Microsoft (via `$batch`, 20 per call) and clears its user mappings: rows that also hold delegated OAuth tokens are unmapped (app-only columns nulled, delegated login preserved), pure app-only rows are deleted — both via bulk SQL. | `202` |
+| `?revokeUserTokens=true` | Implies `purge`. Also revokes each delegated refresh token at Microsoft (bounded concurrency) and deletes **all** of the tenant's rows. | `202` |
+
+```bash
+# Soft disconnect (default) — keeps mappings and subscriptions (200, synchronous)
+curl -X DELETE '.../auth/microsoft/tenant/connection?tenantId=<guid>'
+
+# Full teardown — remove subscriptions + user mappings (202, runs in background)
+curl -X DELETE '.../auth/microsoft/tenant/connection?tenantId=<guid>&purge=true'
+
+# Full teardown + revoke delegated user tokens (202)
+curl -X DELETE '.../auth/microsoft/tenant/connection?tenantId=<guid>&purge=true&revokeUserTokens=true'
+```
+
+**Why a purge is asynchronous.** A tenant may have thousands of subscriptions and users;
+tearing everything down inline would exceed the request timeout and tie up a worker. The purge
+therefore returns `202 Accepted` immediately and runs in the background. Inside the teardown the
+tenant is deactivated **last**, so subscription deletion still has a valid app-only token while
+it runs, and **the connection reporting as disconnected (`GET connection` returns "not
+connected") is the completion signal** — poll it to know when a purge has finished. A `404` from
+Microsoft (subscription already gone) is treated as success. `tenantId` still defaults to the
+module-configured tenant when omitted.
+
+> **Scale note:** subscription deletion is batched (`$batch`, ≤20/call) and local rows are
+> deactivated in a single bulk `UPDATE`, so the work is roughly O(N/20) Graph round-trips plus a
+> handful of set-based SQL statements — it does not issue one request or one `UPDATE` per user.
+
 ## Using certificate authentication
 
 For production environments, certificate authentication is more secure than client secrets:

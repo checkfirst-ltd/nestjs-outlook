@@ -6,6 +6,7 @@ import { MicrosoftAuthService } from "./services/auth/microsoft-auth.service";
 import { AppOnlyAuthService } from "./services/auth/app-only-auth.service";
 import { MicrosoftAuthController } from "./controllers/microsoft-auth.controller";
 import { TenantAuthController } from "./controllers/tenant-auth.controller";
+import { HealthController } from "./controllers/health.controller";
 import { CalendarController } from "./controllers/calendar.controller";
 import { EmailController } from "./controllers/email.controller";
 import { OutlookWebhookSubscription } from "./entities/outlook-webhook-subscription.entity";
@@ -43,6 +44,8 @@ import {
 import { WebhookClientStateGuard } from "./guards/webhook-client-state.guard";
 import { TenantCalendarService } from "./services/tenant/tenant-calendar.service";
 import { TenantUserService } from "./services/tenant/tenant-user.service";
+import { TenantProvisioningService } from "./services/tenant/tenant-provisioning.service";
+import { HealthService } from "./services/health/health.service";
 import { MicrosoftTenantRepository } from "./repositories/microsoft-tenant.repository";
 
 export const { ConfigurableModuleClass, MODULE_OPTIONS_TOKEN } =
@@ -138,6 +141,7 @@ async function buildRateLimitStore(
   controllers: [
     MicrosoftAuthController,
     TenantAuthController,
+    HealthController,
     CalendarController,
     EmailController,
   ],
@@ -175,6 +179,8 @@ async function buildRateLimitStore(
     // Tenant services for app-only authentication
     TenantCalendarService,
     TenantUserService,
+    TenantProvisioningService,
+    HealthService,
     MicrosoftTenantRepository,
   ],
   exports: [
@@ -194,6 +200,8 @@ async function buildRateLimitStore(
     // Tenant services for app-only authentication
     TenantCalendarService,
     TenantUserService,
+    TenantProvisioningService,
+    HealthService,
     MicrosoftTenantRepository,
   ],
 })

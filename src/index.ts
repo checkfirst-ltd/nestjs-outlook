@@ -13,6 +13,8 @@ export * from './services/shared/outlook-lock.store';
 export * from './services/shared/outlook-rate-limit.store';
 export * from './services/tenant/tenant-calendar.service';
 export * from './services/tenant/tenant-user.service';
+export * from './services/tenant/tenant-provisioning.service';
+export * from './services/health/health.service';
 
 // Export module
 export * from './microsoft-outlook.module';
@@ -29,6 +31,7 @@ export * from './enums/event-types.enum';
 export * from './enums/show-as-type.enum';
 export * from './enums/microsoft-user-status.enum';
 export * from './enums/microsoft-tenant-status.enum';
+export * from './enums/user-health-status.enum';
 
 // Export constants
 export * from './constants';
@@ -43,9 +46,12 @@ export * from './controllers/calendar.controller';
 export * from './controllers/microsoft-auth.controller';
 export * from './controllers/tenant-auth.controller';
 export * from './controllers/email.controller';
+export * from './controllers/health.controller';
 
 // Export DTOs
 export * from './dto/outlook-webhook-notification.dto';
+export * from './dto/bulk-connect-users.dto';
+export * from './dto/health-check.dto';
 
 // Entities
 export * from './entities/outlook-webhook-subscription.entity';

@@ -234,6 +234,36 @@ Validates all existing mappings against the tenant directory and removes stale e
 | `removed` | `number` | Stale mappings removed |
 | `errors` | `string[]` | Any errors encountered |
 
+### `clearTenantUserMappings(tenantId, options?)`
+
+Removes a tenant's app-only footprint from the shared `microsoft_users` table during the
+disconnect flow. Runs at most two bulk SQL statements (no per-row loop, no recursion). Used by
+`DELETE /auth/microsoft/tenant/connection?purge=true` — see
+[Disconnecting a tenant](../how-to/connect-enterprise-tenant.md#disconnecting-a-tenant).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `tenantId` | `string` | Azure AD tenant GUID. Matched regardless of `isActive`, so it works after deactivation. |
+| `options.revokeDelegatedTokens` | `boolean` | Default `false`. When `true`, revoke each delegated refresh token at Microsoft (bounded concurrency) and delete **all** of the tenant's rows. |
+
+**Behaviour:**
+
+- **Default:** rows that also carry delegated OAuth tokens are unmapped (app-only columns nulled,
+  delegated login preserved); pure app-only rows are deleted.
+- **`revokeDelegatedTokens: true`:** delegated tokens are revoked (best-effort — failures are
+  counted, never fatal), then every row for the tenant is deleted.
+
+**Returns:** `Promise<ClearTenantMappingsResult>`
+
+**ClearTenantMappingsResult:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `delegatedRowsUnmapped` | `number` | Dual-capability rows unmapped (app-only columns nulled). |
+| `appOnlyRowsDeleted` | `number` | Rows deleted. |
+| `tokensRevoked` | `number` | Delegated refresh tokens revoked at Microsoft. |
+| `tokenRevocationFailures` | `number` | Revocations that failed (teardown continued regardless). |
+
 ## Caching
 
 The service maintains an in-memory cache for user mappings:

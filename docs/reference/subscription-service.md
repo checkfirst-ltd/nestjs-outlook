@@ -26,12 +26,27 @@ them on a schedule.
 
 | Method | Signature | Returns | Notes |
 |--------|-----------|---------|-------|
-| `createWebhookSubscription` | `(externalUserId: string)` | `Promise<Subscription>` | Creates a Graph subscription and stores it with a generated `clientState`. |
+| `createWebhookSubscription` | `(externalUserId: string)` | `Promise<Subscription>` | Creates a delegated (`/me/events`) Graph subscription and stores it with a generated `clientState`. Removes any existing calendar subscription for the user first (see invariant below). |
+| `createAppOnlyWebhookSubscription` | `(options: AppOnlySubscriptionOptions)` | `Promise<Subscription>` | Creates a tenant-wide app-only (`/users/{id}/events`) subscription. Removes any existing calendar subscription for the user first (see invariant below). |
 | `renewWebhookSubscription` | `(subscriptionId: string, internalUserId: number)` | `Promise<Subscription>` | Renews an existing subscription; recreates it on `404`. |
 | `deleteSubscription` | `(subscriptionId: string, accessToken: string)` | `Promise<void>` | Deletes a single subscription at Graph. |
 | `deleteWebhookSubscription` | `(...)` | `Promise<void>` | Deletes a subscription at Graph and in the local DB. |
 | `deleteAllWebhookSubscriptions` | `(userId: string \| number)` | `Promise<BulkSubscriptionDeleteResult>` | Removes all subscriptions for a user (Graph + DB). |
 | `revokeTokens` | `(refreshToken: string)` | `Promise<void>` | Revokes the user's refresh token at Microsoft. |
+
+### Invariant: one active calendar subscription per user
+
+A user is identified across auth modes by the same internal `userId` on every subscription row
+(delegated rows have `tenantId = null`; app-only rows carry `tenantId` + `microsoftUserId`). Both
+`createWebhookSubscription` and `createAppOnlyWebhookSubscription` therefore remove any
+already-active **calendar** subscription for that user (resource ending in `/events`) before
+creating the new one — deleting it at Microsoft Graph with the token matching the old
+subscription's own auth mode, and deactivating it locally.
+
+This prevents duplicate notifications when a user connected via delegated OAuth is later mapped
+into a tenant (or vice-versa). It is best-effort: a failed Graph delete still deactivates the row
+locally (the subscription expires at Microsoft within ≤3 days) and never blocks creation of the
+new subscription. Email subscriptions (`/me/messages`) are left untouched.
 
 ## Query methods
 
