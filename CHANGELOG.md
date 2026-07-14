@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.1.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.0.3...v10.1.0) (2026-07-14)
+
+
+### Features
+
+* tenant user lifecycle — dedupe subs, disconnect-at-scale, bulk-connect, health ([#170](https://github.com/checkfirst-ltd/nestjs-outlook/issues/170)) ([8a663df](https://github.com/checkfirst-ltd/nestjs-outlook/commit/8a663dff21157b1fd721012fb99972f57701b49f))
+
 ## [10.0.3](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.0.2...v10.0.3) (2026-07-12)
 
 
