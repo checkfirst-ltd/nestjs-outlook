@@ -290,6 +290,41 @@ are never auto-looped — they surface for re-auth / admin action (and the exist
 > This sits **alongside** the built-in 6-hour health-check and 3am retry crons — it adds an
 > on-demand, bulk, app-only-aware entry point; it doesn't replace them.
 
+## Disconnecting a tenant
+
+`DELETE /auth/microsoft/tenant/connection` tears down a tenant connection. It has two modes,
+controlled by query flags:
+
+| Query | Effect | Response |
+|-------|--------|----------|
+| *(none)* | **Soft disconnect** (synchronous). Flags the `MicrosoftTenant` row inactive (`is_active = false`) and drops the cached app-only token. Mapped `microsoft_users` rows and Outlook webhook subscriptions are **left intact** — re-consent reactivates the tenant and existing mappings keep working. | `200` |
+| `?purge=true` | **Full teardown** (runs in the background). Additionally deletes the tenant's Outlook webhook subscriptions at Microsoft (via `$batch`, 20 per call) and clears its user mappings: rows that also hold delegated OAuth tokens are unmapped (app-only columns nulled, delegated login preserved), pure app-only rows are deleted — both via bulk SQL. | `202` |
+| `?revokeUserTokens=true` | Implies `purge`. Also revokes each delegated refresh token at Microsoft (bounded concurrency) and deletes **all** of the tenant's rows. | `202` |
+
+```bash
+# Soft disconnect (default) — keeps mappings and subscriptions (200, synchronous)
+curl -X DELETE '.../auth/microsoft/tenant/connection?tenantId=<guid>'
+
+# Full teardown — remove subscriptions + user mappings (202, runs in background)
+curl -X DELETE '.../auth/microsoft/tenant/connection?tenantId=<guid>&purge=true'
+
+# Full teardown + revoke delegated user tokens (202)
+curl -X DELETE '.../auth/microsoft/tenant/connection?tenantId=<guid>&purge=true&revokeUserTokens=true'
+```
+
+**Why a purge is asynchronous.** A tenant may have thousands of subscriptions and users;
+tearing everything down inline would exceed the request timeout and tie up a worker. The purge
+therefore returns `202 Accepted` immediately and runs in the background. Inside the teardown the
+tenant is deactivated **last**, so subscription deletion still has a valid app-only token while
+it runs, and **the connection reporting as disconnected (`GET connection` returns "not
+connected") is the completion signal** — poll it to know when a purge has finished. A `404` from
+Microsoft (subscription already gone) is treated as success. `tenantId` still defaults to the
+module-configured tenant when omitted.
+
+> **Scale note:** subscription deletion is batched (`$batch`, ≤20/call) and local rows are
+> deactivated in a single bulk `UPDATE`, so the work is roughly O(N/20) Graph round-trips plus a
+> handful of set-based SQL statements — it does not issue one request or one `UPDATE` per user.
+
 ## Using certificate authentication
 
 For production environments, certificate authentication is more secure than client secrets:

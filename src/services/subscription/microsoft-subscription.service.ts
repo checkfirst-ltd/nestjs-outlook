@@ -2000,7 +2000,8 @@ export class MicrosoftSubscriptionService {
         `[${correlationId}] Found ${activeSubscriptions.length} active subscription(s) to delete`
       );
 
-      // Try to get access token
+      // Try to get an app-only token so we can delete at Microsoft. If unavailable, we still
+      // deactivate everything locally below (the subs expire at Microsoft within ≤3 days).
       let accessToken: string | null = null;
       if (this.appOnlyAuthService) {
         try {
@@ -2015,62 +2016,39 @@ export class MicrosoftSubscriptionService {
         }
       }
 
-      // Process each subscription
-      for (const subscription of activeSubscriptions) {
-        const subId = subscription.subscriptionId;
-
-        try {
-          // Try to delete at Microsoft if we have a token
-          if (accessToken) {
-            try {
-              await this.deleteSubscription(subId, accessToken);
-              this.logger.debug(
-                `[${correlationId}] Deleted subscription ${subId} at Microsoft`
-              );
-            } catch (deleteError) {
-              // Handle 404 gracefully (subscription already gone)
-              if (axios.isAxiosError(deleteError) && deleteError.response?.status === 404) {
-                this.logger.debug(
-                  `[${correlationId}] Subscription ${subId} not found at Microsoft (already deleted)`
-                );
-              } else {
-                const deleteErrorMsg = deleteError instanceof Error ? deleteError.message : 'Unknown error';
-                this.logger.warn(
-                  `[${correlationId}] Failed to delete subscription ${subId} at Microsoft: ${deleteErrorMsg}`
-                );
-                result.errors.push({ subscriptionId: subId, error: deleteErrorMsg });
-              }
-            }
-          }
-
-          // Always deactivate locally
-          await this.webhookSubscriptionRepository.deactivateSubscription(subId);
-
-          if (accessToken) {
+      if (accessToken) {
+        // Delete at Microsoft in batches of 20 (Graph $batch limit) — ~20x fewer round-trips
+        // than one DELETE per subscription, and each batch respects retry/429 backoff.
+        const subscriptionIds = activeSubscriptions.map((s) => s.subscriptionId);
+        const batchResults = await this.deleteSubscriptionsBatch(
+          subscriptionIds,
+          accessToken,
+          correlationId
+        );
+        for (const item of batchResults) {
+          if (item.success) {
             result.successfullyDeleted++;
+            result.deletedSubscriptionIds.push(item.id);
           } else {
-            result.localOnlyDeactivated++;
+            result.failedToDelete++;
+            result.errors.push({ subscriptionId: item.id, error: item.error ?? 'Unknown error' });
           }
-          result.deletedSubscriptionIds.push(subId);
-
-          this.logger.debug(
-            `[${correlationId}] Deactivated subscription ${subId} in local database`
-          );
-        } catch (error) {
-          const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-          result.failedToDelete++;
-          result.errors.push({ subscriptionId: subId, error: errorMsg });
-          this.logger.error(
-            `[${correlationId}] Failed to process subscription ${subId}: ${errorMsg}`
-          );
         }
+      } else {
+        result.localOnlyDeactivated = activeSubscriptions.length;
       }
+
+      // Deactivate every local row for this tenant in ONE statement, regardless of the
+      // per-item Microsoft outcome — after a disconnect these rows must not stay active.
+      const deactivatedCount = await this.webhookSubscriptionRepository.deactivateAllByTenantId(
+        tenantId
+      );
 
       this.logger.log(
         `[${correlationId}] Bulk deletion complete for tenant ${tenantId}: ` +
         `${result.successfullyDeleted} deleted at Microsoft, ` +
         `${result.localOnlyDeactivated} deactivated locally only, ` +
-        `${result.failedToDelete} failed.`
+        `${result.failedToDelete} failed; ${deactivatedCount} local row(s) deactivated.`
       );
 
       return result;
@@ -2081,5 +2059,106 @@ export class MicrosoftSubscriptionService {
       );
       throw new Error(`Failed to delete all app-only webhook subscriptions: ${errorMessage}`);
     }
+  }
+
+  /**
+   * Delete subscriptions at Microsoft Graph using the `/$batch` endpoint (max 20 per call).
+   *
+   * Batches are sent sequentially so we never burst the Graph API; each batch goes through
+   * `executeGraphApiCall` for retry/429 backoff. A `204` (deleted) or `404` (already gone)
+   * counts as success. Results are correlated to subscription IDs by the per-request `id`,
+   * so an out-of-order batch response is still matched to the right subscription.
+   *
+   * @param subscriptionIds - Microsoft subscription IDs to delete.
+   * @param accessToken - App-only access token for the tenant.
+   * @param correlationId - Correlation id for log tracing.
+   * @returns Per-subscription success/failure (order not guaranteed).
+   */
+  private async deleteSubscriptionsBatch(
+    subscriptionIds: string[],
+    accessToken: string,
+    correlationId: string,
+  ): Promise<{ id: string; success: boolean; error?: string }[]> {
+    const results: { id: string; success: boolean; error?: string }[] = [];
+    const BATCH_SIZE = 20;
+
+    for (let i = 0; i < subscriptionIds.length; i += BATCH_SIZE) {
+      const chunk = subscriptionIds.slice(i, i + BATCH_SIZE);
+      // Map the per-request id (index within the chunk) back to the subscription id.
+      const subIdByRequestId = new Map<string, string>();
+
+      const batchPayload: BatchRequestPayload = {
+        requests: chunk.map((subscriptionId, index) => {
+          subIdByRequestId.set(`${index}`, subscriptionId);
+          return {
+            id: `${index}`,
+            method: 'DELETE',
+            url: `/subscriptions/${subscriptionId}`,
+          };
+        }),
+      };
+
+      this.logger.log(
+        `[${correlationId}] Deleting batch of ${chunk.length} subscription(s) at Microsoft`
+      );
+
+      try {
+        const response = await executeGraphApiCall(
+          () => axios.post<BatchResponsePayload>(
+            'https://graph.microsoft.com/v1.0/$batch',
+            batchPayload,
+            {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                'Content-Type': 'application/json',
+              },
+            }
+          ),
+          {
+            logger: this.logger,
+            resourceName: `batch delete ${chunk.length} subscriptions`,
+            maxRetries: 7,
+          }
+        );
+
+        const batchResponse = response?.data;
+        if (!batchResponse) {
+          throw new Error('Batch request returned null response');
+        }
+
+        for (const item of batchResponse.responses) {
+          const subscriptionId = subIdByRequestId.get(item.id) ?? item.id;
+          // 200/204 = deleted, 404 = already gone — all treated as success.
+          if (item.status === 200 || item.status === 204 || item.status === 404) {
+            results.push({ id: subscriptionId, success: true });
+          } else {
+            const errorMessage = item.body ? JSON.stringify(item.body) : `HTTP ${item.status}`;
+            results.push({
+              id: subscriptionId,
+              success: false,
+              error: `HTTP ${item.status}: ${errorMessage}`,
+            });
+            this.logger.warn(
+              `[${correlationId}] Failed to delete subscription ${subscriptionId} at Microsoft: ${errorMessage}`
+            );
+          }
+        }
+      } catch (error) {
+        // Whole batch failed — mark every subscription in this chunk as failed at Graph.
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        this.logger.warn(
+          `[${correlationId}] Batch delete request failed for ${chunk.length} subscription(s): ${errorMessage}`
+        );
+        for (const subscriptionId of chunk) {
+          results.push({
+            id: subscriptionId,
+            success: false,
+            error: `Batch request failed: ${errorMessage}`,
+          });
+        }
+      }
+    }
+
+    return results;
   }
 }

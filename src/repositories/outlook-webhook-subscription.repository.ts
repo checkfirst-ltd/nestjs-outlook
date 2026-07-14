@@ -80,6 +80,23 @@ export class OutlookWebhookSubscriptionRepository {
     this.byUserId.clear();
   }
 
+  /**
+   * Deactivate ALL active subscriptions for a tenant in a single UPDATE statement.
+   *
+   * Used by the tenant-disconnect teardown so we flip N rows inactive at once instead of
+   * issuing one UPDATE per subscription. Returns the number of rows affected. Because the
+   * change spans many (unknown) subscriptionIds/userIds, both caches are cleared.
+   */
+  async deactivateAllByTenantId(tenantId: string): Promise<number> {
+    const result = await this.repository.update(
+      { tenantId, isActive: true },
+      { isActive: false, updatedAt: new Date() },
+    );
+    this.bySubscriptionId.clear();
+    this.byUserId.clear();
+    return result.affected ?? 0;
+  }
+
   async findActiveSubscriptions(excludeUserIds?: number[]): Promise<OutlookWebhookSubscription[]> {
     const now = new Date();
     if (excludeUserIds && excludeUserIds.length > 0) {
