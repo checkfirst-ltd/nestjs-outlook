@@ -88,6 +88,17 @@ export class TenantProvisioningService {
     users: BulkConnectUserInput[],
   ): Promise<BulkConnectResult> {
     const correlationId = `bulk-connect-${tenantId}-${Date.now()}`;
+
+    // Dedupe the input by externalUserId (first occurrence wins). Two entries for the same
+    // user would run CONCURRENTLY through the per-user worker: both dedupe guards can observe
+    // "no existing subscription" before either create lands, double-subscribing the mailbox.
+    const seenIds = new Set<string>();
+    users = users.filter((user) => {
+      if (seenIds.has(user.externalUserId)) return false;
+      seenIds.add(user.externalUserId);
+      return true;
+    });
+
     this.logger.log(
       `[${correlationId}] Bulk connect requested for ${users.length} user(s) into tenant ${tenantId}`,
     );
