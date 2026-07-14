@@ -224,6 +224,14 @@ subscription delete + create) runs at **bounded concurrency** — Graph validate
 subscription's `notificationUrl` at creation, so subscription creation can't be `$batch`ed;
 concurrency is the scale lever. A per-user failure is recorded and never aborts the batch.
 
+**Already-connected users are skipped.** Before processing, the service checks (in two bulk
+queries) which of the requested users already have an active app-only subscription for the tenant
+and leaves them untouched — so re-running the endpoint (or overlapping batches) never tears down
+and rebuilds a working connection. The summary reports `connected` (newly connected), `skipped`
+(already connected), and `failed`, and each skipped user's result carries `skipped: true`.
+Delegated-only users are **not** treated as connected: they are processed, their `/me/events`
+subscription removed, and an app-only subscription created — after which subsequent runs skip them.
+
 Observe the outcome via the emitted event:
 
 ```typescript
@@ -232,7 +240,8 @@ import { BulkConnectResult } from '@checkfirst/nestjs-outlook';
 
 @OnEvent('outlook.tenant.users.bulk_connect.completed')
 handleBulkConnect(summary: BulkConnectResult) {
-  // summary: { tenantId, total, connected, failed, results: [{ externalUserId, success, subscriptionId?, error? }] }
+  // summary: { tenantId, total, connected, skipped, failed,
+  //            results: [{ externalUserId, success, skipped?, subscriptionId?, error? }] }
 }
 ```
 

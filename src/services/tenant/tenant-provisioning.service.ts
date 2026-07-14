@@ -21,16 +21,21 @@ export interface BulkConnectUserInput {
 export interface BulkConnectUserResult {
   externalUserId: string;
   success: boolean;
+  /** True when the user was already connected to this tenant and left untouched. */
+  skipped?: boolean;
   microsoftUserId?: string;
   subscriptionId?: string;
   error?: string;
 }
 
-/** Summary of a bulk connect run. */
+/** Summary of a bulk connect run. `total = connected + skipped + failed`. */
 export interface BulkConnectResult {
   tenantId: string;
   total: number;
+  /** Newly connected (mapping upserted + subscription created). */
   connected: number;
+  /** Already connected to this tenant, so left as-is (not re-created). */
+  skipped: number;
   failed: number;
   results: BulkConnectUserResult[];
 }
@@ -68,7 +73,9 @@ export class TenantProvisioningService {
 
   /**
    * Connect a batch of users into a tenant: upsert each mapping and create an app-only
-   * calendar subscription. Emits {@link OutlookEventTypes.TENANT_USERS_BULK_CONNECT_COMPLETED}
+   * calendar subscription. Users already connected to this tenant (they have an active
+   * app-only subscription) are **skipped**, so a re-run never tears down a working
+   * connection. Emits {@link OutlookEventTypes.TENANT_USERS_BULK_CONNECT_COMPLETED}
    * with the summary on completion (or `..._FAILED` if the run can't start), so callers that
    * kicked this off in the background can observe the outcome.
    *
@@ -99,24 +106,59 @@ export class TenantProvisioningService {
       throw new Error(message);
     }
 
-    const results = await mapWithConcurrency(
-      users,
+    // Skip users already connected to this tenant so a re-run doesn't tear down and rebuild a
+    // working connection. "Connected" = has an active app-only subscription for this tenant.
+    // Two bulk queries (subscriptions by tenant + user rows by external id) — no per-user query.
+    const activeSubs = await this.subscriptionService.getAppOnlySubscriptionsForTenant(tenantId);
+    const connectedUserIds = new Set(activeSubs.map((sub) => sub.userId));
+    const existingRows = await this.tenantUserService.findUsersByExternalIds(
+      users.map((user) => user.externalUserId),
+    );
+    const rowByExternalId = new Map(existingRows.map((row) => [row.externalUserId, row]));
+
+    const toProcess: BulkConnectUserInput[] = [];
+    const skippedResults: BulkConnectUserResult[] = [];
+    for (const user of users) {
+      const row = rowByExternalId.get(user.externalUserId);
+      if (row && connectedUserIds.has(row.id)) {
+        skippedResults.push({
+          externalUserId: user.externalUserId,
+          success: true,
+          skipped: true,
+          microsoftUserId: row.microsoftUserId ?? undefined,
+        });
+      } else {
+        toProcess.push(user);
+      }
+    }
+
+    if (skippedResults.length > 0) {
+      this.logger.log(
+        `[${correlationId}] ${skippedResults.length} user(s) already connected — skipping; ` +
+        `processing ${toProcess.length}`,
+      );
+    }
+
+    const processed = await mapWithConcurrency(
+      toProcess,
       this.CONNECT_CONCURRENCY,
       (user) => this.connectOneUser(tenantId, user, correlationId),
     );
 
-    const connected = results.filter((r) => r.success).length;
+    const results = [...skippedResults, ...processed];
+    const connected = processed.filter((r) => r.success).length;
     const summary: BulkConnectResult = {
       tenantId,
       total: users.length,
       connected,
-      failed: results.length - connected,
+      skipped: skippedResults.length,
+      failed: processed.length - connected,
       results,
     };
 
     this.logger.log(
       `[${correlationId}] Bulk connect complete for tenant ${tenantId}: ` +
-      `${summary.connected} connected, ${summary.failed} failed`,
+      `${summary.connected} connected, ${summary.skipped} skipped, ${summary.failed} failed`,
     );
     this.eventEmitter.emit(OutlookEventTypes.TENANT_USERS_BULK_CONNECT_COMPLETED, summary);
 

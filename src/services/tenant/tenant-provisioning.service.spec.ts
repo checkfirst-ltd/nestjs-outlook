@@ -5,12 +5,15 @@ import { MicrosoftSubscriptionService } from '../subscription/microsoft-subscrip
 import { MicrosoftTenantRepository } from '../../repositories/microsoft-tenant.repository';
 import { MicrosoftTenant } from '../../entities/microsoft-tenant.entity';
 import { MicrosoftUser } from '../../entities/microsoft-user.entity';
+import { OutlookWebhookSubscription } from '../../entities/outlook-webhook-subscription.entity';
 import { OutlookEventTypes } from '../../enums/event-types.enum';
 
 describe('TenantProvisioningService', () => {
   let service: TenantProvisioningService;
-  let tenantUserService: jest.Mocked<Pick<TenantUserService, 'registerUserMapping'>>;
-  let subscriptionService: jest.Mocked<Pick<MicrosoftSubscriptionService, 'createAppOnlyWebhookSubscription'>>;
+  let tenantUserService: jest.Mocked<Pick<TenantUserService, 'registerUserMapping' | 'findUsersByExternalIds'>>;
+  let subscriptionService: jest.Mocked<
+    Pick<MicrosoftSubscriptionService, 'createAppOnlyWebhookSubscription' | 'getAppOnlySubscriptionsForTenant'>
+  >;
   let tenantRepository: jest.Mocked<Pick<MicrosoftTenantRepository, 'findByTenantId'>>;
   let eventEmitter: jest.Mocked<Pick<EventEmitter2, 'emit'>>;
 
@@ -21,8 +24,16 @@ describe('TenantProvisioningService', () => {
     ({ externalUserId, microsoftUserId: `ms-${externalUserId}` }) as MicrosoftUser;
 
   beforeEach(() => {
-    tenantUserService = { registerUserMapping: jest.fn() };
-    subscriptionService = { createAppOnlyWebhookSubscription: jest.fn() };
+    tenantUserService = {
+      registerUserMapping: jest.fn(),
+      // Default: no user is already persisted, so nothing is skipped.
+      findUsersByExternalIds: jest.fn().mockResolvedValue([]),
+    };
+    subscriptionService = {
+      createAppOnlyWebhookSubscription: jest.fn(),
+      // Default: tenant has no active subscriptions, so nothing is skipped.
+      getAppOnlySubscriptionsForTenant: jest.fn().mockResolvedValue([]),
+    };
     tenantRepository = { findByTenantId: jest.fn().mockResolvedValue({ tenantId } as MicrosoftTenant) };
     eventEmitter = { emit: jest.fn() };
 
@@ -69,6 +80,38 @@ describe('TenantProvisioningService', () => {
       OutlookEventTypes.TENANT_USERS_BULK_CONNECT_COMPLETED,
       expect.objectContaining({ tenantId, connected: 3, failed: 0 }),
     );
+  });
+
+  it('skips users already connected to the tenant (does not re-create their subscription)', async () => {
+    const users: BulkConnectUserInput[] = [
+      { externalUserId: 'already', email: 'already@contoso.com' },
+      { externalUserId: 'fresh', email: 'fresh@contoso.com' },
+    ];
+    // 'already' has internal id 10 and an active app-only subscription for this tenant.
+    subscriptionService.getAppOnlySubscriptionsForTenant.mockResolvedValueOnce([
+      { userId: 10 } as OutlookWebhookSubscription,
+    ]);
+    tenantUserService.findUsersByExternalIds.mockResolvedValueOnce([
+      { externalUserId: 'already', id: 10, microsoftUserId: 'ms-already' } as MicrosoftUser,
+    ]);
+    tenantUserService.registerUserMapping.mockResolvedValue(mappedUser('fresh'));
+    subscriptionService.createAppOnlyWebhookSubscription.mockResolvedValue({ id: 'sub-fresh' });
+
+    const result = await service.connectUsers(tenantId, users);
+
+    expect(result.total).toBe(2);
+    expect(result.skipped).toBe(1);
+    expect(result.connected).toBe(1);
+    expect(result.failed).toBe(0);
+    // The already-connected user is never re-mapped or re-subscribed — no override.
+    expect(tenantUserService.registerUserMapping).toHaveBeenCalledTimes(1);
+    expect(tenantUserService.registerUserMapping).toHaveBeenCalledWith(tenantId, 'fresh', 'fresh@contoso.com');
+    expect(subscriptionService.createAppOnlyWebhookSubscription).toHaveBeenCalledTimes(1);
+    // The skipped user is reported as such.
+    expect(result.results.find((r) => r.externalUserId === 'already')).toMatchObject({
+      success: true,
+      skipped: true,
+    });
   });
 
   it('records a per-user failure without aborting the batch', async () => {

@@ -1,6 +1,6 @@
 import { Injectable, Logger, Inject } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, In } from 'typeorm';
 import axios from 'axios';
 import { MicrosoftTenant } from '../../entities/microsoft-tenant.entity';
 import { MicrosoftUser } from '../../entities/microsoft-user.entity';
@@ -405,6 +405,32 @@ export class TenantUserService {
     );
 
     return tenantUser;
+  }
+
+  /**
+   * Bulk-load the persisted `MicrosoftUser` rows for a set of external user ids, in one (or a
+   * few chunked) query. Used by bulk provisioning to detect which users already exist / are
+   * already connected without issuing a query per user. The `IN (...)` list is chunked so a
+   * very large batch can't exceed the database's parameter/packet limits.
+   *
+   * @param externalUserIds - Host user ids to look up.
+   * @returns The existing rows; an external id with no row is simply absent from the result.
+   */
+  async findUsersByExternalIds(externalUserIds: string[]): Promise<MicrosoftUser[]> {
+    if (externalUserIds.length === 0) {
+      return [];
+    }
+
+    const CHUNK = 500;
+    const found: MicrosoftUser[] = [];
+    for (let i = 0; i < externalUserIds.length; i += CHUNK) {
+      const chunk = externalUserIds.slice(i, i + CHUNK);
+      const rows = await this.tenantUserRepository.find({
+        where: { externalUserId: In(chunk) },
+      });
+      found.push(...rows);
+    }
+    return found;
   }
 
   /**
