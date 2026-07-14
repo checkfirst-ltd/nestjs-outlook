@@ -44,4 +44,8 @@ export enum OutlookEventTypes {
   // Tenant provisioning events
   TENANT_USERS_BULK_CONNECT_COMPLETED = 'outlook.tenant.users.bulk_connect.completed',
   TENANT_USERS_BULK_CONNECT_FAILED = 'outlook.tenant.users.bulk_connect.failed',
+
+  // Health / recovery events
+  USER_HEALTH_RECOVERY_COMPLETED = 'outlook.user.health.recovery.completed',
+  USER_HEALTH_RECOVERY_FAILED = 'outlook.user.health.recovery.failed',
 }

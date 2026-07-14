@@ -252,6 +252,44 @@ method is also exported for direct (awaitable) use if you'd rather run it inline
 > **Precondition:** the tenant must already be connected (admin consent granted, `ACTIVE`). See
 > the sections above to register + consent a tenant first.
 
+## Check & recover user health
+
+`HealthService` answers "is this user connected, and if not, why?" by combining the
+`microsoft_users` row and its active Outlook calendar subscription (and, on request, Microsoft
+Graph). It works for one user or a bulk list, covers **delegated and app-only**, and can
+**recover** the fixable states — not just report them.
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET auth/microsoft/health/:externalUserId?verifyAtGraph=` | One user's verdict |
+| `POST auth/microsoft/health/check` `{ externalUserIds, verifyAtGraph? }` | Bulk verdicts (read-only) |
+| `POST auth/microsoft/health/recover` `{ externalUserIds, verifyAtGraph? }` | Bulk check + recover (background, `202`) |
+
+Verdicts (`UserHealthStatus`): `HEALTHY` · `NO_SUBSCRIPTION` · `SUBSCRIPTION_EXPIRED` ·
+`SUBSCRIPTION_STALE` · `MISSING_AT_GRAPH` (only with `verifyAtGraph`) · `NEEDS_REAUTH` (delegated
+token dead) · `NEEDS_ADMIN` (tenant revoked / cert-expired / disabled) · `NOT_MAPPED` · `INACTIVE`
+· `UNKNOWN`. The first five are **recoverable**; the rest are reported for a human to resolve.
+
+```bash
+# One user, authoritative (also confirms the subscription exists at Microsoft)
+curl '.../auth/microsoft/health/insp-001?verifyAtGraph=true'
+
+# Bulk recover — recreates fixable subscriptions, reports the rest (runs in background)
+curl -X POST '.../auth/microsoft/health/recover' \
+  -H 'Content-Type: application/json' \
+  -d '{ "externalUserIds": ["insp-001","insp-002"], "verifyAtGraph": true }'
+```
+
+Recovery is **auth-mode-aware and idempotent**: an app-only user's subscription is recreated via
+the app-only path, a delegated user's via the delegated path — both remove any stale subscription
+first. `recover` returns `202` and emits `outlook.user.health.recovery.completed` with
+`{ total, healthy, recovered, unrecoverable, failed, results[] }`. `NEEDS_REAUTH` / `NEEDS_ADMIN`
+are never auto-looped — they surface for re-auth / admin action (and the existing
+`USER_REFRESH_TOKEN_INVALID` event still fires for dead delegated tokens).
+
+> This sits **alongside** the built-in 6-hour health-check and 3am retry crons — it adds an
+> on-demand, bulk, app-only-aware entry point; it doesn't replace them.
+
 ## Using certificate authentication
 
 For production environments, certificate authentication is more secure than client secrets:

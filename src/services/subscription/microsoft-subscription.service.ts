@@ -243,6 +243,63 @@ export class MicrosoftSubscriptionService {
   }
 
   /**
+   * Verify a stored subscription still exists at Microsoft Graph, using the token that matches
+   * the subscription's own auth mode: the tenant's app-only token when `tenantId` is set, the
+   * owning user's delegated token otherwise. Used by the health service for `verifyAtGraph`.
+   *
+   * @param subscription - The stored subscription (needs `subscriptionId`, `userId`, `tenantId`).
+   * @returns `'present'` (still there), `'missing'` (404 / gone), or `'unknown'` (token or Graph
+   *   error — treat as inconclusive, don't act on it).
+   */
+  async verifySubscriptionAtGraph(
+    subscription: Pick<OutlookWebhookSubscription, 'subscriptionId' | 'userId' | 'tenantId'>,
+  ): Promise<'present' | 'missing' | 'unknown'> {
+    try {
+      let accessToken: string | null = null;
+      if (subscription.tenantId) {
+        accessToken = this.appOnlyAuthService
+          ? await this.appOnlyAuthService.getAccessToken(subscription.tenantId)
+          : null;
+      } else {
+        accessToken = await this.microsoftAuthService.getUserAccessToken({
+          internalUserId: subscription.userId,
+          includeInactive: true,
+          cache: false,
+        });
+      }
+
+      if (!accessToken) {
+        return 'unknown';
+      }
+
+      const response = await executeGraphApiCall(
+        () => axios.get(`${this.graphApiBaseUrl}/subscriptions/${subscription.subscriptionId}`, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Prefer': 'IdType="ImmutableId"',
+          },
+          timeout: 10000,
+        }),
+        {
+          logger: this.logger,
+          resourceName: `verify subscription ${subscription.subscriptionId}`,
+          maxRetries: 3,
+          return404AsNull: true,
+        }
+      );
+
+      return response ? 'present' : 'missing';
+    } catch (error) {
+      this.logger.warn(
+        `[verifySubscriptionAtGraph] Could not verify subscription ${subscription.subscriptionId}: ${
+          error instanceof Error ? error.message : 'Unknown error'
+        }`,
+      );
+      return 'unknown';
+    }
+  }
+
+  /**
    * Classify a stored subscription resource path as a calendar resource. Both delegated
    * (`/me/events`) and app-only (`/users/{id}/events`) calendar subscriptions end in
    * `/events`; email resources end in `/messages`.

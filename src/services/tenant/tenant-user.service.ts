@@ -427,6 +427,8 @@ export class TenantUserService {
       const chunk = externalUserIds.slice(i, i + CHUNK);
       const rows = await this.tenantUserRepository.find({
         where: { externalUserId: In(chunk) },
+        // Load the tenant so callers can tell app-only users apart and read tenant status.
+        relations: ['tenant'],
       });
       found.push(...rows);
     }
