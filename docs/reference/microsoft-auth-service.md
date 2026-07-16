@@ -32,6 +32,9 @@ from `@checkfirst/nestjs-outlook`.
 
 **Returns:** `Promise<string>` — the Microsoft authorization URL to redirect the user to.
 Embeds a CSRF token, the user ID, a timestamp, and the requested scopes in the `state` param.
+The authority tenant comes from `delegatedAuth.tenant` and defaults to `common`; the same
+authority is used for code exchange and token refresh. See the
+[configuration reference](configuration.md#delegatedauthconfig).
 
 ### `exchangeCodeForToken(code, state)`
 

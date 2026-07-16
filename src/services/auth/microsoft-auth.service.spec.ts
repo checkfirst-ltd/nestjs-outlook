@@ -28,6 +28,9 @@ import {
 // markUserAsCorrupted / saveMicrosoftUser are private; expose just the two
 // methods under test via a structural view (cast through unknown).
 interface AnyService {
+  tenantId: string;
+  tokenEndpoint: string;
+  getLoginUrl(externalUserId: string): Promise<string>;
   markUserAsCorrupted(user: MicrosoftUser, reason: string): Promise<void>;
   saveMicrosoftUser(
     externalUserId: string,
@@ -56,6 +59,42 @@ const baseConfig = {
   redirectPath: "http://localhost/callback",
   backendBaseUrl: "http://localhost",
 };
+
+function makeAuthService(config = baseConfig): AnyService {
+  return new MicrosoftAuthService(
+    new EventEmitter2(),
+    {} as never,
+    {} as never,
+    config as never,
+    { saveToken: jest.fn(async () => undefined) } as never,
+    {} as never,
+    new InMemoryOutlookLockStore(),
+  ) as unknown as AnyService;
+}
+
+describe.each([
+  ["default", undefined, "common"],
+  ["common", "common", "common"],
+  ["organizations", "organizations", "organizations"],
+  ["consumers", "consumers", "consumers"],
+  ["tenant GUID", "12345678-1234-1234-1234-123456789abc", "12345678-1234-1234-1234-123456789abc"],
+  ["tenant domain", "contoso.onmicrosoft.com", "contoso.onmicrosoft.com"],
+])("MicrosoftAuthService delegated authority (%s)", (_name, tenant, expectedTenant) => {
+  it("uses the configured tenant for authorization and token requests", async () => {
+    const config = tenant === undefined
+      ? baseConfig
+      : { ...baseConfig, delegatedAuth: { tenant } };
+    const service = makeAuthService(config);
+
+    await expect(service.getLoginUrl("ext-1")).resolves.toContain(
+      `https://login.microsoftonline.com/${expectedTenant}/oauth2/v2.0/authorize`,
+    );
+    expect(service.tenantId).toBe(expectedTenant);
+    expect(service.tokenEndpoint).toBe(
+      `https://login.microsoftonline.com/${expectedTenant}/oauth2/v2.0/token`,
+    );
+  });
+});
 
 function makeUser(overrides: Partial<MicrosoftUser> = {}): MicrosoftUser {
   const u = new MicrosoftUser();

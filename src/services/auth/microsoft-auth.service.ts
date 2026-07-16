@@ -56,7 +56,7 @@ export class MicrosoftAuthService {
   private readonly logger = new Logger(MicrosoftAuthService.name);
   private readonly clientId: string;
   private readonly clientSecret: string;
-  private readonly tenantId = 'common';
+  private readonly tenantId: string;
   private readonly redirectUri: string;
   private readonly tokenEndpoint: string;
   // Required Microsoft scopes that are always included
@@ -97,8 +97,9 @@ export class MicrosoftAuthService {
 
     this.clientId = this.microsoftConfig.clientId;
     this.clientSecret = this.microsoftConfig.clientSecret;
+    this.tenantId = this.microsoftConfig.delegatedAuth?.tenant ?? 'common';
     this.redirectUri = this.buildRedirectUri(this.microsoftConfig);
-    this.tokenEndpoint = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
+    this.tokenEndpoint = `https://login.microsoftonline.com/${this.tenantId}/oauth2/v2.0/token`;
 
     this.logger.log(`Microsoft OAuth redirect URI set to: ${this.redirectUri}`);
   }
