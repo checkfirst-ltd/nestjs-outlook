@@ -7,16 +7,26 @@ on:
       - completed
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Publish the current package.json version even if the latest tag was not created by release-please'
+        type: boolean
+        default: false
+      npm-tag:
+        description: 'npm dist-tag to publish under. Use a non-latest tag (e.g. v9-lts) for hotfixes on older releases so the "latest" tag is not moved backward.'
+        type: string
+        default: 'latest'
 
 jobs:
   publish-npm:
-    if: ${{ github.event.workflow_run.conclusion == 'success' && contains(github.event.workflow_run.head_branch, 'main') }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && contains(github.event.workflow_run.head_branch, 'main')) }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Get latest tag
@@ -29,12 +39,17 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20.x'
+          node-version: '22.x'
           registry-url: 'https://registry.npmjs.org'
           # OIDC will be used automatically if no NODE_AUTH_TOKEN is set
       - name: Check if tag was created in the trigger workflow
         id: check-tag-in-workflow
         run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "SHOULD_PUBLISH=true" >> $GITHUB_ENV
+            echo "Manual dispatch: publishing current package.json version"
+            exit 0
+          fi
           TRIGGER_SHA="${{ github.event.workflow_run.head_sha }}"
           TAG_SHA=$(git rev-list -n 1 $LATEST_TAG)
           echo "Trigger SHA: $TRIGGER_SHA, Tag SHA: $TAG_SHA"
@@ -77,11 +92,17 @@ jobs:
           TAG_VERSION=${LATEST_TAG#v}
           echo "Package version: $PACKAGE_VERSION, Tag version: $TAG_VERSION"
           if [ "$PACKAGE_VERSION" != "$TAG_VERSION" ]; then
-            echo "Version mismatch! Package version ($PACKAGE_VERSION) does not match tag version ($TAG_VERSION)"
-            exit 1
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
+              echo "Version mismatch ignored (force dispatch): publishing package version $PACKAGE_VERSION"
+            else
+              echo "Version mismatch! Package version ($PACKAGE_VERSION) does not match tag version ($TAG_VERSION)"
+              echo "Re-run with the 'force' input enabled to publish the current package.json version anyway."
+              exit 1
+            fi
           fi
       - name: Publish to npm
         if: env.SHOULD_PUBLISH == 'true'
         env:
           NODE_AUTH_TOKEN: ""
-        run: npm publish --access public 
+          NPM_DIST_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.npm-tag || 'latest' }}
+        run: npm publish --access public --tag "$NPM_DIST_TAG" 
