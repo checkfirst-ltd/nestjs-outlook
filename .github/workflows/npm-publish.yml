@@ -13,6 +13,10 @@ on:
         description: 'Publish the current package.json version even if the latest tag was not created by release-please'
         type: boolean
         default: false
+      npm-tag:
+        description: 'npm dist-tag to publish under. Use a non-latest tag (e.g. v9-lts) for hotfixes on older releases so the "latest" tag is not moved backward.'
+        type: string
+        default: 'latest'
 
 jobs:
   publish-npm:
@@ -100,4 +104,5 @@ jobs:
         if: env.SHOULD_PUBLISH == 'true'
         env:
           NODE_AUTH_TOKEN: ""
-        run: npm publish --access public 
+          NPM_DIST_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.npm-tag || 'latest' }}
+        run: npm publish --access public --tag "$NPM_DIST_TAG" 
