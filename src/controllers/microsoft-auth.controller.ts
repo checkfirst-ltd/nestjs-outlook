@@ -4,6 +4,7 @@ import { ApiTags, ApiResponse, ApiQuery, ApiOperation, ApiProduces } from '@nest
 import { MicrosoftAuthService } from '../services/auth/microsoft-auth.service';
 import { MailboxInactiveError } from '../errors/mailbox-inactive.error';
 import { CsrfValidationError } from '../errors/csrf-validation.error';
+import { InvalidStateError } from '../errors/invalid-state.error';
 import { SubscriptionSetupError, SubscriptionFailureReason } from '../errors/subscription-setup.error';
 
 @ApiTags('Microsoft Auth')
@@ -99,6 +100,13 @@ export class MicrosoftAuthController {
       `);
     } catch (error) {
       this.logger.error('Error handling OAuth callback:', error);
+
+      // Malformed/truncated/missing state is bad client input (often a bot or
+      // scanner replaying a chopped callback URL). Answer 400, not 500, so this
+      // traffic stops paging as server errors.
+      if (error instanceof InvalidStateError) {
+        return res.status(HttpStatus.BAD_REQUEST).send('Invalid or malformed state parameter');
+      }
 
       if (error instanceof CsrfValidationError) {
         return res.status(HttpStatus.OK).send(`

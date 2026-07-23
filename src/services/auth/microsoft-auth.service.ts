@@ -21,6 +21,7 @@ import { retryWithBackoff, isNonRetryableError, classifySubscriptionError } from
 import { TtlCache } from '../../utils/ttl-cache.util';
 import { MailboxInactiveError } from '../../errors/mailbox-inactive.error';
 import { CsrfValidationError } from '../../errors/csrf-validation.error';
+import { InvalidStateError } from '../../errors/invalid-state.error';
 import { MicrosoftRefreshTokenInvalidError } from '../../errors/microsoft-refresh-token-invalid.error';
 import { MicrosoftUserStatus } from '../../enums/microsoft-user-status.enum';
 import { SubscriptionSetupError, SubscriptionFailureReason } from '../../errors/subscription-setup.error';
@@ -217,11 +218,10 @@ export class MicrosoftAuthService {
    */
   public parseState(state: string): StateObject | null {
     try {
-      // Add padding back if needed
-      const paddingNeeded = 4 - (state.length % 4);
-      const paddedState = paddingNeeded < 4 ? state + '='.repeat(paddingNeeded) : state;
-
-      const decoded = Buffer.from(paddedState, 'base64').toString();
+      // Decode as base64url (no manual re-padding needed). The decoder is lenient
+      // and still accepts legacy standard-base64 states generated before the
+      // base64url switch, so in-flight authorize requests keep working across deploy.
+      const decoded = Buffer.from(state, 'base64url').toString();
       return JSON.parse(decoded) as StateObject;
     } catch (error) {
       this.logger.error(
@@ -282,7 +282,11 @@ export class MicrosoftAuthService {
       requestedScopes: scopes,
     };
     const stateJson = JSON.stringify(stateObj);
-    const state = Buffer.from(stateJson).toString('base64').replace(/=/g, ''); // Remove padding '=' characters
+    // base64url is URL-safe (uses '-'/'_' instead of '+'/'/') and unpadded, so the
+    // value survives being carried in a query string without corruption. Standard
+    // base64 could emit '+'/'/', and a '+' in the returned query string decodes to a
+    // space → Buffer.from(x,'base64') strips it → corrupted JSON.
+    const state = Buffer.from(stateJson).toString('base64url');
 
     this.logger.debug(`State object: ${JSON.stringify(stateObj)}`);
 
@@ -305,7 +309,7 @@ export class MicrosoftAuthService {
       `&redirect_uri=${encodedRedirectUri}` +
       `&response_mode=query` +
       `&scope=${encodedScope}` +
-      `&state=${state}`;
+      `&state=${encodeURIComponent(state)}`;
 
     this.logger.debug(`Final Microsoft login URL: ${authorizeUrl}`);
 
@@ -505,7 +509,9 @@ export class MicrosoftAuthService {
     const stateData = this.parseState(state);
 
     if (!stateData?.userId) {
-      throw new Error('Invalid state parameter - missing user ID');
+      // Malformed/truncated/missing state is bad client input, not a server fault —
+      // surface a typed error so the controller can answer 400 (not 500).
+      throw new InvalidStateError('missing or unparseable user ID in state');
     }
 
     const correlationId = `auth-${stateData.userId}-${Date.now()}`;

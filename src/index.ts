@@ -32,6 +32,7 @@ export * from './constants';
 // Export errors
 export * from './errors/mailbox-inactive.error';
 export * from './errors/csrf-validation.error';
+export * from './errors/invalid-state.error';
 export * from './errors/subscription-setup.error';
 
 // Export controllers
