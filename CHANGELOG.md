@@ -1,5 +1,13 @@
 # Changelog
 
+## [9.0.4](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v9.0.3...v9.0.4) (2026-07-23)
+
+> Hotfix released off the `v9.0.3` production line (cherry-pick of the fix from `main`), not via release-please. Published to npm under the `hotfix-9` dist-tag so `latest` stays on `10.x`.
+
+### Bug Fixes
+
+* use base64url for OAuth state and return 400 on malformed state ([9953d39](https://github.com/checkfirst-ltd/nestjs-outlook/commit/9953d39))
+
 ## [9.0.3](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v9.0.2...v9.0.3) (2026-06-30)
 
 
