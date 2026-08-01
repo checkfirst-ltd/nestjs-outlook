@@ -31,6 +31,21 @@ export class GraphRateLimiterService implements OnModuleInit {
   private readonly ONE_SECOND_MS = 1000;
   private readonly TEN_MINUTES_MS = 10 * 60 * 1000;
 
+  // Per-mailbox in-flight CONCURRENCY ceiling (distinct from the rate window above). Outlook
+  // rejects a 5th concurrent request to the same (app, mailbox) with "Application is over its
+  // MailboxConcurrency limit"; we hold one slot below that hard limit of 4 for headroom, since
+  // subscription renewals and health reads also land on the mailbox. Tunable per environment.
+  private readonly MAILBOX_MAX_CONCURRENCY = Math.max(
+    0,
+    Number(process.env.OUTLOOK_MAILBOX_MAX_CONCURRENCY ?? 3),
+  );
+  // TTL reclaims a slot whose holder crashed mid-request; comfortably longer than any single
+  // Graph call (which retryWithBackoff caps well under this).
+  private readonly MAILBOX_SLOT_TTL_MS = 60_000;
+  // Fail-open ceiling: never block a Graph read forever waiting for a slot. The TTL guarantees
+  // progress in practice; this is a last-resort guard against a pathological wait.
+  private readonly MAILBOX_SLOT_WAIT_BUDGET_MS = 120_000;
+
   // Cleanup configuration (in-memory backend only)
   private readonly INACTIVE_USER_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -45,8 +60,14 @@ export class GraphRateLimiterService implements OnModuleInit {
   private readonly CB_COOLDOWN_MS = 60_000;        // how long to stay open
   private readonly CB_PROBE_TTL_MS = 5_000;        // half-open probe slot TTL
 
+  // Consecutive app-wide MailboxConcurrency (429) throttles trip the SAME breaker as 503s, on a
+  // higher threshold — an isolated per-user 429 is normal, but a fleet-wide throttle storm (many
+  // mailboxes saturating at once, e.g. a tenant connect-all) should shed load globally.
+  private readonly CB_THROTTLE_THRESHOLD = 10; // 429s within CB_FAILURE_WINDOW_MS to trip
+
   // In-process failure timestamp tracking (mirrors store CB state for triggering)
   private cbFailureTimestamps: number[] = [];
+  private cbThrottleTimestamps: number[] = [];
   private cbTotalTrips = 0;
 
   constructor(
@@ -143,6 +164,45 @@ export class GraphRateLimiterService implements OnModuleInit {
   }
 
   /**
+   * Acquire a per-mailbox CONCURRENCY slot, blocking until one is free. This bounds the number of
+   * simultaneously in-flight Graph requests against a single mailbox — the axis Outlook's
+   * MailboxConcurrency limit (4 per app+mailbox) polices, which the per-second rate window does
+   * not (a request slower than 1s can leave more than 4 in flight). Pair every successful acquire
+   * with {@link releaseMailboxSlot}; the choke point {@link executeGraphApiCall} does this in a
+   * `finally`. Returns an opaque token; returns '' when the ceiling is disabled (concurrency ≤ 0).
+   */
+  async acquireMailboxSlot(userId: string): Promise<string> {
+    if (this.MAILBOX_MAX_CONCURRENCY <= 0) return '';
+
+    const deadline = Date.now() + this.MAILBOX_SLOT_WAIT_BUDGET_MS;
+    for (;;) {
+      const token = await this.store.tryAcquireMailboxSlot(
+        userId,
+        this.MAILBOX_MAX_CONCURRENCY,
+        this.MAILBOX_SLOT_TTL_MS,
+      );
+      if (token) return token;
+
+      if (Date.now() >= deadline) {
+        // Fail open rather than wedge a read forever. The TTL normally frees a slot long before
+        // this; reaching here means sustained saturation, so proceed and let the 429 backoff cope.
+        this.logger.warn(
+          `[acquireMailboxSlot] Mailbox ${userId} saturated for ${this.MAILBOX_SLOT_WAIT_BUDGET_MS}ms; ` +
+          'proceeding without a slot (fail-open)',
+        );
+        return '';
+      }
+      await delay(50);
+    }
+  }
+
+  /** Release a per-mailbox concurrency slot claimed by {@link acquireMailboxSlot}. */
+  async releaseMailboxSlot(userId: string, token: string): Promise<void> {
+    if (!token) return;
+    await this.store.releaseMailboxSlot(userId, token);
+  }
+
+  /**
    * Handle a 429 rate limit response from Microsoft Graph API.
    * Sets a cooldown period for the user based on Retry-After header.
    */
@@ -173,6 +233,9 @@ export class GraphRateLimiterService implements OnModuleInit {
 
     const now = Date.now();
     this.cbFailureTimestamps = this.cbFailureTimestamps.filter(
+      (t) => now - t < this.CB_FAILURE_WINDOW_MS,
+    );
+    this.cbThrottleTimestamps = this.cbThrottleTimestamps.filter(
       (t) => now - t < this.CB_FAILURE_WINDOW_MS,
     );
 
@@ -220,6 +283,43 @@ export class GraphRateLimiterService implements OnModuleInit {
   }
 
   /**
+   * Record an app-wide MailboxConcurrency (429) throttle (service-level circuit breaker). When
+   * these exceed {@link CB_THROTTLE_THRESHOLD} within the window, the circuit opens so the whole
+   * fleet backs off — the per-user cooldown from {@link handleRateLimitResponse} only slows one
+   * mailbox, which is not enough when many saturate at once. Mirrors {@link record503Failure}.
+   */
+  async recordThrottleFailure(): Promise<void> {
+    const now = Date.now();
+    this.cbThrottleTimestamps.push(now);
+    this.cbThrottleTimestamps = this.cbThrottleTimestamps.filter(
+      (t) => now - t < this.CB_FAILURE_WINDOW_MS,
+    );
+
+    const cb = await this.store.getCbState();
+    const state = cb?.state ?? 'closed';
+
+    if (state === 'half-open') {
+      await this.store.setCbState({ state: 'open', openedAt: now });
+      this.logger.warn(
+        `[CircuitBreaker] Half-open probe failed (429 throttle), re-opening circuit for ${this.CB_COOLDOWN_MS / 1000}s`,
+      );
+      return;
+    }
+
+    if (
+      state === 'closed' &&
+      this.cbThrottleTimestamps.length >= this.CB_THROTTLE_THRESHOLD
+    ) {
+      await this.store.setCbState({ state: 'open', openedAt: now });
+      this.cbTotalTrips++;
+      this.logger.warn(
+        `[CircuitBreaker] OPEN — ${this.cbThrottleTimestamps.length} MailboxConcurrency (429) throttles ` +
+        `within ${this.CB_FAILURE_WINDOW_MS / 1000}s window. Blocking requests for ${this.CB_COOLDOWN_MS / 1000}s`,
+      );
+    }
+  }
+
+  /**
    * Record a successful Graph API response (resets circuit breaker if half-open).
    */
   async recordSuccess(): Promise<void> {
@@ -227,11 +327,13 @@ export class GraphRateLimiterService implements OnModuleInit {
     if (cb?.state === 'half-open') {
       await this.store.setCbState({ state: 'closed', openedAt: null });
       this.cbFailureTimestamps = [];
+      this.cbThrottleTimestamps = [];
       this.logger.log('[CircuitBreaker] CLOSED — half-open probe succeeded');
       return;
     }
     if (cb?.state === 'closed') {
       this.cbFailureTimestamps = [];
+      this.cbThrottleTimestamps = [];
     }
   }
 

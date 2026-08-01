@@ -22,6 +22,7 @@ export interface RedisLike {
   pexpire(...args: any[]): Promise<any>;
   eval(...args: any[]): Promise<any>;
   zadd(...args: any[]): Promise<any>;
+  zrem(...args: any[]): Promise<any>;
   zremrangebyscore(...args: any[]): Promise<any>;
   zcard(...args: any[]): Promise<any>;
   hset(...args: any[]): Promise<any>;

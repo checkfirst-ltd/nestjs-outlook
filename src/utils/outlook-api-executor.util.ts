@@ -1,8 +1,8 @@
 import {
-  delay,
   is404Error,
   is429Error,
   is503Error,
+  isMailboxConcurrencyError,
   extractRetryAfterSeconds,
   retryWithBackoff,
 } from './retry.util';
@@ -94,6 +94,16 @@ export async function executeGraphApiCall<T>(
           await rateLimiter.acquirePermit(userId);
         }
 
+        // Then claim a per-mailbox CONCURRENCY slot so no more than N requests are in flight
+        // against this mailbox at once — the axis Outlook's MailboxConcurrency limit polices,
+        // which the per-second rate window alone does not bound. Released in `finally` below.
+        // Guarded by `typeof` so older/stubbed rate limiters without the method degrade to
+        // rate-only behaviour instead of throwing.
+        let mailboxSlot: string | null = null;
+        if (rateLimiter && userId && typeof rateLimiter.acquireMailboxSlot === 'function') {
+          mailboxSlot = await rateLimiter.acquireMailboxSlot(userId);
+        }
+
         try {
           const result = await operation();
 
@@ -109,10 +119,20 @@ export async function executeGraphApiCall<T>(
           if (is429Error(error)) {
             const retryAfterSeconds = extractRetryAfterSeconds(error);
 
-            if (retryAfterSeconds !== null) {
-              const delayMs = retryAfterSeconds * 1000;
+            // An app-wide MailboxConcurrency throttle feeds the circuit breaker so the fleet sheds
+            // load — the per-user cooldown below only slows one mailbox. Guarded for stubs.
+            if (
+              rateLimiter &&
+              isMailboxConcurrencyError(error) &&
+              typeof rateLimiter.recordThrottleFailure === 'function'
+            ) {
+              await rateLimiter.recordThrottleFailure();
+            }
 
-              // Notify rate limiter about 429 response
+            if (retryAfterSeconds !== null) {
+              // Notify rate limiter about 429 response (per-user cooldown). The actual wait is
+              // performed once by retryWithBackoff, which also honours this Retry-After — do NOT
+              // sleep here as well, or the backoff would be applied twice.
               if (rateLimiter && userId) {
                 await rateLimiter.handleRateLimitResponse(
                   userId,
@@ -121,16 +141,15 @@ export async function executeGraphApiCall<T>(
               }
 
               logger.warn(
-                `Rate limited on ${resourceName}, waiting ${delayMs / 1000}s as per Retry-After header`
+                `Rate limited on ${resourceName}, backing off ${retryAfterSeconds}s as per Retry-After header`
               );
-
-              await delay(delayMs);
             }
           }
 
-          // Special handling for 503 Service Unavailable with Retry-After header
+          // Special handling for 503 Service Unavailable
           if (is503Error(error)) {
-            // Notify circuit breaker about 503 failure
+            // Notify circuit breaker about 503 failure. The Retry-After wait itself is handled by
+            // retryWithBackoff (single source of truth) — no local sleep here.
             if (rateLimiter) {
               await rateLimiter.record503Failure();
             }
@@ -138,14 +157,19 @@ export async function executeGraphApiCall<T>(
             const retryAfterSeconds = extractRetryAfterSeconds(error);
             if (retryAfterSeconds !== null) {
               logger.warn(
-                `Service unavailable (503) on ${resourceName}, waiting ${retryAfterSeconds}s as per Retry-After header`
+                `Service unavailable (503) on ${resourceName}, backing off ${retryAfterSeconds}s as per Retry-After header`
               );
-              await delay(retryAfterSeconds * 1000);
             }
           }
 
           // Re-throw to let retryWithBackoff handle retry logic
           throw error;
+        } finally {
+          // Always release the mailbox concurrency slot — including before a retry backoff, so a
+          // waiting request isn't blocked by one that's sleeping. The next attempt re-acquires.
+          if (rateLimiter && userId && mailboxSlot && typeof rateLimiter.releaseMailboxSlot === 'function') {
+            await rateLimiter.releaseMailboxSlot(userId, mailboxSlot);
+          }
         }
       },
       {

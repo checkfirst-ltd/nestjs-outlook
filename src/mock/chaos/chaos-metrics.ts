@@ -20,6 +20,11 @@ export class ChaosMetrics {
   private inFlight = 0;
   peakInFlight = 0;
 
+  /** Peak concurrent in-flight requests observed per mailbox (Outlook's per-(app,mailbox) axis). */
+  readonly mailboxPeak = new Map<string, number>();
+  /** Count of requests rejected with a per-mailbox MailboxConcurrency 429. */
+  mailboxConcurrencyRejections = 0;
+
   private readonly startedRealMs = performance.now();
   private readonly startedVirtualMs = Date.now();
   private readonly startedHeap = process.memoryUsage().heapUsed;
@@ -42,6 +47,23 @@ export class ChaosMetrics {
 
   recordInjected(route: string, status: number | 'network'): void {
     this.bump(this.injected, `${route}|${status}`);
+  }
+
+  /** Record the concurrent in-flight count for a mailbox (keeps the running per-mailbox peak). */
+  observeMailboxInFlight(mailbox: string, inFlight: number): void {
+    this.mailboxPeak.set(mailbox, Math.max(this.mailboxPeak.get(mailbox) ?? 0, inFlight));
+  }
+
+  /** Record a request rejected by the mock's per-mailbox concurrency ceiling. */
+  recordMailboxConcurrencyRejection(): void {
+    this.mailboxConcurrencyRejections += 1;
+  }
+
+  /** Highest concurrent in-flight count seen on any single mailbox. */
+  peakMailboxInFlight(): number {
+    let max = 0;
+    for (const v of this.mailboxPeak.values()) max = Math.max(max, v);
+    return max;
   }
 
   recordDb(method: string): void {
@@ -100,6 +122,7 @@ export class ChaosMetrics {
       `virtual wall-clock : ${virtualMs}ms (latency + retry backoff that production would wait)`,
       `heap delta         : ${heapMb.toFixed(1)}MB`,
       `peak graph in-flight: ${this.peakInFlight}`,
+      `peak mailbox in-flight: ${this.peakMailboxInFlight()} (mailbox 429s: ${this.mailboxConcurrencyRejections})`,
       `graph attempts     : ${[...this.attempts.entries()].map(([r, n]) => `${r}=${n}`).join(', ') || 'none'}`,
       `injected errors    : ${[...this.injected.entries()].map(([r, n]) => `${r}=${n}`).join(', ') || 'none'}`,
       `db calls           : ${[...this.dbCalls.entries()].map(([r, n]) => `${r}=${n}`).join(', ') || 'none'}`,

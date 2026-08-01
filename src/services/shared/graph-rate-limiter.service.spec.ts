@@ -33,6 +33,8 @@ function makeMockStore(): jest.Mocked<OutlookRateLimitStore> {
     getCount: jest.fn().mockResolvedValue(0),
     getCooldown: jest.fn().mockResolvedValue(null),
     setCooldown: jest.fn().mockResolvedValue(undefined),
+    tryAcquireMailboxSlot: jest.fn().mockResolvedValue("slot-token"),
+    releaseMailboxSlot: jest.fn().mockResolvedValue(undefined),
     getCbState: jest
       .fn()
       .mockResolvedValue({ state: "closed", openedAt: null }),
@@ -160,6 +162,36 @@ describe("GraphRateLimiterService", () => {
 
       for (let i = 0; i < 4; i++) {
         await service.record503Failure();
+      }
+
+      const openCall = store.setCbState.mock.calls.find(
+        ([snap]: [CircuitBreakerSnapshot]) => snap.state === "open",
+      );
+      expect(openCall).toBeUndefined();
+    });
+
+    it("opens after 10 MailboxConcurrency (429) throttles", async () => {
+      const store = makeMockStore();
+      store.getCbState.mockResolvedValue({ state: "closed", openedAt: null });
+      const service = await buildService(store);
+
+      for (let i = 0; i < 10; i++) {
+        await service.recordThrottleFailure();
+      }
+
+      const openCall = store.setCbState.mock.calls.find(
+        ([snap]: [CircuitBreakerSnapshot]) => snap.state === "open",
+      );
+      expect(openCall).toBeDefined();
+    });
+
+    it("does not open on a handful of isolated 429 throttles (higher threshold than 503)", async () => {
+      const store = makeMockStore();
+      store.getCbState.mockResolvedValue({ state: "closed", openedAt: null });
+      const service = await buildService(store);
+
+      for (let i = 0; i < 9; i++) {
+        await service.recordThrottleFailure();
       }
 
       const openCall = store.setCbState.mock.calls.find(

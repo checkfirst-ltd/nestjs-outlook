@@ -850,6 +850,9 @@ export class CalendarService {
     useStreaming: boolean = false,
     webhookTraceId?: string,
   ): Promise<{ success: boolean; message: string }> {
+    // Hoisted so the catch can trigger recovery for a notification we identified but then failed
+    // to process (e.g. the delta read was throttled out after retries).
+    let identifiedInternalUserId: number | undefined;
     try {
       // Extract necessary information from the notification
       const { subscriptionId, clientState, resource, changeType } =
@@ -872,6 +875,7 @@ export class CalendarService {
         this.logger.error('validateWebhookSubscription failed', message || 'Unknown error');
         return { success: false, message: message || 'Unknown error' };
       }
+      identifiedInternalUserId = internalUserId;
 
       this.logger.log(
         `[WEBHOOK_IDENTIFIED] webhookTraceId=${webhookTraceId || 'none'}, internalUserId=${internalUserId}, subscriptionId=${subscriptionId || 'unknown'}`
@@ -904,6 +908,22 @@ export class CalendarService {
       this.logger.error(
         `Error processing webhook notification: ${errorMessage}`
       );
+
+      // Durability: a notification we identified but couldn't process (e.g. the delta read was
+      // throttled out under a MailboxConcurrency storm) would otherwise be lost — Microsoft won't
+      // redeliver once the endpoint has ACKed, and the only backstop is the daily 3 AM reconcile.
+      // Emit LIFECYCLE_MISSED so the existing missed-notification → reconcile pipeline recovers the
+      // change promptly. reconcileUser is idempotent and lock-debounced per user, so repeated
+      // failures collapse into a single reconcile rather than storming.
+      if (identifiedInternalUserId !== undefined) {
+        this.logger.warn(
+          `[handleOutlookWebhook] Emitting LIFECYCLE_MISSED for user ${identifiedInternalUserId} to reconcile a dropped notification`
+        );
+        this.eventEmitter.emit(OutlookEventTypes.LIFECYCLE_MISSED, {
+          userId: identifiedInternalUserId,
+        });
+      }
+
       return { success: false, message: errorMessage };
     }
   }
