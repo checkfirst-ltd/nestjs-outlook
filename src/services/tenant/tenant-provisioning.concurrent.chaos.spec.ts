@@ -90,8 +90,8 @@ describe('TenantProvisioningService — concurrent replicas (multi-process race)
     console.log(`graph /users/ subs: ${graphSubs}  (a race-free run would be exactly ${N})`);
 
     // Both replicas independently believe they connected the whole batch (neither saw the other).
-    expect(ra?.connected).toBe(N);
-    expect(rb?.connected).toBe(N);
+    expect(ra.connected).toBe(N);
+    expect(rb.connected).toBe(N);
 
     // The invariant a correct distributed system MUST hold: exactly one live mailbox per user.
     // We assert the OBSERVED (racy) reality so the wart is codified and regressions are visible.
@@ -120,8 +120,8 @@ describe('TenantProvisioningService — concurrent replicas (multi-process race)
       ]),
     );
 
-    expect(ra?.connected).toBe(30);
-    expect(rb?.connected).toBe(30);
+    expect(ra.connected).toBe(30);
+    expect(rb.connected).toBe(30);
 
     // Disjoint work → no shared user → every user holds exactly one subscription.
     for (const s of [...aSeeds, ...bSeeds]) {

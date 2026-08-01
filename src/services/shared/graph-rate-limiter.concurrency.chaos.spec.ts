@@ -66,7 +66,7 @@ describe('GraphRateLimiterService — per-mailbox concurrency (MailboxConcurrenc
   /** One calendar read against the victim mailbox, throttled through the real limiter + executor. */
   const readMailbox = () =>
     executeGraphApiCall(
-      () => axios.get(`https://graph.microsoft.com/v1.0/users/${MAILBOX}/events/delta`) as Promise<unknown>,
+      () => axios.get(`https://graph.microsoft.com/v1.0/users/${MAILBOX}/events/delta`),
       {
         rateLimiter: limiter,
         userId: MAILBOX,
