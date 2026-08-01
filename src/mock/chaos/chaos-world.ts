@@ -59,6 +59,19 @@ export interface SeedTenant {
   isActive?: boolean;
 }
 
+/**
+ * The shared substrate (Graph + DB + engine + metrics) of an existing world. Passing this as
+ * `WorldOptions.reuse` builds a SECOND, independent service stack — its own in-process dedupe,
+ * its own service instances — over the same Graph and DB. That models a second ECS task/replica:
+ * distinct process state, one shared Microsoft Graph tenant, one shared RDS.
+ */
+export interface SharedSubstrate {
+  engine: ChaosEngine;
+  graph: ChaosGraph;
+  db: ChaosDb;
+  metrics: ChaosMetrics;
+}
+
 export interface WorldOptions {
   seed: number;
   tenants?: SeedTenant[];
@@ -66,6 +79,10 @@ export interface WorldOptions {
   graphRates?: ChaosRates;
   graphLatencyMs?: { min: number; max: number };
   dbLatencyMs?: { min: number; max: number };
+  /** Outlook per-(app,mailbox) concurrency ceiling (0 = disabled). See {@link ChaosGraph.mailboxConcurrencyLimit}. */
+  mailboxConcurrencyLimit?: number;
+  /** Reuse another world's Graph+DB to wire a second replica over shared state (see {@link SharedSubstrate}). */
+  reuse?: SharedSubstrate;
 }
 
 export interface CapturedEvent {
@@ -82,21 +99,30 @@ const HOUR_MS = 3600 * 1000;
  * token services. Everything in between runs the production code paths.
  */
 export function buildChaosWorld(mockedAxios: AxiosMockLike, options: WorldOptions) {
-  const metrics = new ChaosMetrics();
-  const engine = new ChaosEngine(options.seed, options.graphRates ?? {}, options.graphLatencyMs ?? { min: 0, max: 0 });
-  const graph = new ChaosGraph(engine, metrics);
-  const db = new ChaosDb(engine, metrics, options.dbLatencyMs ?? { min: 0, max: 0 });
-  graph.install(mockedAxios);
+  const reuse = options.reuse;
+  const metrics = reuse?.metrics ?? new ChaosMetrics();
+  const engine =
+    reuse?.engine ?? new ChaosEngine(options.seed, options.graphRates ?? {}, options.graphLatencyMs ?? { min: 0, max: 0 });
+  const graph = reuse?.graph ?? new ChaosGraph(engine, metrics);
+  if (!reuse && options.mailboxConcurrencyLimit) {
+    graph.mailboxConcurrencyLimit = options.mailboxConcurrencyLimit;
+  }
+  const db = reuse?.db ?? new ChaosDb(engine, metrics, options.dbLatencyMs ?? { min: 0, max: 0 });
+  // A reused world's Graph is already routed onto the shared axios mock; installing again is a no-op risk.
+  if (!reuse) graph.install(mockedAxios);
 
-  // ── seed tenants ────────────────────────────────────────────────────
+  // ── seed tenants (reuse: resolve the already-seeded tenant from the shared db) ─────────
   const tenantByKey = new Map<string, MicrosoftTenant>();
   const tenantSeeds = options.tenants ?? [{ key: 'T1', tenantId: 'tenant-t1-guid' }];
   for (const seed of tenantSeeds) {
-    const tenant = db.addTenant({
-      tenantId: seed.tenantId,
-      status: seed.status ?? MicrosoftTenantStatus.ACTIVE,
-      isActive: seed.isActive ?? true,
-    });
+    const tenant = reuse
+      ? db.tenants.find((t) => t.tenantId === seed.tenantId)
+      : db.addTenant({
+          tenantId: seed.tenantId,
+          status: seed.status ?? MicrosoftTenantStatus.ACTIVE,
+          isActive: seed.isActive ?? true,
+        });
+    if (!tenant) throw new Error(`chaos world: tenant ${seed.tenantId} not present in reused db`);
     tenantByKey.set(seed.key, tenant);
   }
   const defaultTenant = tenantByKey.get(tenantSeeds[0].key);
@@ -160,6 +186,12 @@ export function buildChaosWorld(mockedAxios: AxiosMockLike, options: WorldOption
         });
       }
     }
+  }
+
+  // A reused world seeds nothing (users already exist in the shared db); mirror them into the
+  // lookup map so this replica's helpers (internalIdOf, etc.) resolve against shared state.
+  if (reuse) {
+    for (const user of db.users) usersByExternalId.set(user.externalUserId, user);
   }
 
   // ── fakes for the remaining externals ───────────────────────────────
@@ -270,6 +302,8 @@ export function buildChaosWorld(mockedAxios: AxiosMockLike, options: WorldOption
     graph,
     db,
     events,
+    /** Pass as `WorldOptions.reuse` to wire a second replica over this world's Graph + DB. */
+    substrate: { engine, graph, db, metrics } as SharedSubstrate,
     tenants: tenantByKey,
     defaultTenantId: defaultTenant.tenantId,
     services: { subscriptionService, tenantUserService, provisioningService, healthService },

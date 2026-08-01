@@ -114,6 +114,46 @@ describe.each(backends)("OutlookRateLimitStore (%s)", (_name, makeStore) => {
     });
   });
 
+  describe("mailbox concurrency slots", () => {
+    it("grants up to `limit` slots, then refuses until one is released", async () => {
+      const t1 = await store.tryAcquireMailboxSlot("mbx", 3, 60_000);
+      const t2 = await store.tryAcquireMailboxSlot("mbx", 3, 60_000);
+      const t3 = await store.tryAcquireMailboxSlot("mbx", 3, 60_000);
+      expect([t1, t2, t3].every(Boolean)).toBe(true);
+
+      // Fourth request over the ceiling is refused.
+      expect(await store.tryAcquireMailboxSlot("mbx", 3, 60_000)).toBeNull();
+
+      // Releasing one frees exactly one slot.
+      await store.releaseMailboxSlot("mbx", t2 as string);
+      expect(await store.tryAcquireMailboxSlot("mbx", 3, 60_000)).not.toBeNull();
+      expect(await store.tryAcquireMailboxSlot("mbx", 3, 60_000)).toBeNull();
+    });
+
+    it("isolates slot pools per mailbox", async () => {
+      expect(await store.tryAcquireMailboxSlot("mbx-a", 1, 60_000)).not.toBeNull();
+      expect(await store.tryAcquireMailboxSlot("mbx-a", 1, 60_000)).toBeNull();
+      // A different mailbox has its own independent pool.
+      expect(await store.tryAcquireMailboxSlot("mbx-b", 1, 60_000)).not.toBeNull();
+    });
+
+    it("reclaims a slot whose holder never released it (TTL expiry)", async () => {
+      expect(await store.tryAcquireMailboxSlot("mbx", 1, 80)).not.toBeNull();
+      expect(await store.tryAcquireMailboxSlot("mbx", 1, 80)).toBeNull();
+
+      await sleep(120);
+      // The abandoned slot has expired and is reclaimable — no leak.
+      expect(await store.tryAcquireMailboxSlot("mbx", 1, 80)).not.toBeNull();
+    });
+
+    it("grants exactly `limit` under concurrent contention (atomicity)", async () => {
+      const results = await Promise.all(
+        Array.from({ length: 20 }, () => store.tryAcquireMailboxSlot("mbx", 5, 60_000)),
+      );
+      expect(results.filter(Boolean).length).toBe(5);
+    });
+  });
+
   describe("tryClaimHalfOpenProbe", () => {
     it("grants exactly one of N concurrent claims", async () => {
       const claims = await Promise.all(

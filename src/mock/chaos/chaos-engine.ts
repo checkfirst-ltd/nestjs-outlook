@@ -63,6 +63,28 @@ export function buildChaosError(status: number | 'network'): ChaosHttpError {
 }
 
 /**
+ * Build the Outlook per-mailbox concurrency throttle — HTTP 429 "Application is over its
+ * MailboxConcurrency limit." Outlook allows at most 4 concurrent requests per (app, mailbox);
+ * the (app, mailbox) request that would exceed that ceiling is rejected with this error. The
+ * `MailboxConcurrency` message is the signal the limiter's circuit breaker keys off (A2).
+ */
+export function buildMailboxConcurrencyError(): ChaosHttpError {
+  const err = new Error('chaos: HTTP 429 Application is over its MailboxConcurrency limit') as ChaosHttpError;
+  err.isAxiosError = true;
+  err.response = {
+    status: 429,
+    headers: { 'retry-after': '0' },
+    data: {
+      error: {
+        code: 'ApplicationThrottled',
+        message: 'Application is over its MailboxConcurrency limit.',
+      },
+    },
+  };
+  return err;
+}
+
+/**
  * Seeded chaos decision engine shared by the Graph and DB fakes.
  *
  * Two disruption modes compose:

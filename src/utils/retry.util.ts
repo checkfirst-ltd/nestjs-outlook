@@ -95,6 +95,29 @@ export function is429Error(error: unknown): boolean {
 }
 
 /**
+ * Check if a 429 is Outlook's per-(app, mailbox) concurrency throttle — "Application is over its
+ * MailboxConcurrency limit." This is the app-wide-saturation signal (as opposed to an ordinary
+ * per-user rate 429), so the circuit breaker keys off it to shed load fleet-wide.
+ */
+export function isMailboxConcurrencyError(error: unknown): boolean {
+  if (!is429Error(error) || !error || typeof error !== 'object') {
+    return false;
+  }
+  const haystacks: string[] = [];
+  const err = error as {
+    message?: unknown;
+    response?: { data?: { error?: { code?: unknown; message?: unknown } } };
+  };
+  if (typeof err.message === 'string') haystacks.push(err.message);
+  const graphError = err.response?.data?.error;
+  if (graphError) {
+    if (typeof graphError.code === 'string') haystacks.push(graphError.code);
+    if (typeof graphError.message === 'string') haystacks.push(graphError.message);
+  }
+  return haystacks.some((text) => text.toLowerCase().includes('mailboxconcurrency'));
+}
+
+/**
  * Check if an error is a 503 Service Unavailable error
  * @param error - The error to check
  * @returns True if the error is a 503 Service Unavailable error
@@ -260,8 +283,15 @@ export async function retryWithBackoff<T>(
         throw error;
       }
 
-      // Calculate exponential backoff delay
-      const delayMs = retryDelayMs * Math.pow(2, attempt);
+      // Exponential backoff, but honour Retry-After when Microsoft sent one — it is the
+      // authoritative wait on 429/503, and waiting less just earns another throttle. Take the
+      // larger of the two so a short Retry-After never shortens our own backoff. This wait is the
+      // single source of truth: callers must NOT pre-sleep on Retry-After before re-throwing,
+      // or the delay would be applied twice.
+      const backoffMs = retryDelayMs * Math.pow(2, attempt);
+      const retryAfterSeconds = extractRetryAfterSeconds(error);
+      const delayMs =
+        retryAfterSeconds !== null ? Math.max(backoffMs, retryAfterSeconds * 1000) : backoffMs;
 
       if (logger) {
         logger.warn(`[retryWithBackoff] Retry ${attempt + 1}/${maxRetries} for ${operationName} after ${delayMs}ms`, {
@@ -269,6 +299,7 @@ export async function retryWithBackoff<T>(
           errorCode: errorDetails.code,
           errorType: errorDetails.type,
           delayMs,
+          retryAfterSeconds,
         });
       }
 

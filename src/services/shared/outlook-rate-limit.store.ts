@@ -48,6 +48,21 @@ export interface OutlookRateLimitStore {
 
   setCooldown(userId: string, untilMs: number): Promise<void>;
 
+  /**
+   * Try to claim one of `limit` concurrency slots for `mailbox`. Returns an opaque token to pass
+   * to {@link releaseMailboxSlot}, or `null` when all slots are currently held. Slots older than
+   * `ttlMs` (holder crashed without releasing) are reclaimed automatically, so the pool can never
+   * wedge. Atomic on the Redis backend (fleet-wide), so concurrent containers share one ceiling.
+   */
+  tryAcquireMailboxSlot(
+    mailbox: string,
+    limit: number,
+    ttlMs: number,
+  ): Promise<string | null>;
+
+  /** Release a previously-claimed mailbox concurrency slot. Safe to call with a stale token. */
+  releaseMailboxSlot(mailbox: string, token: string): Promise<void>;
+
   getCbState(): Promise<CircuitBreakerSnapshot | null>;
 
   setCbState(snapshot: CircuitBreakerSnapshot): Promise<void>;
@@ -79,6 +94,9 @@ export class InMemoryOutlookRateLimitStore implements OutlookRateLimitStore {
   readonly kind = "memory" as const;
   private readonly logger = new Logger(InMemoryOutlookRateLimitStore.name);
   private readonly users = new Map<string, UserState>();
+  /** mailbox → (token → expiry epoch ms). Concurrency slots currently held for that mailbox. */
+  private readonly mailboxSlots = new Map<string, Map<string, number>>();
+  private slotSeq = 0;
   private cbState: CircuitBreakerSnapshot = {
     state: "closed",
     openedAt: null,
@@ -153,6 +171,37 @@ export class InMemoryOutlookRateLimitStore implements OutlookRateLimitStore {
     return Promise.resolve();
   }
 
+  tryAcquireMailboxSlot(
+    mailbox: string,
+    limit: number,
+    ttlMs: number,
+  ): Promise<string | null> {
+    const now = Date.now();
+    let slots = this.mailboxSlots.get(mailbox);
+    if (!slots) {
+      slots = new Map();
+      this.mailboxSlots.set(mailbox, slots);
+    }
+    // Reclaim slots whose holder crashed without releasing (expired past ttl).
+    for (const [token, expiry] of slots) {
+      if (expiry <= now) slots.delete(token);
+    }
+    if (slots.size >= limit) return Promise.resolve(null);
+    this.slotSeq += 1;
+    const token = `${now}-${this.slotSeq}`;
+    slots.set(token, now + ttlMs);
+    return Promise.resolve(token);
+  }
+
+  releaseMailboxSlot(mailbox: string, token: string): Promise<void> {
+    const slots = this.mailboxSlots.get(mailbox);
+    if (slots) {
+      slots.delete(token);
+      if (slots.size === 0) this.mailboxSlots.delete(mailbox);
+    }
+    return Promise.resolve();
+  }
+
   getCbState(): Promise<CircuitBreakerSnapshot | null> {
     return Promise.resolve({ ...this.cbState });
   }
@@ -206,6 +255,24 @@ redis.call('ZREMRANGEBYSCORE', key, '-inf', now - windowMs)
 return redis.call('ZCARD', key)
 `;
 
+// Members are concurrency-slot tokens scored by their expiry epoch-ms. Expired slots (crashed
+// holder) are reclaimed before the capacity check, so the pool self-heals. Returns the claimed
+// token or the empty string when the mailbox is at its concurrency ceiling.
+const ACQUIRE_SLOT_LUA = `
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2])
+local ttlMs = tonumber(ARGV[3])
+local token = ARGV[4]
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now)
+if redis.call('ZCARD', key) >= limit then
+  return ''
+end
+redis.call('ZADD', key, now + ttlMs, token)
+redis.call('PEXPIRE', key, ttlMs + 60000)
+return token
+`;
+
 export class RedisOutlookRateLimitStore implements OutlookRateLimitStore {
   readonly kind = "redis" as const;
   private readonly logger = new Logger(RedisOutlookRateLimitStore.name);
@@ -230,6 +297,10 @@ export class RedisOutlookRateLimitStore implements OutlookRateLimitStore {
 
   private cbProbeKey(): string {
     return `${this.keyPrefix}cb:probe`;
+  }
+
+  private slotKey(mailbox: string): string {
+    return `${this.keyPrefix}mbslot:${mailbox}`;
   }
 
   private uniqueMember(): string {
@@ -283,6 +354,46 @@ export class RedisOutlookRateLimitStore implements OutlookRateLimitStore {
         `[getCount] Redis error for ${userId}/${key}: ${err instanceof Error ? err.message : String(err)}`,
       );
       return Number.POSITIVE_INFINITY;
+    }
+  }
+
+  async tryAcquireMailboxSlot(
+    mailbox: string,
+    limit: number,
+    ttlMs: number,
+  ): Promise<string | null> {
+    try {
+      const now = Date.now();
+      const token = this.uniqueMember();
+      const result: unknown = await this.redis.eval(
+        ACQUIRE_SLOT_LUA,
+        1,
+        this.slotKey(mailbox),
+        now,
+        limit,
+        ttlMs,
+        token,
+      );
+      // Empty string ⇒ at capacity; a non-empty token ⇒ slot claimed.
+      return typeof result === "string" && result.length > 0 ? result : null;
+    } catch (err) {
+      this.logger.error(
+        `[tryAcquireMailboxSlot] Redis error for ${mailbox}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      // Fail open: a Redis outage must not wedge all Graph traffic. The per-mailbox rate window
+      // and executeGraphApiCall's 429 backoff remain as backstops.
+      return this.uniqueMember();
+    }
+  }
+
+  async releaseMailboxSlot(mailbox: string, token: string): Promise<void> {
+    if (!token) return;
+    try {
+      await this.redis.zrem(this.slotKey(mailbox), token);
+    } catch (err) {
+      this.logger.error(
+        `[releaseMailboxSlot] Redis error for ${mailbox}: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 

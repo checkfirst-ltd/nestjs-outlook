@@ -1,4 +1,4 @@
-import { ChaosEngine, chaosDelay, buildChaosError } from './chaos-engine';
+import { ChaosEngine, chaosDelay, buildChaosError, buildMailboxConcurrencyError } from './chaos-engine';
 import { ChaosMetrics } from './chaos-metrics';
 
 /** A Microsoft user living in the fake Graph directory. */
@@ -51,6 +51,7 @@ export interface AxiosMockLike {
  * - `users.get` (key = upn) — GET /users/{upn}
  * - `subs.create` (key = msUserId or `me:{internalId}`) — POST /subscriptions
  * - `subs.delete` / `subs.get` (key = subscriptionId)
+ * - `mailbox.read` (key = msUserId) — GET /users/{id}/events|calendarView|calendar (delta/sync reads)
  * - `batch` (key = `*`, whole call) and `batch.item` (key = subscriptionId, per inner request)
  * - `auth.revoke` (key = refresh token) — POST …/logout
  */
@@ -62,6 +63,7 @@ export type GraphRoute =
   | 'subs.get'
   | 'subs.list'
   | 'subs.patch'
+  | 'mailbox.read'
   | 'batch'
   | 'batch.item'
   | 'auth.revoke';
@@ -80,10 +82,45 @@ export class ChaosGraph {
   readonly subscriptions = new Map<string, GraphSubscription>();
   private seq = 0;
 
+  /**
+   * Per-mailbox concurrency ceiling — Outlook's real limit is 4 concurrent requests per
+   * (app, mailbox). 0 disables the check (default), so existing chaos tests are unaffected.
+   * When > 0, a request that would exceed the ceiling for its mailbox is rejected with a
+   * MailboxConcurrency 429 (see {@link buildMailboxConcurrencyError}).
+   */
+  mailboxConcurrencyLimit = 0;
+
+  /** Live in-flight request count per mailbox key (drives the ceiling above). */
+  private readonly mailboxInFlight = new Map<string, number>();
+
   constructor(
     readonly engine: ChaosEngine,
     readonly metrics: ChaosMetrics,
   ) {}
+
+  /**
+   * The mailbox a route+key touches, or null for tenant/directory-wide routes not bound to a
+   * single mailbox. Outlook's MailboxConcurrency limit is scoped per (app, mailbox), so only
+   * mailbox-bound routes count toward the ceiling.
+   */
+  private mailboxKeyFor(route: GraphRoute, key: string): string | null {
+    switch (route) {
+      case 'mailbox.read':
+      case 'subs.create':
+        // subs.create key is the msUserId (app-only) or `me:{internalId}` (delegated) — the mailbox.
+        return key;
+      case 'subs.get':
+      case 'subs.delete':
+      case 'subs.patch': {
+        // Resolve the owning mailbox from the stored subscription's resource (/users/{id}/events).
+        const sub = this.subscriptions.get(key);
+        const match = sub ? /^\/users\/([^/]+)\/events$/.exec(sub.resource) : null;
+        return match ? match[1] : null;
+      }
+      default:
+        return null;
+    }
+  }
 
   seedUser(email: string, msUserId: string): GraphUser {
     const user: GraphUser = {
@@ -121,8 +158,26 @@ export class ChaosGraph {
     key: string,
     execute: () => GraphResponse,
   ): Promise<GraphResponse> {
+    const mailbox = this.mailboxKeyFor(route, key);
     this.metrics.enter(route, key);
+    // Slot held across this request's in-flight window (latency + execute) so concurrent
+    // requests on the same mailbox actually observe each other; released in `finally`.
+    let heldMailbox: string | null = null;
     try {
+      if (mailbox && this.mailboxConcurrencyLimit > 0) {
+        const current = this.mailboxInFlight.get(mailbox) ?? 0;
+        if (current >= this.mailboxConcurrencyLimit) {
+          // Outlook rejects the (app, mailbox) request that would exceed the concurrency ceiling.
+          this.metrics.recordInjected(route, 429);
+          this.metrics.recordMailboxConcurrencyRejection();
+          throw buildMailboxConcurrencyError();
+        }
+        const next = current + 1;
+        this.mailboxInFlight.set(mailbox, next);
+        this.metrics.observeMailboxInFlight(mailbox, next);
+        heldMailbox = mailbox;
+      }
+
       await chaosDelay(this.engine.latency());
       const decision = this.engine.decideFull(route, key);
       if (decision && !decision.afterExecute) {
@@ -140,6 +195,11 @@ export class ChaosGraph {
       }
       return result;
     } finally {
+      if (heldMailbox) {
+        const remaining = (this.mailboxInFlight.get(heldMailbox) ?? 1) - 1;
+        if (remaining <= 0) this.mailboxInFlight.delete(heldMailbox);
+        else this.mailboxInFlight.set(heldMailbox, remaining);
+      }
       this.metrics.exit();
     }
   }
@@ -154,6 +214,15 @@ export class ChaosGraph {
       const user = this.users.get(email);
       return { status: 200, data: { value: user ? [user] : [] } };
     });
+  }
+
+  /**
+   * A calendar read against a mailbox (delta/sync/webhook-triggered fetch). Content is not
+   * modelled (empty page) — this route exists so tests can exercise the per-mailbox concurrency
+   * axis that floods during a tenant-wide connect-all.
+   */
+  private handleMailboxRead(msUserId: string): Promise<GraphResponse> {
+    return this.dispatch('mailbox.read', msUserId, () => ({ status: 200, data: { value: [] } }));
   }
 
   private handleUsersGet(upn: string): Promise<GraphResponse> {
@@ -275,6 +344,10 @@ export class ChaosGraph {
       const subMatch = /\/v1\.0\/subscriptions\/([^/?]+)/.exec(url);
       if (subMatch) return this.handleSubsGet(subMatch[1]);
       if (/\/v1\.0\/subscriptions\/?$/.test(url)) return this.handleSubsList();
+      // Mailbox calendar reads (/users/{id}/events|calendarView|calendar) must be matched before
+      // the generic /users/{id} directory GET, which would otherwise capture the id and misroute.
+      const mailboxMatch = /\/v1\.0\/users\/([^/?]+)\/(?:events|calendarView|calendar)/.exec(url);
+      if (mailboxMatch) return this.handleMailboxRead(mailboxMatch[1]);
       const userMatch = /\/v1\.0\/users\/([^/?]+)/.exec(url);
       if (userMatch) return this.handleUsersGet(userMatch[1]);
       if (/\/v1\.0\/users\/?$/.test(url)) return this.handleUsersLookup(params);
