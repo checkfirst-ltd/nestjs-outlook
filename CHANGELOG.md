@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.2.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.1.0...v10.2.0) (2026-08-01)
+
+
+### Features
+
+* **rate-limit:** per-mailbox concurrency ceiling + throttle load-shedding ([#194](https://github.com/checkfirst-ltd/nestjs-outlook/issues/194)) ([78f7ba2](https://github.com/checkfirst-ltd/nestjs-outlook/commit/78f7ba2c32cb3ced8790a8e57fbe5cdb97189757))
+
 ## [10.1.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.0.3...v10.1.0) (2026-07-14)
 
 
