@@ -911,10 +911,11 @@ export class CalendarService {
 
       // Durability: a notification we identified but couldn't process (e.g. the delta read was
       // throttled out under a MailboxConcurrency storm) would otherwise be lost — Microsoft won't
-      // redeliver once the endpoint has ACKed, and the only backstop is the daily 3 AM reconcile.
-      // Emit LIFECYCLE_MISSED so the existing missed-notification → reconcile pipeline recovers the
-      // change promptly. reconcileUser is idempotent and lock-debounced per user, so repeated
-      // failures collapse into a single reconcile rather than storming.
+      // redeliver once the endpoint has ACKed. Emit LIFECYCLE_MISSED to signal the drop. Recovery
+      // is the consumer's responsibility: a subscriber that re-runs reconciliation for the user
+      // (nestjs-calendar-hub wires LIFECYCLE_MISSED → reconcileUserLocked, debounced) closes the
+      // gap promptly; absent such a consumer this is an observability signal only and the daily
+      // reconcile cron remains the ultimate backstop.
       if (identifiedInternalUserId !== undefined) {
         this.logger.warn(
           `[handleOutlookWebhook] Emitting LIFECYCLE_MISSED for user ${identifiedInternalUserId} to reconcile a dropped notification`
