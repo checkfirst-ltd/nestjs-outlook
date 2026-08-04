@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.2.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.2.0...v10.2.1) (2026-08-04)
+
+
+### Bug Fixes
+
+* **calendar:** correct Outlook delta-cursor race and app-only tenant_id persistence ([#196](https://github.com/checkfirst-ltd/nestjs-outlook/issues/196)) ([c5aec4c](https://github.com/checkfirst-ltd/nestjs-outlook/commit/c5aec4c9809e5eccd1424d661365cb3b9d90dd67))
+
 ## [10.2.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.1.0...v10.2.0) (2026-08-01)
 
 
