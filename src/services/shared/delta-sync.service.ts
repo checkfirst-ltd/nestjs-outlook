@@ -345,7 +345,13 @@ export class DeltaSyncService {
     dateRange?: {
       startDate: Date;
       endDate: Date;
-    }
+    },
+    // When false, changes are read WITHOUT committing the delta cursor. The webhook
+    // notification path uses this to peek at what changed (to emit trigger events)
+    // while leaving the cursor for the reconciliation to advance after it has durably
+    // persisted the change. Committing here would starve the reconciliation (it would
+    // re-read an already-advanced cursor and find 0 changes → drop the event).
+    saveDeltaLink: boolean = true,
   ): Promise<DeltaItem[]> {
     // Convert external ID to internal ID for database operations
     const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
@@ -373,7 +379,8 @@ export class DeltaSyncService {
         requestUrl,
         internalUserId,
         ResourceType.CALENDAR,
-        dateRange
+        dateRange,
+        saveDeltaLink
       );
 
       // Sort items before returning
@@ -390,10 +397,14 @@ export class DeltaSyncService {
         internalUserId
       );
 
-      // Save the delta link for incremental syncs (initialization already saves it)
-      if (lastDeltaLink) {
+      // Save the delta link for incremental syncs (initialization already saves it).
+      // Skipped for the webhook peek path (saveDeltaLink=false) so the cursor stays put
+      // for the reconciliation, which commits it only after durably persisting the change.
+      if (lastDeltaLink && saveDeltaLink) {
         await this.saveDeltaLink(internalUserId, ResourceType.CALENDAR, lastDeltaLink);
         this.logger.log(`[fetchAndSortChanges] Saved delta link after fetching ${allItems.length} changes for user ${externalUserId}`);
+      } else if (lastDeltaLink) {
+        this.logger.log(`[fetchAndSortChanges] Delta link NOT saved (saveDeltaLink=false, peek mode) after fetching ${allItems.length} changes for user ${externalUserId}`);
       }
 
       // Sort and return items
@@ -416,7 +427,8 @@ export class DeltaSyncService {
           requestUrl,
           internalUserId,
           ResourceType.CALENDAR,
-          dateRange
+          dateRange,
+          saveDeltaLink
         );
 
         return this.sortDeltaItems(result);
@@ -748,7 +760,11 @@ export class DeltaSyncService {
     dateRange?: {
       startDate: Date;
       endDate: Date;
-    }
+    },
+    // When false, the freshly-established cursor is NOT persisted. Used by the
+    // webhook "peek" path so it can read current changes without advancing the
+    // cursor that the reconciliation owns and commits after durable persistence.
+    saveDeltaLink: boolean = true,
   ): Promise<DeltaItem[]> {
     const startTime = Date.now();
     this.logger.log(`[initializeDeltaLink] Starting initialization for user ${internalUserId}`);
@@ -773,8 +789,13 @@ export class DeltaSyncService {
       throw new Error('Failed to initialize delta link - no delta link received from Microsoft Graph');
     }
 
-    // Save the delta link for future syncs
-    await this.saveDeltaLink(internalUserId, resourceType, lastDeltaLink);
+    // Save the delta link for future syncs (skipped for the webhook peek path,
+    // which must not advance the cursor the reconciliation owns).
+    if (saveDeltaLink) {
+      await this.saveDeltaLink(internalUserId, resourceType, lastDeltaLink);
+    } else {
+      this.logger.log(`[initializeDeltaLink] Delta link NOT saved (saveDeltaLink=false) for user ${internalUserId}`);
+    }
 
     const totalDuration = Date.now() - startTime;
     this.logger.log(
