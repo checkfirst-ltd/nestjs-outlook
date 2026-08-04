@@ -942,21 +942,25 @@ export class CalendarService {
     dateRange?: {
       startDate: Date;
       endDate: Date;
-    }
+    },
+    // Defaults to true (persist the cursor). The webhook notification path passes false
+    // so it can peek at changes without advancing the cursor the reconciliation owns.
+    saveDeltaLink: boolean = true,
   ): Promise<Event[]> {
     const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
     const client = Client.init({ authProvider: (done) => { done(null, accessToken); } });
     const requestUrl = `${resourceBase}/events/delta`;
 
     try {
-      this.logger.log(`[fetchAndSortChanges] Starting delta fetch for user ${externalUserId} (forceReset: ${forceReset})`);
+      this.logger.log(`[fetchAndSortChanges] Starting delta fetch for user ${externalUserId} (forceReset: ${forceReset}, saveDeltaLink: ${saveDeltaLink})`);
 
       const items = await this.deltaSyncService.fetchAndSortChanges(
         client,
         requestUrl,
         externalUserId,
         forceReset,
-        dateRange
+        dateRange,
+        saveDeltaLink
       );
 
       this.logger.log(`[fetchAndSortChanges] ✅ Successfully fetched ${items.length} calendar changes for user ${externalUserId}`);
@@ -1769,7 +1773,9 @@ export class CalendarService {
     const externalUserId = await this.userIdConverter.internalToExternal(internalUserId);
     this.logger.log(`[processChangesStreaming] Using STREAMING mode for user ${internalUserId}, webhookTraceId=${webhookTraceId || 'none'}`);
 
-    for await (const changeBatch of this.streamCalendarChanges(externalUserId)) {
+    // saveDeltaLink=false: peek at changes to emit trigger events without advancing the
+    // cursor the reconciliation owns (see processChangesBuffering for the full rationale).
+    for await (const changeBatch of this.streamCalendarChanges(externalUserId, false, undefined, false)) {
       batchCount++;
       this.logger.log(`[processChangesStreaming] Processing batch ${batchCount} with ${changeBatch.length} changes`);
 
@@ -1816,7 +1822,12 @@ export class CalendarService {
 
     this.logger.log(`[processChangesBuffering] Using BUFFERING mode for user ${internalUserId}, webhookTraceId=${webhookTraceId || 'none'}`);
 
-    const allChanges = await this.fetchAndSortChanges(externalUserId);
+    // Peek at the changed events WITHOUT advancing the delta cursor. The emitted
+    // events trigger the reconciliation (nestjs-calendar-hub), which re-reads the
+    // same cursor, persists the change durably, and only then commits the cursor.
+    // Advancing here would leave the reconciliation reading an already-advanced
+    // cursor (0 changes) and silently drop the event.
+    const allChanges = await this.fetchAndSortChanges(externalUserId, false, undefined, false);
 
     if (allChanges.length === 0) {
       this.logger.warn(`[processChangesBuffering] No changes found`);

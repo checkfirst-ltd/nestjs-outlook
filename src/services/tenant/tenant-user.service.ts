@@ -422,6 +422,16 @@ export class TenantUserService {
 
     await this.tenantUserRepository.save(tenantUser);
 
+    // Assigning only the `tenant` relation object above does not reliably persist the `tenant_id`
+    // join column under TypeORM 0.3's relation save-diff when the row already exists (e.g. it was
+    // first created by a delegated connect). The scalar columns update but tenant_id can stay NULL,
+    // which breaks app-only routing and connection-status checks in the host. A targeted UPDATE
+    // writes the FK deterministically. Idempotent — re-running sets it to the same value.
+    await this.tenantUserRepository.update(
+      { id: tenantUser.id },
+      { tenant: { id: tenant.id } },
+    );
+
     this.logger.log(
       `[registerUserMapping] Registered: ${externalUserId} -> ${userLookup.microsoftUserId} (${userLookup.userPrincipalName})`
     );
