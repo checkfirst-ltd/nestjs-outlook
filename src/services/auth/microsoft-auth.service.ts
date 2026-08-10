@@ -451,7 +451,14 @@ export class MicrosoftAuthService {
 
       // A user that only has app-only (tenant) access has no delegated tokens. Delegated
       // token retrieval is not possible for them until they complete the OAuth flow.
-      if (user.accessToken == null || user.refreshToken == null || user.tokenExpiry == null) {
+      //
+      // Only accessToken + refreshToken define "has delegated credentials". A missing
+      // tokenExpiry is NOT an app-only signal: legacy delegated rows (created before the
+      // tokenExpiry column existed, and never re-authenticated since) still hold valid
+      // access/refresh tokens with a null expiry. Treat those as "expiry unknown" and let
+      // processTokenInfo refresh them, which repopulates tokenExpiry — rather than
+      // falsely rejecting the user as app-only / not authenticated.
+      if (user.accessToken == null || user.refreshToken == null) {
         throw new Error(
           `Microsoft user ${String(user.id)} has no delegated auth tokens (app-only user or not yet authenticated)`
         );
@@ -489,7 +496,7 @@ export class MicrosoftAuthService {
     tokenInfo: {
       accessToken: string;
       refreshToken: string;
-      tokenExpiry: Date;
+      tokenExpiry: Date | null;
       scopes: string;
     },
     internalUserId: number
@@ -1076,7 +1083,10 @@ export class MicrosoftAuthService {
    * @param bufferMinutes - Buffer time in minutes before actual expiry to consider token expired
    * @returns Boolean indicating if token is expired
    */
-  isTokenExpired(tokenExpiry: Date, bufferMinutes = 5): boolean {
+  isTokenExpired(tokenExpiry: Date | null | undefined, bufferMinutes = 5): boolean {
+    // Unknown expiry (e.g. legacy delegated rows predating the tokenExpiry column) is
+    // treated as expired so the caller refreshes and repopulates it.
+    if (tokenExpiry == null) return true;
     // Add buffer time to current time to prevent using tokens that will expire very soon
     const currentTimeWithBuffer = new Date(Date.now() + bufferMinutes * 60 * 1000);
     return tokenExpiry < currentTimeWithBuffer;

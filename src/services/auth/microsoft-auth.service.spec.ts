@@ -222,3 +222,71 @@ describe.each(backends)(
     });
   },
 );
+
+/**
+ * Regression coverage for "Outlook - 500 Error on calendar
+ * disconnection". Legacy delegated rows created before the tokenExpiry column
+ * existed still hold valid access/refresh tokens but have tokenExpiry = null.
+ * The old guard rejected them as "app-only user or not yet authenticated",
+ * turning every token fetch (webhook create/delete, reconciliation, sync) into a
+ * failure — surfacing as an HTTP 500 on disconnect. A null expiry must instead be
+ * treated as "unknown → refresh", not "no delegated credentials".
+ */
+interface TokenService {
+  getUserAccessToken(params: {
+    internalUserId?: number;
+    externalUserId?: string;
+    includeInactive?: boolean;
+    cache?: boolean;
+  }): Promise<string>;
+  refreshAccessToken(refreshToken: string, internalUserId: number): Promise<string>;
+  isTokenExpired(tokenExpiry: Date | null | undefined, bufferMinutes?: number): boolean;
+}
+
+describe("MicrosoftAuthService delegated-token guard (null tokenExpiry)", () => {
+  function buildService(user: MicrosoftUser | null): TokenService {
+    const repo = { save: jest.fn(), findOne: jest.fn(async () => user) };
+    return new MicrosoftAuthService(
+      new EventEmitter2(),
+      {} as never, // EmailService
+      {} as never, // MicrosoftSubscriptionService
+      baseConfig as never,
+      {} as never, // csrfTokenRepository
+      repo as never,
+      new InMemoryOutlookLockStore(),
+    ) as unknown as TokenService;
+  }
+
+  it("isTokenExpired treats a null/undefined expiry as expired", () => {
+    const service = buildService(null);
+    expect(service.isTokenExpired(null)).toBe(true);
+    expect(service.isTokenExpired(undefined)).toBe(true);
+    // A comfortably-future expiry is still considered valid.
+    expect(service.isTokenExpired(new Date(Date.now() + 60 * 60 * 1000))).toBe(false);
+  });
+
+  it("refreshes a legacy delegated user with null tokenExpiry instead of rejecting it", async () => {
+    const user = makeUser({
+      accessToken: "legacy-access",
+      refreshToken: "legacy-refresh",
+      tokenExpiry: null,
+      scopes: "offline_access Calendars.ReadWrite",
+    });
+    const service = buildService(user);
+    jest.spyOn(service, "refreshAccessToken").mockResolvedValue("refreshed-access");
+
+    await expect(
+      service.getUserAccessToken({ internalUserId: user.id }),
+    ).resolves.toBe("refreshed-access");
+    expect(service.refreshAccessToken).toHaveBeenCalledWith("legacy-refresh", user.id);
+  });
+
+  it("still rejects a genuine app-only user with no delegated tokens", async () => {
+    const user = makeUser({ accessToken: null, refreshToken: null, tokenExpiry: null });
+    const service = buildService(user);
+
+    await expect(
+      service.getUserAccessToken({ internalUserId: user.id }),
+    ).rejects.toThrow(/has no delegated auth tokens/);
+  });
+});
