@@ -1,5 +1,13 @@
 # Changelog
 
+## [10.2.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.2.1...v10.2.2) (2026-08-12)
+
+
+### Bug Fixes
+
+* **auth:** don't reject delegated users with a null tokenExpiry ([#198](https://github.com/checkfirst-ltd/nestjs-outlook/issues/198)) ([5c4de30](https://github.com/checkfirst-ltd/nestjs-outlook/commit/5c4de302315dcc20c6f40d282e15eb4e0761a049))
+* **calendar:** preserve tenant_id when persisting Microsoft user updates ([#199](https://github.com/checkfirst-ltd/nestjs-outlook/issues/199)) ([12adf41](https://github.com/checkfirst-ltd/nestjs-outlook/commit/12adf4126dc545dbc61ce77ee1edf46c0d5b48d1))
+
 ## [10.2.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.2.0...v10.2.1) (2026-08-04)
 
 
