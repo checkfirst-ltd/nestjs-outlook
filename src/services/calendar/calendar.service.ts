@@ -178,8 +178,13 @@ export class CalendarService {
       const calendarId = response.data.id;
 
       // Persist so subsequent processes / restarts don't need to re-fetch.
-      user.defaultCalendarId = calendarId;
-      await this.microsoftUserRepository.save(user);
+      // Persist via a targeted column update. save(user) would rewrite the whole
+      // row, and since this query does not load the `tenant` relation it would null
+      // out tenant_id for app-only users, breaking tenant token resolution.
+      await this.microsoftUserRepository.update(
+        { externalUserId },
+        { defaultCalendarId: calendarId },
+      );
       this.defaultCalendarIdCache.set(externalUserId, calendarId);
 
       this.logger.log(`Cached calendar ID for user ${externalUserId}`);

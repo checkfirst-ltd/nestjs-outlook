@@ -86,6 +86,10 @@ describe.each(backends)(
           savedUser = Object.assign(savedUser, u);
           return savedUser;
         }),
+        update: jest.fn(async (_criteria: unknown, patch: Partial<MicrosoftUser>) => {
+          savedUser = Object.assign(savedUser, patch);
+          return { affected: 1 } as never;
+        }),
         findOne: jest.fn(async () => savedUser),
       };
 
@@ -170,6 +174,7 @@ describe.each(backends)(
       const ttlEmit = jest.spyOn(eventEmitter, "emit");
       const repo = {
         save: jest.fn(async (u: MicrosoftUser) => u),
+        update: jest.fn(async () => ({ affected: 1 }) as never),
         findOne: jest.fn(async () => user),
       };
       const ttlService = new MicrosoftAuthService(
@@ -199,6 +204,9 @@ describe.each(backends)(
       const failEmit = jest.spyOn(failingEmitter, "emit");
       const failingRepo = {
         save: jest.fn(async () => {
+          throw new Error("db down");
+        }),
+        update: jest.fn(async () => {
           throw new Error("db down");
         }),
         findOne: jest.fn(async () => user),
