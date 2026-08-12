@@ -333,7 +333,10 @@ export class MicrosoftAuthService {
   ): Promise<void> {
     // Find existing user (including inactive ones) or create a new one
     let user = await this.microsoftUserRepository.findOne({
-      where: { externalUserId: externalUserId }
+      where: { externalUserId: externalUserId },
+      // Load the tenant relation so the save() below preserves tenant_id for
+      // app-only users when re-authenticating (delegated flow).
+      relations: ['tenant'],
     });
 
     if (!user) {
@@ -924,7 +927,17 @@ export class MicrosoftAuthService {
         internalUser.refreshToken = newRefreshToken;
         internalUser.tokenExpiry = new Date(Date.now() + response.data.expires_in * 1000);
 
-        await this.microsoftUserRepository.save(internalUser);
+        // Targeted update. save(internalUser) would rewrite the whole row, and
+        // since this query does not load the `tenant` relation it would null out
+        // tenant_id for app-only users.
+        await this.microsoftUserRepository.update(
+          { id: internalUserId },
+          {
+            accessToken: newAccessToken,
+            refreshToken: newRefreshToken,
+            tokenExpiry: internalUser.tokenExpiry,
+          },
+        );
         this.invalidateUserCache(internalUser);
 
         // Return just the access token
@@ -984,7 +997,13 @@ export class MicrosoftAuthService {
   ): Promise<void> {
     try {
       user.status = MicrosoftUserStatus.CORRUPTED;
-      await this.microsoftUserRepository.save(user);
+      // Targeted update. save(user) would rewrite the whole row, and if the
+      // `tenant` relation is not loaded on this instance it would null out
+      // tenant_id for app-only users.
+      await this.microsoftUserRepository.update(
+        { id: user.id },
+        { status: MicrosoftUserStatus.CORRUPTED },
+      );
       this.invalidateUserCache(user);
       this.logger.warn(`User ${String(user.id)} marked CORRUPTED (reason: ${reason})`);
     } catch (dbErr) {
