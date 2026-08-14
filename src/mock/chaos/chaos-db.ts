@@ -183,6 +183,19 @@ export class ChaosDb {
         }
         return clone(this.addUser(Object.assign(new MicrosoftUser(), user)));
       },
+      // Targeted column update, e.g. registerUserMapping writing the tenant_id FK. Applies the
+      // partial to every matching live row (persisted immediately, like a real UPDATE).
+      update: async (
+        criteria: Record<string, unknown>,
+        partial: Partial<MicrosoftUser>,
+      ) => {
+        await this.touch('users.update', String(criteria.id ?? criteria.externalUserId ?? '?'));
+        const rows = this.users.filter((u) => matches(u, criteria));
+        for (const row of rows) {
+          Object.assign(row, partial);
+        }
+        return { affected: rows.length, raw: [], generatedMaps: [] };
+      },
       createQueryBuilder: (_alias?: string) => this.buildUserQueryBuilder(),
     };
   }
