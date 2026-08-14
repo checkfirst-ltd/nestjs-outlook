@@ -115,6 +115,31 @@ export class CalendarService {
   }
 
   /**
+   * Build a Microsoft Graph client whose auth provider re-resolves the access
+   * token on every request, instead of freezing a single token at construction.
+   *
+   * Long-running or heavily-retried Graph calls — recurring-series expansion and
+   * delta streaming during a large reconcile — can outlive a token captured once
+   * up front. The SDK would then keep replaying the stale token and fail with
+   * "Lifetime validation failed, the token is expired", even though a fresh token
+   * is readily available. Re-resolving per request keeps the token valid at send
+   * time; the underlying app-only/delegated token caches make this cheap.
+   */
+  private createAuthRefreshingClient(externalUserId: string): Client {
+    return Client.init({
+      authProvider: (done) => {
+        this.resolveGraphAuth(externalUserId)
+          .then(({ accessToken }) => {
+            done(null, accessToken);
+          })
+          .catch((error: unknown) => {
+            done(error as Error, null);
+          });
+      },
+    });
+  }
+
+  /**
    * Get the user's default calendar ID
    * Caches the calendar ID in the database after first fetch to avoid redundant API calls
    * @param externalUserId - External user ID
@@ -947,8 +972,8 @@ export class CalendarService {
     // so it can peek at changes without advancing the cursor the reconciliation owns.
     saveDeltaLink: boolean = true,
   ): Promise<Event[]> {
-    const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
-    const client = Client.init({ authProvider: (done) => { done(null, accessToken); } });
+    const { resourceBase } = await this.resolveGraphAuth(externalUserId);
+    const client = this.createAuthRefreshingClient(externalUserId);
     const requestUrl = `${resourceBase}/events/delta`;
 
     try {
@@ -1094,8 +1119,8 @@ export class CalendarService {
     saveDeltaLink: boolean = true,
     skipCursorAdvanceOnEmpty: boolean = false
   ): AsyncGenerator<Event[], string | null, unknown> {
-    const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
-    const client = Client.init({ authProvider: (done) => { done(null, accessToken); } });
+    const { resourceBase } = await this.resolveGraphAuth(externalUserId);
+    const client = this.createAuthRefreshingClient(externalUserId);
     const requestUrl = `${resourceBase}/events/delta`;
 
     try {
@@ -1120,14 +1145,8 @@ export class CalendarService {
     }
   }
 
-  async getAuthenticatedClient(externalUserId: string): Promise<Client> {
-    const { accessToken } = await this.resolveGraphAuth(externalUserId);
-
-    return Client.init({
-      authProvider: (done) => {
-        done(null, accessToken);
-      },
-    });
+  getAuthenticatedClient(externalUserId: string): Promise<Client> {
+    return Promise.resolve(this.createAuthRefreshingClient(externalUserId));
   }
 
   /**
@@ -1460,8 +1479,8 @@ export class CalendarService {
         `Starting event stream for user ${externalUserId} (batchSize: ${batchSize})`
       );
 
-      const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
-      const client = Client.init({ authProvider: (done) => { done(null, accessToken); } });
+      const { resourceBase } = await this.resolveGraphAuth(externalUserId);
+      const client = this.createAuthRefreshingClient(externalUserId);
 
       // Build request URL
       const requestUrl = this.buildRequestUrl(options, batchSize, resourceBase);
@@ -1592,8 +1611,10 @@ export class CalendarService {
     const batchSize = options?.batchSize ?? 100;
 
     try {
-      const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
-      const client = Client.init({ authProvider: (done) => { done(null, accessToken); } });
+      const { resourceBase } = await this.resolveGraphAuth(externalUserId);
+      // Re-resolve the token per request: a series expansion can be queued/retried
+      // for many minutes inside a large reconcile, outliving a token captured once.
+      const client = this.createAuthRefreshingClient(externalUserId);
 
       const now = new Date();
       const startDate = options?.startDate ?? new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
@@ -1682,8 +1703,8 @@ export class CalendarService {
     this.logger.log(`Initializing delta sync tracking for user ${externalUserId}`);
 
     try {
-      const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
-      const client = Client.init({ authProvider: (done) => { done(null, accessToken); } });
+      const { resourceBase } = await this.resolveGraphAuth(externalUserId);
+      const client = this.createAuthRefreshingClient(externalUserId);
 
       // Convert external ID to internal ID
       const internalUserId = await this.userIdConverter.externalToInternal(externalUserId, {cache: false});
