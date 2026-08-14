@@ -44,6 +44,7 @@ describe('MicrosoftSubscriptionService - App-Only Methods', () => {
   let mockUserIdConverter: jest.Mocked<UserIdConverterService>;
   let mockRateLimiter: jest.Mocked<GraphRateLimiterService>;
   let mockEventEmitter: jest.Mocked<EventEmitter2>;
+  let mockMicrosoftUserRepo: jest.Mocked<any>;
 
   const testDelegatedToken = 'delegated-user-token-abc';
 
@@ -105,7 +106,7 @@ describe('MicrosoftSubscriptionService - App-Only Methods', () => {
     } as unknown as jest.Mocked<MicrosoftAuthService>;
 
     // Create mock MicrosoftUser repository
-    const mockMicrosoftUserRepo = {
+    mockMicrosoftUserRepo = {
       findOne: jest.fn(),
     } as unknown as jest.Mocked<any>;
 
@@ -649,6 +650,68 @@ describe('MicrosoftSubscriptionService - App-Only Methods', () => {
       expect(mockedAxios.delete).not.toHaveBeenCalled();
       expect(mockWebhookRepo.deactivateSubscription).not.toHaveBeenCalled();
       expect(mockWebhookRepo.saveSubscription).toHaveBeenCalled();
+    });
+  });
+
+  // Regression: the generic renew/delete/health/cleanup paths must acquire the token that
+  // matches the subscription's auth mode. A tenant/app-only user has no usable delegated
+  // token, so falling back to getUserAccessToken there only churns doomed refreshes.
+  describe('generic renew — auth mode routing', () => {
+    const newExpiration = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
+
+    it('uses the tenant app-only token for a tenant-mapped user (never a delegated refresh)', async () => {
+      mockMicrosoftUserRepo.findOne.mockResolvedValue({
+        id: testInternalUserId,
+        isActive: true,
+        microsoftUserId: testMicrosoftUserId,
+        tenant: { tenantId: testTenantId },
+      });
+      mockedAxios.patch.mockResolvedValueOnce({
+        data: { id: testSubscriptionId, expirationDateTime: newExpiration },
+      });
+
+      await service.renewWebhookSubscription(testSubscriptionId, testInternalUserId);
+
+      expect(mockAppOnlyAuthService.getAccessToken).toHaveBeenCalledWith(testTenantId);
+      expect(mockMicrosoftAuthService.getUserAccessToken).not.toHaveBeenCalled();
+      // The Graph renewal is authorized with the app-only token, not a stale delegated one.
+      expect(mockedAxios.patch).toHaveBeenCalledWith(
+        `https://graph.microsoft.com/v1.0/subscriptions/${testSubscriptionId}`,
+        expect.any(Object),
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: `Bearer ${testAccessToken}`,
+          }),
+        }),
+      );
+    });
+
+    it('uses the delegated token for a non-tenant (delegated) user', async () => {
+      mockMicrosoftUserRepo.findOne.mockResolvedValue({
+        id: testInternalUserId,
+        isActive: true,
+        microsoftUserId: null,
+        tenant: null,
+      });
+      mockedAxios.patch.mockResolvedValueOnce({
+        data: { id: testSubscriptionId, expirationDateTime: newExpiration },
+      });
+
+      await service.renewWebhookSubscription(testSubscriptionId, testInternalUserId);
+
+      expect(mockMicrosoftAuthService.getUserAccessToken).toHaveBeenCalledWith(
+        expect.objectContaining({ internalUserId: testInternalUserId }),
+      );
+      expect(mockAppOnlyAuthService.getAccessToken).not.toHaveBeenCalled();
+      expect(mockedAxios.patch).toHaveBeenCalledWith(
+        `https://graph.microsoft.com/v1.0/subscriptions/${testSubscriptionId}`,
+        expect.any(Object),
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: `Bearer ${testDelegatedToken}`,
+          }),
+        }),
+      );
     });
   });
 });
