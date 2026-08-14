@@ -435,7 +435,11 @@ describe('AppOnlyAuthService', () => {
       expect(mockedFs.readFileSync).not.toHaveBeenCalled();
     });
 
-    it('should throw error when tenant has no certificate thumbprint', async () => {
+    it('should throw error when tenant has a key file but no thumbprint', async () => {
+      // A loadable key with no matching thumbprint is not a usable certificate.
+      mockedFs.readFileSync.mockReturnValue(
+        '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----'
+      );
       const tenant = new MicrosoftTenant();
       tenant.tenantId = mockTenantId;
       tenant.clientId = 'test-client';
@@ -443,7 +447,7 @@ describe('AppOnlyAuthService', () => {
       // Missing certificateThumbprint
 
       await expect(service.getAccessToken(tenant)).rejects.toThrow(
-        'has no certificate thumbprint configured'
+        'has no usable certificate'
       );
     });
 
@@ -455,7 +459,7 @@ describe('AppOnlyAuthService', () => {
       // Missing certificateKeyPath
 
       await expect(service.getAccessToken(tenant)).rejects.toThrow(
-        'has no private key path configured'
+        'has no usable certificate'
       );
     });
   });
