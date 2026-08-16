@@ -243,9 +243,10 @@ export class MicrosoftSubscriptionService {
   }
 
   /**
-   * Resolve the Graph access token for managing a subscription, matching the auth mode of the
-   * owning user/subscription: the tenant's app-only token when the user (or an explicit
-   * subscription `tenantId`) is tenant-mapped, the user's delegated token otherwise.
+   * Resolve a Graph access token for a user, matching their auth mode: the tenant's app-only
+   * token when the user (or an explicit `tenantId`) is tenant-mapped, the user's delegated
+   * token otherwise. This is the generic, auth-mode-aware entry point — prefer it over calling
+   * `MicrosoftAuthService.getUserAccessToken` (delegated-only) directly.
    *
    * Tenant/app-only users never have a usable per-user delegated token (their `token_expiry` is
    * epoch-0 and no refresh token is stored), so calling `getUserAccessToken` for them only churns
@@ -255,7 +256,7 @@ export class MicrosoftSubscriptionService {
    * @returns a bearer token, or `null` when none can be obtained (e.g. app-only auth is not
    *   configured for a tenant user); callers treat `null` as "skip / inconclusive".
    */
-  private async resolveSubscriptionAccessToken(params: {
+  async resolveUserAccessToken(params: {
     internalUserId: number;
     tenantId?: string | null;
     includeInactive?: boolean;
@@ -628,7 +629,7 @@ export class MicrosoftSubscriptionService {
       // Resolve the token matching the subscription's auth mode: app-only for tenant-mapped
       // users, delegated otherwise. Tenant users have no usable delegated token, so
       // getUserAccessToken would only churn failed refreshes.
-      const accessToken = await this.resolveSubscriptionAccessToken({ internalUserId });
+      const accessToken = await this.resolveUserAccessToken({ internalUserId });
       if (!accessToken) {
         throw new Error(
           `No access token available to renew subscription ${subscriptionId} for user ${internalUserId}`
@@ -782,7 +783,7 @@ export class MicrosoftSubscriptionService {
 
       // Resolve the token matching the subscription's auth mode (app-only for tenant-mapped
       // users, delegated otherwise), including inactive users since we're cleaning up.
-      const accessToken = await this.resolveSubscriptionAccessToken({
+      const accessToken = await this.resolveUserAccessToken({
         internalUserId,
         includeInactive: true,
       });
@@ -929,7 +930,7 @@ export class MicrosoftSubscriptionService {
       // Try to get access token (may fail if user already disconnected)
       let accessToken: string | null = null;
       try {
-        accessToken = await this.resolveSubscriptionAccessToken({
+        accessToken = await this.resolveUserAccessToken({
           internalUserId,
           includeInactive: true,
         });
@@ -1191,7 +1192,7 @@ export class MicrosoftSubscriptionService {
       externalUserId,
       { cache: false },
     );
-    const accessToken = await this.resolveSubscriptionAccessToken({
+    const accessToken = await this.resolveUserAccessToken({
       internalUserId,
       cache: false,
     });
@@ -1502,7 +1503,7 @@ export class MicrosoftSubscriptionService {
     let accessToken: string;
     try {
       externalUserId = await this.userIdConverter.internalToExternal(userId);
-      const resolvedToken = await this.resolveSubscriptionAccessToken({ internalUserId: userId });
+      const resolvedToken = await this.resolveUserAccessToken({ internalUserId: userId });
       if (!resolvedToken) {
         throw new Error(`No access token available for user ${userId}`);
       }

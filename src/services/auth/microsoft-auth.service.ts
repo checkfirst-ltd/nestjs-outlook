@@ -51,6 +51,20 @@ const CORRUPTED_TRIGGER_ERROR_CODES: ReadonlySet<string> = new Set([
  * @see docs/USER_ID_TERMINOLOGY.md for detailed explanation
  */
 
+/**
+ * Summary counts returned by {@link MicrosoftAuthService.backfillOutlookEmails}.
+ */
+export interface OutlookEmailBackfillResult {
+  /** Delegated rows examined (outlook_email IS NULL with stored tokens). */
+  processed: number;
+  /** Rows updated with a freshly-resolved email. */
+  updated: number;
+  /** Rows where Graph /me returned no mail/UPN, so nothing was persisted. */
+  skipped: number;
+  /** Rows that errored (expired/revoked refresh token, Graph error, etc.). */
+  failed: number;
+}
+
 @Injectable()
 export class MicrosoftAuthService {
   private readonly logger = new Logger(MicrosoftAuthService.name);
@@ -492,6 +506,183 @@ export class MicrosoftAuthService {
   }
 
   /**
+   * Backfill `outlook_email` for existing users whose column is still null — in **both** auth
+   * modes.
+   *
+   * Exploits the credentials already stored in `microsoft_users`: for each candidate it resolves
+   * an access token via the auth-mode-aware {@link MicrosoftSubscriptionService.resolveUserAccessToken}
+   * (delegated token — refreshed when expired — for OAuth users; the tenant's app-only certificate
+   * token for tenant-mapped users), reads the profile from Graph (`/me` for delegated,
+   * `/users/{microsoftUserId}` for app-only), and persists `mail` (falling back to
+   * `userPrincipalName`). Intended to be run once by the host app after deploying the
+   * `outlook_email` migration — e.g. from a one-off command, an admin endpoint, or a bootstrap hook:
+   *
+   * ```ts
+   * const result = await microsoftAuthService.backfillOutlookEmails();
+   * logger.log(`Outlook email backfill: ${JSON.stringify(result)}`);
+   * ```
+   *
+   * Fault-tolerant: a failure for one user (expired/revoked refresh token, app-only not configured,
+   * Graph error) is logged and counted, never aborting the run. Users with neither a delegated
+   * refresh token nor a tenant mapping are excluded by the candidate query. Safe to re-run —
+   * populated rows are skipped, and rows that failed simply retry on the next run.
+   *
+   * Only the `outlook_email` column is written (via a targeted UPDATE), so a token refresh
+   * triggered during the run is never clobbered by a stale in-memory entity.
+   *
+   * **Resource safety** — this is a long-running maintenance job, so it is bounded on every axis:
+   * - **Sequential (concurrency = 1):** users are processed strictly one-by-one; only a single
+   *   token refresh / Graph call / DB write is ever in flight. It never fans out. Set
+   *   `delayMsBetweenUsers` to additionally space out Graph calls (e.g. to stay under throttling).
+   * - **Bounded memory:** rows are streamed one page at a time (`batchSize`), never loaded all at once.
+   * - **Guaranteed termination:** pagination uses a strictly-increasing id cursor over a finite set,
+   *   and a monotonic-progress backstop aborts if the cursor ever fails to advance — so it cannot
+   *   loop forever. `maxUsers` caps the work of a single run as an extra hard stop.
+   * - **No locks:** the loop acquires no locks, so it cannot deadlock.
+   *
+   * @param options.batchSize - Rows fetched per page (default 100).
+   * @param options.includeInactive - Also backfill deactivated users (default false).
+   * @param options.maxUsers - Hard cap on users processed in a single run (default: unlimited).
+   *   The run stops early once reached; remaining users are picked up on the next run.
+   * @param options.delayMsBetweenUsers - Optional pause between users to throttle Graph calls
+   *   (default 0 = no pause).
+   * @returns Summary counts of processed / updated / skipped / failed rows.
+   */
+  async backfillOutlookEmails(
+    options: {
+      batchSize?: number;
+      includeInactive?: boolean;
+      maxUsers?: number;
+      delayMsBetweenUsers?: number;
+    } = {},
+  ): Promise<OutlookEmailBackfillResult> {
+    const { batchSize = 100, includeInactive = false, maxUsers, delayMsBetweenUsers = 0 } = options;
+    const result: OutlookEmailBackfillResult = { processed: 0, updated: 0, skipped: 0, failed: 0 };
+    const correlationId = `email-backfill-${Date.now()}`;
+
+    this.logger.log(
+      `[${correlationId}] Starting Outlook email backfill (batchSize=${batchSize}, includeInactive=${includeInactive})`,
+    );
+
+    // Cursor on id keeps pagination stable as rows leave the candidate set (their
+    // outlook_email becomes non-null on success). Failed rows keep a null email, so an
+    // id cursor — not an offset — guarantees forward progress and termination.
+    let lastId = 0;
+    let capReached = false;
+
+    for (;;) {
+      // Candidates: any user missing an email that we can still authenticate — either a
+      // delegated user (has a refresh token) or a tenant-mapped app-only user (has a tenant).
+      const qb = this.microsoftUserRepository
+        .createQueryBuilder('user')
+        .leftJoinAndSelect('user.tenant', 'tenant')
+        .where('user.outlookEmail IS NULL')
+        .andWhere('(user.refreshToken IS NOT NULL OR tenant.id IS NOT NULL)')
+        .andWhere('user.id > :lastId', { lastId })
+        .orderBy('user.id', 'ASC')
+        .take(batchSize);
+
+      if (!includeInactive) {
+        qb.andWhere('user.isActive = :isActive', { isActive: true });
+      }
+
+      const candidates = await qb.getMany();
+      if (candidates.length === 0) break;
+
+      // Monotonic-progress backstop: rows are ordered by ascending id, so the last one carries the
+      // batch's max id. If it does not exceed the cursor, the cursor is not advancing and the same
+      // page would be re-fetched forever — bail out instead of looping. (Should never happen; this
+      // guards against a broken query/driver rather than normal operation.)
+      const batchMaxId = candidates[candidates.length - 1].id;
+      if (batchMaxId <= lastId) {
+        this.logger.error(
+          `[${correlationId}] Cursor failed to advance (lastId=${lastId}, batchMaxId=${batchMaxId}); aborting to avoid an infinite loop.`,
+        );
+        break;
+      }
+
+      for (const user of candidates) {
+        // Hard per-run cap: bounds total work regardless of table size. Remaining users are
+        // picked up on the next run (they are still outlook_email IS NULL).
+        if (maxUsers !== undefined && result.processed >= maxUsers) {
+          this.logger.log(
+            `[${correlationId}] Reached maxUsers cap (${maxUsers}); stopping this run. Re-run to continue.`,
+          );
+          capReached = true;
+          break;
+        }
+
+        lastId = user.id;
+        result.processed++;
+        try {
+          // Auth-mode-aware token: app-only (tenant certificate) for tenant-mapped users,
+          // delegated (refreshed when expired) otherwise. cache: false so we always act on a
+          // fresh token during the one-off backfill.
+          const accessToken = await this.subscriptionService.resolveUserAccessToken({
+            internalUserId: user.id,
+            includeInactive,
+            cache: false,
+          });
+          if (!accessToken) {
+            result.skipped++;
+            this.logger.warn(
+              `[${correlationId}] No token resolved for user ${user.id} (ext ${user.externalUserId}) — skipped`,
+            );
+            continue;
+          }
+
+          // Tenant-mapped users can't use /me (delegated-only); their profile lives at
+          // /users/{microsoftUserId}. Delegated users use /me (microsoftUserId omitted).
+          const microsoftUserId = user.tenant ? user.microsoftUserId : null;
+          if (user.tenant && !microsoftUserId) {
+            result.skipped++;
+            this.logger.warn(
+              `[${correlationId}] Tenant user ${user.id} (ext ${user.externalUserId}) has no microsoftUserId — skipped`,
+            );
+            continue;
+          }
+
+          const email = await this.fetchOutlookEmail(accessToken, correlationId, microsoftUserId);
+          if (!email) {
+            result.skipped++;
+            this.logger.warn(
+              `[${correlationId}] No email resolved for user ${user.id} (ext ${user.externalUserId}) — skipped`,
+            );
+            continue;
+          }
+
+          // Targeted column update — avoids overwriting token columns that a delegated
+          // refresh may have just written on this row.
+          await this.microsoftUserRepository.update(user.id, { outlookEmail: email });
+          this.invalidateUserCache(user);
+          result.updated++;
+          this.logger.log(
+            `[${correlationId}] Backfilled email for user ${user.id} (ext ${user.externalUserId})`,
+          );
+        } catch (error) {
+          result.failed++;
+          this.logger.error(
+            `[${correlationId}] Failed to backfill user ${user.id} (ext ${user.externalUserId}): ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+
+        // Optional spacing between users to ease Graph throttling. Sequential processing already
+        // serializes calls; this only adds a deliberate gap when configured.
+        if (delayMsBetweenUsers > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delayMsBetweenUsers));
+        }
+      }
+
+      if (capReached) break;
+    }
+
+    this.logger.log(
+      `[${correlationId}] Outlook email backfill complete: ${JSON.stringify(result)}`,
+    );
+    return result;
+  }
+
+  /**
    * Common helper to process token information and refresh if needed
    * @param tokenInfo - Token information with access token, refresh token, expiry date and scopes
    * @param userId - Internal user ID for refreshing tokens
@@ -690,32 +881,43 @@ export class MicrosoftAuthService {
   }
 
   /**
-   * Fetches the connected user's Outlook mailbox email from Microsoft Graph `/me`.
+   * Fetches a user's Outlook mailbox email from Microsoft Graph. Returns `mail` when present,
+   * falling back to `userPrincipalName` (some Azure AD accounts have a null `mail`). Fail-open:
+   * any error is logged and `null` is returned so a transient Graph failure never blocks the
+   * caller.
    *
-   * Uses the already-granted `User.Read` scope. Returns `mail` when present, falling back
-   * to `userPrincipalName` (some Azure AD accounts have a null `mail`). Fail-open: any
-   * error is logged and `null` is returned so a transient Graph failure never blocks the
-   * connect flow.
+   * Endpoint depends on auth mode:
+   * - **Delegated** (default): `/me` — the signed-in user, via the delegated token's `User.Read`.
+   * - **App-only**: `/users/{microsoftUserId}` — `/me` has no meaning with an app-only token, so
+   *   the caller passes the tenant user's object id.
    *
-   * @param accessToken - The delegated access token obtained during code exchange.
+   * @param accessToken - The Graph bearer token (delegated or app-only).
    * @param correlationId - The correlation ID for log tracing.
+   * @param microsoftUserId - Azure AD object id for the app-only `/users/{id}` lookup; omit for `/me`.
    * @returns The mailbox email/UPN, or null if unavailable.
    */
-  private async fetchOutlookEmail(accessToken: string, correlationId: string): Promise<string | null> {
+  private async fetchOutlookEmail(
+    accessToken: string,
+    correlationId: string,
+    microsoftUserId?: string | null,
+  ): Promise<string | null> {
+    const url = microsoftUserId
+      ? `https://graph.microsoft.com/v1.0/users/${microsoftUserId}`
+      : 'https://graph.microsoft.com/v1.0/me';
     try {
       const response = await axios.get<{ mail?: string | null; userPrincipalName?: string | null }>(
-        'https://graph.microsoft.com/v1.0/me',
+        url,
         {
           headers: { Authorization: `Bearer ${accessToken}` },
           params: { '$select': 'mail,userPrincipalName' },
         },
       );
       const email = response.data.mail ?? response.data.userPrincipalName ?? null;
-      this.logger.log(`[${correlationId}] Fetched Outlook email from /me: ${email ?? 'none'}`);
+      this.logger.log(`[${correlationId}] Fetched Outlook email from ${microsoftUserId ? `/users/${microsoftUserId}` : '/me'}: ${email ?? 'none'}`);
       return email;
     } catch (error) {
       this.logger.warn(
-        `[${correlationId}] Failed to fetch Outlook email from /me (non-blocking): ${error instanceof Error ? error.message : String(error)}`,
+        `[${correlationId}] Failed to fetch Outlook email (non-blocking): ${error instanceof Error ? error.message : String(error)}`,
       );
       return null;
     }
