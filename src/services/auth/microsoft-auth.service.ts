@@ -51,6 +51,20 @@ const CORRUPTED_TRIGGER_ERROR_CODES: ReadonlySet<string> = new Set([
  * @see docs/USER_ID_TERMINOLOGY.md for detailed explanation
  */
 
+/**
+ * Summary counts returned by {@link MicrosoftAuthService.backfillOutlookEmails}.
+ */
+export interface OutlookEmailBackfillResult {
+  /** Delegated rows examined (outlook_email IS NULL with stored tokens). */
+  processed: number;
+  /** Rows updated with a freshly-resolved email. */
+  updated: number;
+  /** Rows where Graph /me returned no mail/UPN, so nothing was persisted. */
+  skipped: number;
+  /** Rows that errored (expired/revoked refresh token, Graph error, etc.). */
+  failed: number;
+}
+
 @Injectable()
 export class MicrosoftAuthService {
   private readonly logger = new Logger(MicrosoftAuthService.name);
@@ -489,6 +503,110 @@ export class MicrosoftAuthService {
       this.logger.error(`Error getting access token for ${identifier}:`, error);
       throw new Error(`Failed to get valid access token: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
+  }
+
+  /**
+   * Backfill `outlook_email` for existing delegated users whose column is still null.
+   *
+   * Exploits the tokens already stored in `microsoft_users`: for each candidate it obtains a
+   * valid access token (refreshing via {@link getUserAccessToken} when expired), calls Graph
+   * `/me`, and persists `mail` (falling back to `userPrincipalName`). Intended to be run once
+   * by the host app after deploying the `outlook_email` migration — e.g. from a one-off
+   * command, an admin endpoint, or a bootstrap hook:
+   *
+   * ```ts
+   * const result = await microsoftAuthService.backfillOutlookEmails();
+   * logger.log(`Outlook email backfill: ${JSON.stringify(result)}`);
+   * ```
+   *
+   * Fault-tolerant: a failure for one user (expired/revoked refresh token, Graph error) is
+   * logged and counted, never aborting the run. App-only users (no delegated tokens) are
+   * excluded by the candidate query. Safe to re-run — populated rows are skipped, and rows
+   * that failed simply retry on the next run.
+   *
+   * Only the `outlook_email` column is written (via a targeted UPDATE), so a token refresh
+   * triggered during the run is never clobbered by a stale in-memory entity.
+   *
+   * @param options.batchSize - Rows fetched per page (default 100).
+   * @param options.includeInactive - Also backfill deactivated users (default false).
+   * @returns Summary counts of processed / updated / skipped / failed rows.
+   */
+  async backfillOutlookEmails(
+    options: { batchSize?: number; includeInactive?: boolean } = {},
+  ): Promise<OutlookEmailBackfillResult> {
+    const { batchSize = 100, includeInactive = false } = options;
+    const result: OutlookEmailBackfillResult = { processed: 0, updated: 0, skipped: 0, failed: 0 };
+    const correlationId = `email-backfill-${Date.now()}`;
+
+    this.logger.log(
+      `[${correlationId}] Starting Outlook email backfill (batchSize=${batchSize}, includeInactive=${includeInactive})`,
+    );
+
+    // Cursor on id keeps pagination stable as rows leave the candidate set (their
+    // outlook_email becomes non-null on success). Failed rows keep a null email, so an
+    // id cursor — not an offset — guarantees forward progress and termination.
+    let lastId = 0;
+
+    for (;;) {
+      const qb = this.microsoftUserRepository
+        .createQueryBuilder('user')
+        .where('user.outlookEmail IS NULL')
+        .andWhere('user.accessToken IS NOT NULL')
+        .andWhere('user.refreshToken IS NOT NULL')
+        .andWhere('user.id > :lastId', { lastId })
+        .orderBy('user.id', 'ASC')
+        .take(batchSize);
+
+      if (!includeInactive) {
+        qb.andWhere('user.isActive = :isActive', { isActive: true });
+      }
+
+      const candidates = await qb.getMany();
+      if (candidates.length === 0) break;
+
+      for (const user of candidates) {
+        lastId = user.id;
+        result.processed++;
+        try {
+          // Reuse the standard token path: refreshes when expired and marks the user
+          // CORRUPTED on an invalid refresh token. cache: false so we always act on a
+          // fresh token during the one-off backfill.
+          const accessToken = await this.getUserAccessToken({
+            internalUserId: user.id,
+            includeInactive,
+            cache: false,
+          });
+
+          const email = await this.fetchOutlookEmail(accessToken, correlationId);
+          if (!email) {
+            result.skipped++;
+            this.logger.warn(
+              `[${correlationId}] No email resolved for user ${user.id} (ext ${user.externalUserId}) — skipped`,
+            );
+            continue;
+          }
+
+          // Targeted column update — avoids overwriting token columns that getUserAccessToken
+          // may have just refreshed on this row.
+          await this.microsoftUserRepository.update(user.id, { outlookEmail: email });
+          this.invalidateUserCache(user);
+          result.updated++;
+          this.logger.log(
+            `[${correlationId}] Backfilled email for user ${user.id} (ext ${user.externalUserId})`,
+          );
+        } catch (error) {
+          result.failed++;
+          this.logger.error(
+            `[${correlationId}] Failed to backfill user ${user.id} (ext ${user.externalUserId}): ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+    }
+
+    this.logger.log(
+      `[${correlationId}] Outlook email backfill complete: ${JSON.stringify(result)}`,
+    );
+    return result;
   }
 
   /**

@@ -1,7 +1,10 @@
 import IoRedisMock from "ioredis-mock";
 import axios from "axios";
 import { EventEmitter2 } from "@nestjs/event-emitter";
-import { MicrosoftAuthService } from "./microsoft-auth.service";
+import {
+  MicrosoftAuthService,
+  OutlookEmailBackfillResult,
+} from "./microsoft-auth.service";
 import { MicrosoftUser } from "../../entities/microsoft-user.entity";
 import { MicrosoftUserStatus } from "../../enums/microsoft-user-status.enum";
 import { OutlookEventTypes } from "../../enums/event-types.enum";
@@ -380,5 +383,105 @@ describe("MicrosoftAuthService outlook email capture", () => {
   it("saveMicrosoftUser persists null when no email was resolved (fail-open path)", async () => {
     await service.saveMicrosoftUser("ext-1", "access", "refresh", 3600, "scope", null);
     expect(savedUser.outlookEmail).toBeNull();
+  });
+});
+
+/**
+ * Coverage for backfillOutlookEmails — the one-off job that populates outlook_email for
+ * existing delegated users by exploiting their stored tokens. Asserts it updates only the
+ * email column, is fault-tolerant per user, and terminates via its id cursor.
+ */
+interface BackfillService {
+  backfillOutlookEmails(options?: {
+    batchSize?: number;
+    includeInactive?: boolean;
+  }): Promise<OutlookEmailBackfillResult>;
+  getUserAccessToken(params: {
+    internalUserId?: number;
+    includeInactive?: boolean;
+    cache?: boolean;
+  }): Promise<string>;
+}
+
+describe("MicrosoftAuthService backfillOutlookEmails", () => {
+  function makeQb(pages: MicrosoftUser[][]) {
+    let call = 0;
+    const qb: Record<string, unknown> = {
+      where: () => qb,
+      andWhere: () => qb,
+      orderBy: () => qb,
+      take: () => qb,
+      getMany: async () => pages[call++] ?? [],
+    };
+    return qb;
+  }
+
+  it("updates only the email column, skips empty /me, and counts per-user failures", async () => {
+    const u1 = makeUser({ id: 1, externalUserId: "ext-1" });
+    const u2 = makeUser({ id: 2, externalUserId: "ext-2" });
+    const u3 = makeUser({ id: 3, externalUserId: "ext-3" });
+
+    // Two candidate pages: [u1,u2,u3] then [] to terminate the cursor loop.
+    const qb = makeQb([[u1, u2, u3], []]);
+    const update = jest.fn(async () => ({ affected: 1 }));
+    const repo = {
+      createQueryBuilder: jest.fn(() => qb),
+      update,
+      findOne: jest.fn(),
+      save: jest.fn(),
+    };
+
+    const service = new MicrosoftAuthService(
+      new EventEmitter2(),
+      {} as never,
+      {} as never,
+      baseConfig as never,
+      {} as never,
+      repo as never,
+      new InMemoryOutlookLockStore(),
+    ) as unknown as BackfillService;
+
+    // u3's refresh token is invalid → getUserAccessToken throws → counted as failed.
+    jest
+      .spyOn(service as unknown as { getUserAccessToken: BackfillService["getUserAccessToken"] }, "getUserAccessToken")
+      .mockImplementation(async ({ internalUserId }) => {
+        if (internalUserId === 3) throw new Error("invalid_grant");
+        return "access-token";
+      });
+
+    // /me: u1 resolves a mail; u2 returns nothing → skipped. (u3 never reaches /me.)
+    mockedAxios.get.mockReset();
+    mockedAxios.get
+      .mockResolvedValueOnce({ data: { mail: "one@contoso.com" } })
+      .mockResolvedValueOnce({ data: { mail: null, userPrincipalName: null } });
+
+    const result = await service.backfillOutlookEmails();
+
+    expect(result).toEqual({ processed: 3, updated: 1, skipped: 1, failed: 1 });
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith(1, { outlookEmail: "one@contoso.com" });
+  });
+
+  it("returns a zero summary when there are no candidates", async () => {
+    const qb = makeQb([[]]);
+    const repo = {
+      createQueryBuilder: jest.fn(() => qb),
+      update: jest.fn(),
+      findOne: jest.fn(),
+      save: jest.fn(),
+    };
+    const service = new MicrosoftAuthService(
+      new EventEmitter2(),
+      {} as never,
+      {} as never,
+      baseConfig as never,
+      {} as never,
+      repo as never,
+      new InMemoryOutlookLockStore(),
+    ) as unknown as BackfillService;
+
+    const result = await service.backfillOutlookEmails();
+    expect(result).toEqual({ processed: 0, updated: 0, skipped: 0, failed: 0 });
+    expect(repo.update).not.toHaveBeenCalled();
   });
 });
