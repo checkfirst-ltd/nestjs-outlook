@@ -1,5 +1,13 @@
 # Changelog
 
+## [10.3.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.2.3...v10.3.0) (2026-08-16)
+
+
+### Features
+
+* **auth:** backfill outlook_email for existing users from stored tokens ([#206](https://github.com/checkfirst-ltd/nestjs-outlook/issues/206)) ([f40d980](https://github.com/checkfirst-ltd/nestjs-outlook/commit/f40d980450adf2d0010b99e24fee15c34b91c1d4))
+* **auth:** capture connected Outlook email on delegated OAuth connect ([#204](https://github.com/checkfirst-ltd/nestjs-outlook/issues/204)) ([a134e23](https://github.com/checkfirst-ltd/nestjs-outlook/commit/a134e23aaf1f114d77f5d1c2279ddf327faf730d))
+
 ## [10.2.3](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.2.2...v10.2.3) (2026-08-16)
 
 
