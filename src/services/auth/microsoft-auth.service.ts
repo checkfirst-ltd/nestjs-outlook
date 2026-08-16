@@ -329,7 +329,8 @@ export class MicrosoftAuthService {
     accessToken: string,
     refreshToken: string,
     expiresIn: number,
-    scopes: string
+    scopes: string,
+    outlookEmail: string | null
   ): Promise<void> {
     // Find existing user (including inactive ones) or create a new one
     let user = await this.microsoftUserRepository.findOne({
@@ -352,6 +353,7 @@ export class MicrosoftAuthService {
     user.refreshToken = refreshToken;
     user.tokenExpiry = new Date(Date.now() + expiresIn * 1000);
     user.scopes = scopes;
+    user.outlookEmail = outlookEmail; // Refresh the connected mailbox email on each (re)auth
     user.isActive = true; // Reactivate if previously inactive
     user.status = MicrosoftUserStatus.ACTIVE; // Clear CORRUPTED on successful re-auth
 
@@ -584,6 +586,9 @@ export class MicrosoftAuthService {
         expires_in: tokenResponse.data.expires_in,
       };
 
+      // Fetch the connected mailbox email from Graph /me (fail-open — null on error)
+      const outlookEmail = await this.fetchOutlookEmail(tokenData.access_token, correlationId);
+
       // Save Microsoft user with their tokens and scopes for later use
       this.logger.log(`[${correlationId}] Saving Microsoft user to database`);
       await this.saveMicrosoftUser(
@@ -591,7 +596,8 @@ export class MicrosoftAuthService {
         tokenData.access_token,
         tokenData.refresh_token,
         tokenData.expires_in,
-        scopeString // Store the exact Microsoft scopes used
+        scopeString, // Store the exact Microsoft scopes used
+        outlookEmail
       );
 
       // Validate mailbox is accessible before proceeding with calendar setup
@@ -603,7 +609,8 @@ export class MicrosoftAuthService {
       await Promise.resolve(
         this.eventEmitter.emit(OutlookEventTypes.USER_AUTHENTICATED, stateData.userId, {
           externalUserId: stateData.userId,
-          scopes: scopesToUse
+          scopes: scopesToUse,
+          outlookEmail
         }),
       );
 
@@ -679,6 +686,38 @@ export class MicrosoftAuthService {
       this.logger.warn(
         `[${correlationId}] Mailbox validation call failed (non-blocking): ${error instanceof Error ? error.message : String(error)}`
       );
+    }
+  }
+
+  /**
+   * Fetches the connected user's Outlook mailbox email from Microsoft Graph `/me`.
+   *
+   * Uses the already-granted `User.Read` scope. Returns `mail` when present, falling back
+   * to `userPrincipalName` (some Azure AD accounts have a null `mail`). Fail-open: any
+   * error is logged and `null` is returned so a transient Graph failure never blocks the
+   * connect flow.
+   *
+   * @param accessToken - The delegated access token obtained during code exchange.
+   * @param correlationId - The correlation ID for log tracing.
+   * @returns The mailbox email/UPN, or null if unavailable.
+   */
+  private async fetchOutlookEmail(accessToken: string, correlationId: string): Promise<string | null> {
+    try {
+      const response = await axios.get<{ mail?: string | null; userPrincipalName?: string | null }>(
+        'https://graph.microsoft.com/v1.0/me',
+        {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          params: { '$select': 'mail,userPrincipalName' },
+        },
+      );
+      const email = response.data.mail ?? response.data.userPrincipalName ?? null;
+      this.logger.log(`[${correlationId}] Fetched Outlook email from /me: ${email ?? 'none'}`);
+      return email;
+    } catch (error) {
+      this.logger.warn(
+        `[${correlationId}] Failed to fetch Outlook email from /me (non-blocking): ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return null;
     }
   }
 

@@ -1,4 +1,5 @@
 import IoRedisMock from "ioredis-mock";
+import axios from "axios";
 import { EventEmitter2 } from "@nestjs/event-emitter";
 import { MicrosoftAuthService } from "./microsoft-auth.service";
 import { MicrosoftUser } from "../../entities/microsoft-user.entity";
@@ -35,8 +36,13 @@ interface AnyService {
     refreshToken: string,
     expiresIn: number,
     scopes: string,
+    outlookEmail: string | null,
   ): Promise<void>;
+  fetchOutlookEmail(accessToken: string, correlationId: string): Promise<string | null>;
 }
+
+jest.mock("axios");
+const mockedAxios = axios as jest.Mocked<typeof axios>;
 
 const backends: Array<[string, () => Promise<OutlookLockStore>]> = [
   ["in-memory", async () => new InMemoryOutlookLockStore()],
@@ -144,6 +150,7 @@ describe.each(backends)(
         "refresh",
         3600,
         "scope",
+        null,
       );
       await service.markUserAsCorrupted(user, "invalid_grant");
 
@@ -296,5 +303,82 @@ describe("MicrosoftAuthService delegated-token guard (null tokenExpiry)", () => 
     await expect(
       service.getUserAccessToken({ internalUserId: user.id }),
     ).rejects.toThrow(/has no delegated auth tokens/);
+  });
+});
+
+/**
+ * Coverage for capturing the connected Outlook mailbox email during the delegated
+ * OAuth connect flow. The email is read from Graph /me (mail, falling back to
+ * userPrincipalName), persisted on the microsoft_users row, and must be fail-open so a
+ * transient /me failure never blocks a valid connection.
+ */
+interface EmailCaptureService {
+  saveMicrosoftUser(
+    externalUserId: string,
+    accessToken: string,
+    refreshToken: string,
+    expiresIn: number,
+    scopes: string,
+    outlookEmail: string | null,
+  ): Promise<void>;
+  fetchOutlookEmail(accessToken: string, correlationId: string): Promise<string | null>;
+}
+
+describe("MicrosoftAuthService outlook email capture", () => {
+  let savedUser: MicrosoftUser;
+  let service: EmailCaptureService;
+
+  beforeEach(() => {
+    mockedAxios.get.mockReset();
+    savedUser = makeUser();
+    const repo = {
+      save: jest.fn(async (u: MicrosoftUser) => {
+        savedUser = Object.assign(savedUser, u);
+        return savedUser;
+      }),
+      findOne: jest.fn(async () => null), // force the "create new user" branch
+    };
+    service = new MicrosoftAuthService(
+      new EventEmitter2(),
+      {} as never,
+      {} as never,
+      baseConfig as never,
+      {} as never,
+      repo as never,
+      new InMemoryOutlookLockStore(),
+    ) as unknown as EmailCaptureService;
+  });
+
+  it("fetchOutlookEmail returns mail from /me when present", async () => {
+    mockedAxios.get.mockResolvedValue({
+      data: { mail: "user@contoso.com", userPrincipalName: "user@contoso.onmicrosoft.com" },
+    });
+    await expect(service.fetchOutlookEmail("token", "corr-1")).resolves.toBe(
+      "user@contoso.com",
+    );
+  });
+
+  it("fetchOutlookEmail falls back to userPrincipalName when mail is null", async () => {
+    mockedAxios.get.mockResolvedValue({
+      data: { mail: null, userPrincipalName: "user@contoso.onmicrosoft.com" },
+    });
+    await expect(service.fetchOutlookEmail("token", "corr-2")).resolves.toBe(
+      "user@contoso.onmicrosoft.com",
+    );
+  });
+
+  it("fetchOutlookEmail is fail-open — returns null when /me rejects", async () => {
+    mockedAxios.get.mockRejectedValue(new Error("graph down"));
+    await expect(service.fetchOutlookEmail("token", "corr-3")).resolves.toBeNull();
+  });
+
+  it("saveMicrosoftUser persists the outlook email on the user row", async () => {
+    await service.saveMicrosoftUser("ext-1", "access", "refresh", 3600, "scope", "user@contoso.com");
+    expect(savedUser.outlookEmail).toBe("user@contoso.com");
+  });
+
+  it("saveMicrosoftUser persists null when no email was resolved (fail-open path)", async () => {
+    await service.saveMicrosoftUser("ext-1", "access", "refresh", 3600, "scope", null);
+    expect(savedUser.outlookEmail).toBeNull();
   });
 });

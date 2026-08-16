@@ -96,6 +96,15 @@ export class MicrosoftUser {
   @Column({ name: 'user_principal_name', type: 'varchar', length: 320, nullable: true })
   userPrincipalName: string | null = null;
 
+  /**
+   * The user's Outlook mailbox email, captured from Graph `/me` during the delegated
+   * OAuth connect flow (`mail`, falling back to `userPrincipalName`). Null for app-only
+   * users and for delegated users whose profile fetch failed (fail-open).
+   * Max length 320 per RFC 5321 (64 local + @ + 255 domain).
+   */
+  @Column({ name: 'outlook_email', type: 'varchar', length: 320, nullable: true })
+  outlookEmail: string | null = null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date = new Date();
 
