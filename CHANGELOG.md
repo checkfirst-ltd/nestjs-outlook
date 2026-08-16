@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.2.3](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.2.2...v10.2.3) (2026-08-16)
+
+
+### Bug Fixes
+
+* **outlook:** refresh Graph token per request + route subscription auth by tenant mode ([#201](https://github.com/checkfirst-ltd/nestjs-outlook/issues/201)) ([598e511](https://github.com/checkfirst-ltd/nestjs-outlook/commit/598e511c87a44d82a720968f178ef26e42aa885c))
+
 ## [10.2.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.2.1...v10.2.2) (2026-08-12)
 
 
