@@ -396,6 +396,8 @@ interface BackfillService {
   backfillOutlookEmails(options?: {
     batchSize?: number;
     includeInactive?: boolean;
+    maxUsers?: number;
+    delayMsBetweenUsers?: number;
   }): Promise<OutlookEmailBackfillResult>;
 }
 
@@ -521,6 +523,53 @@ describe("MicrosoftAuthService backfillOutlookEmails", () => {
     expect(result).toEqual({ processed: 1, updated: 0, skipped: 1, failed: 0 });
     expect(update).not.toHaveBeenCalled();
     expect(mockedAxios.get).not.toHaveBeenCalled();
+  });
+
+  it("stops at the maxUsers cap and leaves the rest for a later run", async () => {
+    const users = [1, 2, 3].map((id) => makeUser({ id, externalUserId: `ext-${id}` }));
+    const qb = makeQb([users, []]);
+    const update = jest.fn(async () => ({ affected: 1 }));
+    const repo = { createQueryBuilder: jest.fn(() => qb), update };
+    const subscription = makeSubscription(async () => "token");
+    const service = buildService(repo, subscription);
+
+    mockedAxios.get.mockReset();
+    mockedAxios.get.mockResolvedValue({ data: { mail: "a@contoso.com" } });
+
+    const result = await service.backfillOutlookEmails({ maxUsers: 1 });
+
+    // Only the first user is touched; the resolver/Graph are not called for the rest.
+    expect(result).toEqual({ processed: 1, updated: 1, skipped: 0, failed: 0 });
+    expect(subscription.resolveUserAccessToken).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it("terminates (does not loop forever) if the id cursor stops advancing", async () => {
+    // A broken query that returns the SAME non-empty page on every fetch would loop forever
+    // without the monotonic-progress backstop. getMany here never returns [].
+    const stuckPage = [makeUser({ id: 1, externalUserId: "ext-1" })];
+    const qb: Record<string, unknown> = {
+      leftJoinAndSelect: () => qb,
+      where: () => qb,
+      andWhere: () => qb,
+      orderBy: () => qb,
+      take: () => qb,
+      getMany: async () => stuckPage,
+    };
+    const update = jest.fn(async () => ({ affected: 1 }));
+    const repo = { createQueryBuilder: jest.fn(() => qb), update };
+    const subscription = makeSubscription(async () => "token");
+    const service = buildService(repo, subscription);
+
+    mockedAxios.get.mockReset();
+    mockedAxios.get.mockResolvedValue({ data: { mail: "a@contoso.com" } });
+
+    // If the backstop is missing this never resolves; the test would hang and fail on timeout.
+    const result = await service.backfillOutlookEmails();
+
+    // First page processed once, then the cursor can't advance → abort. No re-processing.
+    expect(result.processed).toBe(1);
+    expect(update).toHaveBeenCalledTimes(1);
   });
 
   it("returns a zero summary when there are no candidates", async () => {

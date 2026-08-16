@@ -530,14 +530,33 @@ export class MicrosoftAuthService {
    * Only the `outlook_email` column is written (via a targeted UPDATE), so a token refresh
    * triggered during the run is never clobbered by a stale in-memory entity.
    *
+   * **Resource safety** — this is a long-running maintenance job, so it is bounded on every axis:
+   * - **Sequential (concurrency = 1):** users are processed strictly one-by-one; only a single
+   *   token refresh / Graph call / DB write is ever in flight. It never fans out. Set
+   *   `delayMsBetweenUsers` to additionally space out Graph calls (e.g. to stay under throttling).
+   * - **Bounded memory:** rows are streamed one page at a time (`batchSize`), never loaded all at once.
+   * - **Guaranteed termination:** pagination uses a strictly-increasing id cursor over a finite set,
+   *   and a monotonic-progress backstop aborts if the cursor ever fails to advance — so it cannot
+   *   loop forever. `maxUsers` caps the work of a single run as an extra hard stop.
+   * - **No locks:** the loop acquires no locks, so it cannot deadlock.
+   *
    * @param options.batchSize - Rows fetched per page (default 100).
    * @param options.includeInactive - Also backfill deactivated users (default false).
+   * @param options.maxUsers - Hard cap on users processed in a single run (default: unlimited).
+   *   The run stops early once reached; remaining users are picked up on the next run.
+   * @param options.delayMsBetweenUsers - Optional pause between users to throttle Graph calls
+   *   (default 0 = no pause).
    * @returns Summary counts of processed / updated / skipped / failed rows.
    */
   async backfillOutlookEmails(
-    options: { batchSize?: number; includeInactive?: boolean } = {},
+    options: {
+      batchSize?: number;
+      includeInactive?: boolean;
+      maxUsers?: number;
+      delayMsBetweenUsers?: number;
+    } = {},
   ): Promise<OutlookEmailBackfillResult> {
-    const { batchSize = 100, includeInactive = false } = options;
+    const { batchSize = 100, includeInactive = false, maxUsers, delayMsBetweenUsers = 0 } = options;
     const result: OutlookEmailBackfillResult = { processed: 0, updated: 0, skipped: 0, failed: 0 };
     const correlationId = `email-backfill-${Date.now()}`;
 
@@ -549,6 +568,7 @@ export class MicrosoftAuthService {
     // outlook_email becomes non-null on success). Failed rows keep a null email, so an
     // id cursor — not an offset — guarantees forward progress and termination.
     let lastId = 0;
+    let capReached = false;
 
     for (;;) {
       // Candidates: any user missing an email that we can still authenticate — either a
@@ -569,7 +589,29 @@ export class MicrosoftAuthService {
       const candidates = await qb.getMany();
       if (candidates.length === 0) break;
 
+      // Monotonic-progress backstop: rows are ordered by ascending id, so the last one carries the
+      // batch's max id. If it does not exceed the cursor, the cursor is not advancing and the same
+      // page would be re-fetched forever — bail out instead of looping. (Should never happen; this
+      // guards against a broken query/driver rather than normal operation.)
+      const batchMaxId = candidates[candidates.length - 1].id;
+      if (batchMaxId <= lastId) {
+        this.logger.error(
+          `[${correlationId}] Cursor failed to advance (lastId=${lastId}, batchMaxId=${batchMaxId}); aborting to avoid an infinite loop.`,
+        );
+        break;
+      }
+
       for (const user of candidates) {
+        // Hard per-run cap: bounds total work regardless of table size. Remaining users are
+        // picked up on the next run (they are still outlook_email IS NULL).
+        if (maxUsers !== undefined && result.processed >= maxUsers) {
+          this.logger.log(
+            `[${correlationId}] Reached maxUsers cap (${maxUsers}); stopping this run. Re-run to continue.`,
+          );
+          capReached = true;
+          break;
+        }
+
         lastId = user.id;
         result.processed++;
         try {
@@ -623,7 +665,15 @@ export class MicrosoftAuthService {
             `[${correlationId}] Failed to backfill user ${user.id} (ext ${user.externalUserId}): ${error instanceof Error ? error.message : String(error)}`,
           );
         }
+
+        // Optional spacing between users to ease Graph throttling. Sequential processing already
+        // serializes calls; this only adds a deliberate gap when configured.
+        if (delayMsBetweenUsers > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delayMsBetweenUsers));
+        }
       }
+
+      if (capReached) break;
     }
 
     this.logger.log(
