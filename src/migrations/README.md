@@ -7,6 +7,10 @@ This directory contains the database migrations required for the NestJS Outlook 
 1. `1697025846000-CreateOutlookTables.ts` - Creates the initial database tables for the module
 2. `1697026000000-EnsureUniqueSubscriptions.ts` - Ensures unique constraints on subscription IDs
 3. `1699000000000-AddMicrosoftUserTable.ts` - Adds the Microsoft User table for improved token management
+4. `1740400000000-AddDefaultCalendarIdColumn.ts` - Adds the `default_calendar_id` column to `microsoft_users`
+5. `1776600000000-AddLastNotificationAtToSubscriptions.ts` - Adds `last_notification_at` to `outlook_webhook_subscriptions`
+6. `1776700000000-AddMicrosoftUserStatusColumn.ts` - Adds the `status` column to `microsoft_users`
+7. `1776800000000-AddOutlookEmailColumn.ts` - Adds the `outlook_email` column to `microsoft_users` to store the connected mailbox email
 
 ## Migration Order
 
