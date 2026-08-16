@@ -387,26 +387,23 @@ describe("MicrosoftAuthService outlook email capture", () => {
 });
 
 /**
- * Coverage for backfillOutlookEmails — the one-off job that populates outlook_email for
- * existing delegated users by exploiting their stored tokens. Asserts it updates only the
- * email column, is fault-tolerant per user, and terminates via its id cursor.
+ * Coverage for backfillOutlookEmails — the one-off job that populates outlook_email for both
+ * delegated and app-only users by exploiting their stored credentials. Asserts it routes token
+ * resolution and the Graph endpoint by auth mode, updates only the email column, is
+ * fault-tolerant per user, and terminates via its id cursor.
  */
 interface BackfillService {
   backfillOutlookEmails(options?: {
     batchSize?: number;
     includeInactive?: boolean;
   }): Promise<OutlookEmailBackfillResult>;
-  getUserAccessToken(params: {
-    internalUserId?: number;
-    includeInactive?: boolean;
-    cache?: boolean;
-  }): Promise<string>;
 }
 
 describe("MicrosoftAuthService backfillOutlookEmails", () => {
   function makeQb(pages: MicrosoftUser[][]) {
     let call = 0;
     const qb: Record<string, unknown> = {
+      leftJoinAndSelect: () => qb,
       where: () => qb,
       andWhere: () => qb,
       orderBy: () => qb,
@@ -416,40 +413,49 @@ describe("MicrosoftAuthService backfillOutlookEmails", () => {
     return qb;
   }
 
-  it("updates only the email column, skips empty /me, and counts per-user failures", async () => {
-    const u1 = makeUser({ id: 1, externalUserId: "ext-1" });
-    const u2 = makeUser({ id: 2, externalUserId: "ext-2" });
-    const u3 = makeUser({ id: 3, externalUserId: "ext-3" });
-
-    // Two candidate pages: [u1,u2,u3] then [] to terminate the cursor loop.
-    const qb = makeQb([[u1, u2, u3], []]);
-    const update = jest.fn(async () => ({ affected: 1 }));
-    const repo = {
-      createQueryBuilder: jest.fn(() => qb),
-      update,
-      findOne: jest.fn(),
-      save: jest.fn(),
+  // Fake MicrosoftSubscriptionService exposing only the auth-mode-aware resolver the backfill uses.
+  function makeSubscription(
+    resolve: (userId: number) => Promise<string | null>,
+  ) {
+    return {
+      resolveUserAccessToken: jest.fn(
+        async ({ internalUserId }: { internalUserId: number }) => resolve(internalUserId),
+      ),
     };
+  }
 
-    const service = new MicrosoftAuthService(
+  function buildService(
+    repo: Record<string, unknown>,
+    subscription: { resolveUserAccessToken: jest.Mock },
+  ): BackfillService {
+    return new MicrosoftAuthService(
       new EventEmitter2(),
-      {} as never,
-      {} as never,
+      {} as never, // EmailService
+      subscription as never, // MicrosoftSubscriptionService
       baseConfig as never,
-      {} as never,
+      {} as never, // csrfTokenRepository
       repo as never,
       new InMemoryOutlookLockStore(),
     ) as unknown as BackfillService;
+  }
 
-    // u3's refresh token is invalid → getUserAccessToken throws → counted as failed.
-    jest
-      .spyOn(service as unknown as { getUserAccessToken: BackfillService["getUserAccessToken"] }, "getUserAccessToken")
-      .mockImplementation(async ({ internalUserId }) => {
-        if (internalUserId === 3) throw new Error("invalid_grant");
-        return "access-token";
-      });
+  it("delegated: updates via /me, skips empty profiles, counts per-user failures", async () => {
+    const u1 = makeUser({ id: 1, externalUserId: "ext-1" }); // resolves a mail
+    const u2 = makeUser({ id: 2, externalUserId: "ext-2" }); // /me returns nothing → skipped
+    const u3 = makeUser({ id: 3, externalUserId: "ext-3" }); // token resolution throws → failed
 
-    // /me: u1 resolves a mail; u2 returns nothing → skipped. (u3 never reaches /me.)
+    const qb = makeQb([[u1, u2, u3], []]);
+    const update = jest.fn(async () => ({ affected: 1 }));
+    const repo = { createQueryBuilder: jest.fn(() => qb), update };
+
+    // u3's refresh token is invalid → resolver throws → counted as failed.
+    const subscription = makeSubscription(async (userId) => {
+      if (userId === 3) throw new Error("invalid_grant");
+      return "delegated-token";
+    });
+
+    const service = buildService(repo, subscription);
+
     mockedAxios.get.mockReset();
     mockedAxios.get
       .mockResolvedValueOnce({ data: { mail: "one@contoso.com" } })
@@ -460,28 +466,72 @@ describe("MicrosoftAuthService backfillOutlookEmails", () => {
     expect(result).toEqual({ processed: 3, updated: 1, skipped: 1, failed: 1 });
     expect(update).toHaveBeenCalledTimes(1);
     expect(update).toHaveBeenCalledWith(1, { outlookEmail: "one@contoso.com" });
+    // Delegated users are read from /me.
+    expect(mockedAxios.get).toHaveBeenNthCalledWith(
+      1,
+      "https://graph.microsoft.com/v1.0/me",
+      expect.anything(),
+    );
+  });
+
+  it("app-only: resolves a tenant token and reads the profile from /users/{id}", async () => {
+    const tenantUser = makeUser({
+      id: 7,
+      externalUserId: "ext-7",
+      tenant: { tenantId: "tid-1" } as never,
+      microsoftUserId: "ms-oid-xyz",
+    });
+
+    const qb = makeQb([[tenantUser], []]);
+    const update = jest.fn(async () => ({ affected: 1 }));
+    const repo = { createQueryBuilder: jest.fn(() => qb), update };
+    const subscription = makeSubscription(async () => "app-only-token");
+    const service = buildService(repo, subscription);
+
+    mockedAxios.get.mockReset();
+    mockedAxios.get.mockResolvedValueOnce({ data: { mail: "tenant@contoso.com" } });
+
+    const result = await service.backfillOutlookEmails();
+
+    expect(result).toEqual({ processed: 1, updated: 1, skipped: 0, failed: 0 });
+    expect(update).toHaveBeenCalledWith(7, { outlookEmail: "tenant@contoso.com" });
+    // App-only users can't use /me — the profile is read from /users/{microsoftUserId}.
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      "https://graph.microsoft.com/v1.0/users/ms-oid-xyz",
+      expect.anything(),
+    );
+  });
+
+  it("skips a user when the resolver returns no token (app-only not configured)", async () => {
+    const tenantUser = makeUser({
+      id: 8,
+      externalUserId: "ext-8",
+      tenant: { tenantId: "tid-2" } as never,
+      microsoftUserId: "ms-oid-8",
+    });
+    const qb = makeQb([[tenantUser], []]);
+    const update = jest.fn();
+    const repo = { createQueryBuilder: jest.fn(() => qb), update };
+    const subscription = makeSubscription(async () => null); // no token → inconclusive
+    const service = buildService(repo, subscription);
+
+    mockedAxios.get.mockReset();
+    const result = await service.backfillOutlookEmails();
+
+    expect(result).toEqual({ processed: 1, updated: 0, skipped: 1, failed: 0 });
+    expect(update).not.toHaveBeenCalled();
+    expect(mockedAxios.get).not.toHaveBeenCalled();
   });
 
   it("returns a zero summary when there are no candidates", async () => {
     const qb = makeQb([[]]);
-    const repo = {
-      createQueryBuilder: jest.fn(() => qb),
-      update: jest.fn(),
-      findOne: jest.fn(),
-      save: jest.fn(),
-    };
-    const service = new MicrosoftAuthService(
-      new EventEmitter2(),
-      {} as never,
-      {} as never,
-      baseConfig as never,
-      {} as never,
-      repo as never,
-      new InMemoryOutlookLockStore(),
-    ) as unknown as BackfillService;
+    const update = jest.fn();
+    const repo = { createQueryBuilder: jest.fn(() => qb), update };
+    const subscription = makeSubscription(async () => "token");
+    const service = buildService(repo, subscription);
 
     const result = await service.backfillOutlookEmails();
     expect(result).toEqual({ processed: 0, updated: 0, skipped: 0, failed: 0 });
-    expect(repo.update).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
   });
 });
