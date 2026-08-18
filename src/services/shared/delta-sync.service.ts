@@ -3,6 +3,7 @@ import { Client } from "@microsoft/microsoft-graph-client";
 import { EventEmitter2 } from "@nestjs/event-emitter";
 import { OutlookDeltaLinkRepository } from "../../repositories/outlook-delta-link.repository";
 import { ResourceType } from "../../enums/resource-type.enum";
+import { DeltaResyncRequiredError } from "../../errors/delta-resync-required.error";
 import { Event, Message } from "../../types";
 import { delay } from "../../utils/retry.util";
 import { executeGraphApiCall } from "../../utils/outlook-api-executor.util";
@@ -493,7 +494,8 @@ export class DeltaSyncService {
       endDate: Date;
     },
     saveDeltaLink: boolean = true,
-    skipCursorAdvanceOnEmpty: boolean = false
+    skipCursorAdvanceOnEmpty: boolean = false,
+    throwOnResyncRequired: boolean = false
   ): AsyncGenerator<DeltaItem[], string | null, unknown> {
     const internalUserId = await this.userIdConverter.externalToInternal(externalUserId);
 
@@ -524,6 +526,18 @@ export class DeltaSyncService {
       return finalDeltaLink;
     } catch (error) {
       if (this.is410Error(error)) {
+        // The caller opted out of automatic full-delta recovery: signal the
+        // resync so it can choose its own strategy (e.g. a bounded windowed
+        // import) instead of replaying the whole mailbox through delta. The
+        // expired token is left in place so a failed recovery simply re-signals.
+        if (throwOnResyncRequired) {
+          this.logger.warn(
+            `[streamDeltaChanges] Delta token expired (410) for user ${externalUserId}; ` +
+            `signaling resync-required to caller (automatic recovery disabled)`
+          );
+          throw new DeltaResyncRequiredError(externalUserId, ResourceType.CALENDAR);
+        }
+
         return yield* this.recoverFromExpiredCursor(
           client,
           requestUrl,

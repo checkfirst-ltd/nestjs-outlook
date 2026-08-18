@@ -1111,6 +1111,7 @@ export class CalendarService {
    * @param dateRange Optional date range for calendar delta queries (only used on initialization)
    * @param saveDeltaLink Whether to save the delta link to database (default: true). Set to false for one-time windowed imports.
    * @param skipCursorAdvanceOnEmpty When true, do not overwrite the existing saved delta link if the delta call returned 0 items against an existing cursor. Protects against Graph delta replication lag where a webhook fires before the change is visible. Default: false (today's behavior). Set true for webhook-triggered reconciliation.
+   * @param throwOnResyncRequired When true, a `410 Gone` (expired delta token) is surfaced as a {@link DeltaResyncRequiredError} instead of the library auto-recovering with a full delta resync. Lets the caller pick its own recovery (e.g. a windowed calendarView import). The expired token is left untouched. Default: false (auto-recover, today's behavior).
    * @yields Sorted batches of events (one batch per Microsoft Graph page)
    * @returns Final delta link (null if not available)
    */
@@ -1122,14 +1123,15 @@ export class CalendarService {
       endDate: Date;
     },
     saveDeltaLink: boolean = true,
-    skipCursorAdvanceOnEmpty: boolean = false
+    skipCursorAdvanceOnEmpty: boolean = false,
+    throwOnResyncRequired: boolean = false
   ): AsyncGenerator<Event[], string | null, unknown> {
     const { resourceBase } = await this.resolveGraphAuth(externalUserId);
     const client = this.createAuthRefreshingClient(externalUserId);
     const requestUrl = `${resourceBase}/events/delta`;
 
     try {
-      this.logger.log(`[streamCalendarChanges] Starting stream for user ${externalUserId} (saveDeltaLink: ${saveDeltaLink}, skipCursorAdvanceOnEmpty: ${skipCursorAdvanceOnEmpty})`);
+      this.logger.log(`[streamCalendarChanges] Starting stream for user ${externalUserId} (saveDeltaLink: ${saveDeltaLink}, skipCursorAdvanceOnEmpty: ${skipCursorAdvanceOnEmpty}, throwOnResyncRequired: ${throwOnResyncRequired})`);
 
       const deltaLink = yield* this.deltaSyncService.streamDeltaChanges(
         client,
@@ -1138,7 +1140,8 @@ export class CalendarService {
         forceReset,
         dateRange,
         saveDeltaLink,
-        skipCursorAdvanceOnEmpty
+        skipCursorAdvanceOnEmpty,
+        throwOnResyncRequired
       );
 
       this.logger.log(`[streamCalendarChanges] Completed streaming for user ${externalUserId}, deltaLink: ${deltaLink ? 'received' : 'none'}`);
