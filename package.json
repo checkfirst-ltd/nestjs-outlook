@@ -52,6 +52,7 @@
     "url": "https://github.com/sponsors/checkfirst-ltd"
   },
   "dependencies": {
+    "@checkfirst/nestjs-outlook": "file:.yalc/@checkfirst/nestjs-outlook",
     "@microsoft/microsoft-graph-client": "^3.0.7",
     "@microsoft/microsoft-graph-types": "^2.40.0",
     "axios": "^1.6.0",
