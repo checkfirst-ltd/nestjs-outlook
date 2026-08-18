@@ -40,6 +40,7 @@ export * from './constants';
 export * from './errors/mailbox-inactive.error';
 export * from './errors/csrf-validation.error';
 export * from './errors/subscription-setup.error';
+export * from './errors/delta-resync-required.error';
 
 // Export controllers
 export * from './controllers/calendar.controller';

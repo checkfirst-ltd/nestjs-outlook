@@ -324,6 +324,36 @@ describe("DeltaSyncService.streamDeltaChanges — skipCursorAdvanceOnEmpty guard
     );
   });
 
+  it("(f2) 410 Gone + throwOnResyncRequired=true → throws DeltaResyncRequiredError, does NOT delete cursor, does NOT auto-recover", async () => {
+    deltaLinkRepository.getDeltaLink.mockResolvedValue(OLD_DELTA_LINK);
+
+    const spy = jest.spyOn(service as any, "fetchDeltaPagesCore");
+    spy.mockImplementationOnce(makeThrowingPageGenerator(make410Error()));
+
+    const gen = service.streamDeltaChanges(
+      client,
+      REQUEST_URL,
+      EXTERNAL_USER_ID,
+      false,
+      undefined,
+      true,
+      false,
+      true, // throwOnResyncRequired
+    );
+
+    await expect(drain(gen)).rejects.toMatchObject({
+      name: "DeltaResyncRequiredError",
+      externalUserId: EXTERNAL_USER_ID,
+    });
+
+    // Caller owns recovery: the expired cursor is left in place, no auto-recovery,
+    // no new cursor saved.
+    expect(deltaLinkRepository.deleteDeltaLink).not.toHaveBeenCalled();
+    expect(deltaLinkRepository.saveDeltaLink).not.toHaveBeenCalled();
+    // Only the initial (failing) fetch ran — no second recovery stream.
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
   it("(g) multi-page sync (skiptoken chain) → yields items from all pages in order, saves only the final cursor once", async () => {
     deltaLinkRepository.getDeltaLink.mockResolvedValue(OLD_DELTA_LINK);
 
