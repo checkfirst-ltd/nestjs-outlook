@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.4.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.3.0...v10.4.0) (2026-08-18)
+
+
+### Features
+
+* **delta-sync:** surface 410 resync as DeltaResyncRequiredError ([#207](https://github.com/checkfirst-ltd/nestjs-outlook/issues/207)) ([3c5dbef](https://github.com/checkfirst-ltd/nestjs-outlook/commit/3c5dbef10bee1b8c94e1a3b1d53acdb8e7b62d91))
+
 ## [10.3.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.2.3...v10.3.0) (2026-08-16)
 
 
