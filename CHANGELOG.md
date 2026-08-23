@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.4.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.4.0...v10.4.1) (2026-08-23)
+
+
+### Bug Fixes
+
+* **health:** treat a never-notified subscription as healthy, not stale ([#209](https://github.com/checkfirst-ltd/nestjs-outlook/issues/209)) ([e8d15aa](https://github.com/checkfirst-ltd/nestjs-outlook/commit/e8d15aadb3721ada72b12d09e6c57a6a816b191c))
+
 ## [10.4.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.3.0...v10.4.0) (2026-08-18)
 
 
