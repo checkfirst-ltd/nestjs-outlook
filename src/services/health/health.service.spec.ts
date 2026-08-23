@@ -116,6 +116,42 @@ describe('HealthService', () => {
       expect(health.recoverable).toBe(true);
     });
 
+    it('HEALTHY for a quiet mailbox: never notified, created before the stale window', async () => {
+      tenantUserService.findUsersByExternalIds.mockResolvedValueOnce([appOnlyUser(1, 'u1')]);
+      subscriptionRepo.findActiveByUserIds.mockResolvedValueOnce([
+        calendarSub(1, { lastNotificationAt: null, createdAt: past(72) }),
+      ]);
+
+      const health = await service.checkUser('u1');
+
+      expect(health.status).toBe(UserHealthStatus.HEALTHY);
+      expect(health.connected).toBe(true);
+      expect(health.recoverable).toBe(false);
+    });
+
+    it('does not flag a quiet mailbox as stale even long after connect', async () => {
+      tenantUserService.findUsersByExternalIds.mockResolvedValueOnce([appOnlyUser(1, 'u1')]);
+      subscriptionRepo.findActiveByUserIds.mockResolvedValueOnce([
+        calendarSub(1, { lastNotificationAt: null, createdAt: past(24 * 30) }),
+      ]);
+
+      const health = await service.checkUser('u1');
+
+      expect(health.status).toBe(UserHealthStatus.HEALTHY);
+    });
+
+    it('still prefers SUBSCRIPTION_EXPIRED over the quiet-mailbox allowance', async () => {
+      tenantUserService.findUsersByExternalIds.mockResolvedValueOnce([appOnlyUser(1, 'u1')]);
+      subscriptionRepo.findActiveByUserIds.mockResolvedValueOnce([
+        calendarSub(1, { lastNotificationAt: null, createdAt: past(72), expirationDateTime: past(1) }),
+      ]);
+
+      const health = await service.checkUser('u1');
+
+      expect(health.status).toBe(UserHealthStatus.SUBSCRIPTION_EXPIRED);
+      expect(health.recoverable).toBe(true);
+    });
+
     it('NEEDS_REAUTH (not recoverable) when the delegated token is CORRUPTED', async () => {
       tenantUserService.findUsersByExternalIds.mockResolvedValueOnce([
         delegatedUser(1, 'u1', { status: MicrosoftUserStatus.CORRUPTED }),
