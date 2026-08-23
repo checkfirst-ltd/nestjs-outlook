@@ -305,13 +305,23 @@ export class HealthService {
   }
 
   /**
-   * Stale = no notification since {@link STALE_HOURS} ago. A subscription that has never received
-   * a notification uses its creation time as the reference, so freshly created subs aren't flagged.
+   * Stale = notifications *stopped*: the subscription delivered at least one notification and has
+   * then been silent for longer than {@link STALE_HOURS}.
+   *
+   * A null `lastNotificationAt` means "never notified", which is not the same signal. A quiet
+   * mailbox — one connected in a bulk tenant connect that has simply had no calendar changes since
+   * — legitimately never sets it, and falling back to `createdAt` flagged every such subscription
+   * as stale exactly {@link STALE_HOURS} after connect even though the Graph subscription was
+   * valid. This matches the null-skipping rule that MicrosoftSubscriptionService's
+   * `detectStaleSubscriptions` already applies on the 6-hourly health cron, so both stale
+   * definitions in the package now agree.
    */
   private isStale(sub: OutlookWebhookSubscription): boolean {
-    const reference = sub.lastNotificationAt ?? sub.createdAt;
+    if (!sub.lastNotificationAt) {
+      return false;
+    }
     const threshold = Date.now() - this.STALE_HOURS * 60 * 60 * 1000;
-    return new Date(reference).getTime() < threshold;
+    return new Date(sub.lastNotificationAt).getTime() < threshold;
   }
 
   /** Map userId → its active calendar subscription (resource ends in `/events`), if any. */
