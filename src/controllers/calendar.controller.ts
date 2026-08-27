@@ -152,6 +152,7 @@ export class CalendarController {
   }
 
   /**
+   * @deprecated Use {@link handleCalendarWebhookNotification} instead
    * Webhook endpoint for Outlook calendar notifications
    * 
    * This endpoint receives notifications when calendar events are changed in Outlook
