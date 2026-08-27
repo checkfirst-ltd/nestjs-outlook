@@ -259,7 +259,7 @@ export function buildChaosWorld(mockedAxios: AxiosMockLike, options: WorldOption
     redirectPath: 'auth/microsoft/callback',
     backendBaseUrl: 'https://host.example.com',
     basePath: 'api',
-    calendarWebhookPath: '/calendar/webhook',
+    calendarWebhookPath: '/calendar/webhook/notification',
   };
 
   const subscriptionRepo = db.buildSubscriptionRepo() as unknown as OutlookWebhookSubscriptionRepository;

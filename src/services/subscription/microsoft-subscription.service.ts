@@ -485,7 +485,7 @@ export class MicrosoftSubscriptionService {
       const basePath = this.microsoftConfig.basePath;
       const basePathUrl = basePath ? `${appUrl}/${basePath}` : appUrl;
 
-      const webhookPath = this.microsoftConfig.calendarWebhookPath || '/calendar/webhook';
+      const webhookPath = this.microsoftConfig.calendarWebhookPath || '/calendar/webhook/notification';
       const notificationUrl = `${basePathUrl}${webhookPath}`;
 
       // Generate the clientState we bind to this subscription. It must never be
@@ -1755,7 +1755,7 @@ export class MicrosoftSubscriptionService {
       const appUrl = this.microsoftConfig.backendBaseUrl || 'http://localhost:3000';
       const basePath = this.microsoftConfig.basePath;
       const basePathUrl = basePath ? `${appUrl}/${basePath}` : appUrl;
-      const webhookPath = this.microsoftConfig.calendarWebhookPath || '/calendar/webhook';
+      const webhookPath = this.microsoftConfig.calendarWebhookPath || '/calendar/webhook/notification';
       const notificationUrl = `${basePathUrl}${webhookPath}`;
 
       // Generate clientState with tenant context
