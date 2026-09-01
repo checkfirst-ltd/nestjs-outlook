@@ -154,6 +154,16 @@ export interface AppOnlyAuthConfig {
   tokenCacheTtlMs?: number;
 }
 
+/** Configuration for delegated (per-user) OAuth authentication. */
+export interface DelegatedAuthConfig {
+  /**
+   * Microsoft identity platform authority tenant used for authorization and
+   * token requests. Supports `common`, `organizations`, `consumers`, a tenant
+   * GUID, or a verified tenant domain. Defaults to `common`.
+   */
+  tenant?: string;
+}
+
 /**
  * Configuration interface for Microsoft Outlook OAuth settings
  */
@@ -200,6 +210,10 @@ export interface MicrosoftOutlookConfig {
    * suppress duplicate emails for longer.
    */
   revocationEmitFlagTtlMs?: number;
+  /**
+   * Optional delegated OAuth configuration. Omit to use the `common` authority.
+   */
+  delegatedAuth?: DelegatedAuthConfig;
   /**
    * Optional app-only (client credentials) authentication configuration.
    * When configured and enabled, the module can authenticate as the application
