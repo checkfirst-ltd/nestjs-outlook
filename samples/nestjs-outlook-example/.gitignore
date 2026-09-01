@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Generated certificates & private keys (DEMO ONLY — never commit key material)
+certs/
+*.key
+*.crt
+*.cer
+*.pem
+
+# Local database
+db.sqlite
+
+# Environment files (keep .env.example)
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
