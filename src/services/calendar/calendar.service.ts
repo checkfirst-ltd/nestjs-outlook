@@ -19,13 +19,22 @@ import { ResourceType } from "../../enums/resource-type.enum";
 import { MicrosoftSubscriptionService } from "../subscription/microsoft-subscription.service";
 import { executeGraphApiCall } from "../../utils/outlook-api-executor.util";
 import { GraphRateLimiterService } from "../shared/graph-rate-limiter.service";
-import { extractRetryAfterSeconds } from "../../utils/retry.util";
+import { extractErrorInfo, extractRetryAfterSeconds } from "../../utils/retry.util";
 import { TtlCache } from "../../utils/ttl-cache.util";
 
 // Event type constants
 const OUTLOOK_EVENT_CREATED = OutlookEventTypes.EVENT_CREATED;
 const OUTLOOK_EVENT_UPDATED = OutlookEventTypes.EVENT_UPDATED;
 const OUTLOOK_EVENT_DELETED = OutlookEventTypes.EVENT_DELETED;
+
+/**
+ * Retry budget for one page of a recurring series' instance expansion.
+ *
+ * Bounded well below the Graph executor's default because the caller
+ * (calendar-hub's drift fix) already retries the whole operation on its next
+ * scheduled reconcile. See the call site in getRecurringEventInstances.
+ */
+const RECURRING_INSTANCE_MAX_RETRIES = 2;
 
 // Change type mapping
 const EVENT_TYPE_TO_CHANGE_TYPE: Record<string, "created" | "updated" | "deleted"> = {
@@ -1655,6 +1664,24 @@ export class CalendarService {
             resourceName: `recurring event instances for series ${seriesMasterId}`,
             rateLimiter: this.rateLimiter,
             userId: externalUserId,
+            // Deliberately far below the executor's default of 10.
+            //
+            // This call runs inside calendar-hub's drift fix, which holds the delta
+            // cursor when it fails and re-runs the whole mailbox on the next pass —
+            // so the reconcile schedule is ALREADY the retry loop for this operation.
+            // A second, nested ladder only decides how long we sleep before handing
+            // control back to it.
+            //
+            // Production over 7 days: 422 ladders started, 344 exhausted all ten
+            // attempts anyway (82%), and 49 of the 78 recoveries happened on the
+            // first retry. Attempts 3-10 rescued ~15 calls while sleeping
+            // 1+2+…+512s ≈ 17 minutes each — ~98 hours of wall clock in a week, all
+            // of it inside a reconciliation holding a cursor.
+            //
+            // Two retries keep the cheap wins (~2/3 of them) and cap the ladder at
+            // 3s, so a throttled series fails the reconcile in seconds instead of
+            // stalling it for 42 minutes.
+            maxRetries: RECURRING_INSTANCE_MAX_RETRIES,
           }
         )) as { value: Event[]; '@odata.nextLink'?: string };
 
@@ -1678,9 +1705,13 @@ export class CalendarService {
         `[getRecurringEventInstances] Completed: ${totalFetched} instances for series ${seriesMasterId}`
       );
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      // A Graph SDK error carries its detail on statusCode/code/body, not on
+      // .message — which is often empty. Reading .message alone logged a bare
+      // trailing colon in production and made this path undiagnosable.
+      const details = extractErrorInfo(error);
       this.logger.error(
-        `[getRecurringEventInstances] Error fetching instances for series ${seriesMasterId}: ${errorMessage}`
+        `[getRecurringEventInstances] Error fetching instances for series ${seriesMasterId}: ` +
+        `status=${details.statusCode} code=${details.code} type=${details.type} ${details.message}`
       );
       throw error;
     }
