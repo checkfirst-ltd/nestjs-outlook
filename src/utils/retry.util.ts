@@ -260,13 +260,24 @@ export async function retryWithBackoff<T>(
       // Extract error details for logging
       const errorDetails = extractErrorInfo(error);
 
+      // The status code and Graph error code go in the MESSAGE, not only in the
+      // context object. Nest's Logger.warn(message, context?: string) treats the
+      // second argument as a logger context, so a structured object passed there
+      // never reaches the log line — which is why these failures showed up in
+      // production as a bare operation name with nothing to diagnose.
+      const errorSummary =
+        `status=${errorDetails.statusCode} code=${errorDetails.code} type=${errorDetails.type}`;
+
       // Don't retry non-retryable errors (401, 403, 404, 410)
       if (isNonRetryableError(error)) {
         if (logger) {
-          logger.warn(`[retryWithBackoff] Non-retryable error for ${operationName}, not retrying`, {
-            statusCode: errorDetails.statusCode,
-            errorCode: errorDetails.code,
-          });
+          logger.warn(
+            `[retryWithBackoff] Non-retryable error for ${operationName}, not retrying (${errorSummary})`,
+            {
+              statusCode: errorDetails.statusCode,
+              errorCode: errorDetails.code,
+            },
+          );
         }
         throw error;
       }
@@ -274,11 +285,14 @@ export async function retryWithBackoff<T>(
       // If we've exhausted all retries, throw the error
       if (attempt >= maxRetries) {
         if (logger) {
-          logger.warn(`[retryWithBackoff] Max retries (${maxRetries}) exceeded for ${operationName}`, {
-            statusCode: errorDetails.statusCode,
-            errorCode: errorDetails.code,
-            errorMessage: errorDetails.message,
-          });
+          logger.warn(
+            `[retryWithBackoff] Max retries (${maxRetries}) exceeded for ${operationName} (${errorSummary}): ${errorDetails.message}`,
+            {
+              statusCode: errorDetails.statusCode,
+              errorCode: errorDetails.code,
+              errorMessage: errorDetails.message,
+            },
+          );
         }
         throw error;
       }
@@ -294,13 +308,16 @@ export async function retryWithBackoff<T>(
         retryAfterSeconds !== null ? Math.max(backoffMs, retryAfterSeconds * 1000) : backoffMs;
 
       if (logger) {
-        logger.warn(`[retryWithBackoff] Retry ${attempt + 1}/${maxRetries} for ${operationName} after ${delayMs}ms`, {
-          statusCode: errorDetails.statusCode,
-          errorCode: errorDetails.code,
-          errorType: errorDetails.type,
-          delayMs,
-          retryAfterSeconds,
-        });
+        logger.warn(
+          `[retryWithBackoff] Retry ${attempt + 1}/${maxRetries} for ${operationName} after ${delayMs}ms (${errorSummary})`,
+          {
+            statusCode: errorDetails.statusCode,
+            errorCode: errorDetails.code,
+            errorType: errorDetails.type,
+            delayMs,
+            retryAfterSeconds,
+          },
+        );
       }
 
       await delay(delayMs);
@@ -316,7 +333,7 @@ export async function retryWithBackoff<T>(
  * @param error - The error object
  * @returns Error details
  */
-function extractErrorInfo(error: unknown): {
+export function extractErrorInfo(error: unknown): {
   statusCode: number | string;
   code: string;
   message: string;
