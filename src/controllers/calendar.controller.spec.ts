@@ -162,6 +162,7 @@ describe("CalendarController (webhook receiving)", () => {
   describe("POST /calendar/webhook", () => {
     it("echoes the decoded validation token as text/plain", async () => {
       const res = makeRes();
+      // eslint-disable-next-line @typescript-eslint/no-deprecated -- intentionally covering the deprecated legacy webhook handler
       await controller.handleCalendarWebhook(
         "tok%2Fen",
         {} as OutlookWebhookNotificationDto,
@@ -183,6 +184,7 @@ describe("CalendarController (webhook receiving)", () => {
         value: [calendarItem()],
       } as unknown as OutlookWebhookNotificationDto;
 
+      // eslint-disable-next-line @typescript-eslint/no-deprecated -- intentionally covering the deprecated legacy webhook handler
       await controller.handleCalendarWebhook("", body, req, res);
 
       expect(calendarService.handleOutlookWebhook).toHaveBeenCalledTimes(1);
@@ -206,6 +208,7 @@ describe("CalendarController (webhook receiving)", () => {
         ],
       } as unknown as OutlookWebhookNotificationDto;
 
+      // eslint-disable-next-line @typescript-eslint/no-deprecated -- intentionally covering the deprecated legacy webhook handler
       await controller.handleCalendarWebhook("", body, req, res);
 
       expect(res.status).toHaveBeenCalledWith(202);
@@ -281,6 +284,7 @@ describe("CalendarController (webhook receiving)", () => {
         ],
       });
 
+      // eslint-disable-next-line @typescript-eslint/no-deprecated -- intentionally covering the deprecated legacy webhook handler
       await controller.handleCalendarWebhook("", body, guardedReq, res);
 
       expect(calendarService.handleOutlookWebhook).not.toHaveBeenCalled();

@@ -54,7 +54,7 @@ describe('MicrosoftSubscriptionService - App-Only Methods', () => {
     redirectPath: '/auth/callback',
     backendBaseUrl: 'https://api.example.com',
     basePath: 'api/v1',
-    calendarWebhookPath: '/calendar/webhook',
+    calendarWebhookPath: '/calendar/webhook/notification',
   };
 
   const testTenantId = '12345678-1234-1234-1234-123456789abc';

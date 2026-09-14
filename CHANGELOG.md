@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.4.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.4.1...v10.4.2) (2026-08-27)
+
+
+### Bug Fixes
+
+* **webhook:** default subscriptions to the v2 notification path ([#212](https://github.com/checkfirst-ltd/nestjs-outlook/issues/212)) ([ae15683](https://github.com/checkfirst-ltd/nestjs-outlook/commit/ae156831039f4816382bd165f7d14e2c1ece4816))
+
 ## [10.4.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.4.0...v10.4.1) (2026-08-23)
 
 
