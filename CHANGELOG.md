@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.4.3](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.4.2...v10.4.3) (2026-09-14)
+
+
+### Bug Fixes
+
+* **calendar:** bound the retry ladder on recurring instance fetches ([#214](https://github.com/checkfirst-ltd/nestjs-outlook/issues/214)) ([85b01e1](https://github.com/checkfirst-ltd/nestjs-outlook/commit/85b01e136786005c87a984e1e7a625fcbb2f9eaa))
+
 ## [10.4.2](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.4.1...v10.4.2) (2026-08-27)
 
 
