@@ -763,10 +763,18 @@ export class MicrosoftSubscriptionService {
    * Deletes the subscription at Microsoft Graph API and deactivates it locally.
    * Supports both external user IDs (from host app) and internal database IDs.
    *
+   * Disconnecting is a "make it so" operation, so the remote half is best-effort: a dead or
+   * revoked token, an unresolvable user, a Graph 404, a Graph 5xx or a timeout are logged and
+   * the local teardown still runs. Refusing to disconnect locally because Microsoft is
+   * unreachable leaves the caller in a worse state than continuing — the subscription stays
+   * active, the renewal cron keeps retrying it, and the user still reads as connected.
+   *
+   * This matches {@link deleteAllWebhookSubscriptions}, which has always behaved this way.
+   *
    * @param subscriptionId - ID of the subscription to delete at Microsoft
    * @param userId - User ID (can be external string or internal number)
-   * @returns True if deletion was successful
-   * @throws Error if user not found or deletion fails (except 404)
+   * @returns True once the subscription is deactivated locally
+   * @throws Error only if the local deactivation itself fails — the disconnect did not happen
    */
   async deleteWebhookSubscription(
     subscriptionId: string,
@@ -774,107 +782,115 @@ export class MicrosoftSubscriptionService {
   ): Promise<boolean> {
     const correlationId = `delete-sub-${subscriptionId}-${Date.now()}`;
 
+    this.logger.log(
+      `[${correlationId}] Deleting calendar subscription ${subscriptionId} for user ${userId}`
+    );
+
+    // Resolving the user is best-effort: a row with a missing or renamed externalUserId must
+    // not stop us deactivating the subscription we were handed.
+    let internalUserId: number | null = null;
     try {
-      this.logger.log(
-        `[${correlationId}] Deleting calendar subscription ${subscriptionId} for user ${userId}`
+      internalUserId = await this.userIdConverter.toInternalUserId(userId);
+    } catch (lookupError: unknown) {
+      const lookupErrorMsg = lookupError instanceof Error ? lookupError.message : 'Unknown error';
+      this.logger.warn(
+        `[${correlationId}] Could not resolve Microsoft user for ${userId}: ${lookupErrorMsg}. ` +
+        `Deactivating subscription ${subscriptionId} locally only.`
       );
 
-      const internalUserId = await this.userIdConverter.toInternalUserId(userId);
+      await this.webhookSubscriptionRepository.deactivateSubscription(subscriptionId);
+      return true;
+    }
 
-      // Resolve the token matching the subscription's auth mode (app-only for tenant-mapped
-      // users, delegated otherwise), including inactive users since we're cleaning up.
-      const accessToken = await this.resolveUserAccessToken({
+    // Resolve the token matching the subscription's auth mode (app-only for tenant-mapped
+    // users, delegated otherwise), including inactive users since we're cleaning up.
+    let accessToken: string | null = null;
+    try {
+      accessToken = await this.resolveUserAccessToken({
         internalUserId,
         includeInactive: true,
       });
-      if (!accessToken) {
-        throw new Error(
-          `No access token available to delete subscription ${subscriptionId} for user ${internalUserId}`
-        );
-      }
+    } catch (tokenError: unknown) {
+      const tokenErrorMsg = tokenError instanceof Error ? tokenError.message : 'Unknown error';
+      this.logger.warn(
+        `[${correlationId}] Could not obtain access token: ${tokenErrorMsg}. ` +
+        `Will deactivate subscription locally only.`
+      );
+    }
 
-      this.logger.debug(`[${correlationId}] Access token obtained`);
-
-      // Delete subscription at Microsoft
+    if (accessToken) {
       this.logger.debug(
         `[${correlationId}] Calling Microsoft Graph API to delete subscription`
       );
 
-      await this.deleteSubscription(subscriptionId, accessToken);
+      try {
+        await this.deleteSubscription(subscriptionId, accessToken);
 
-      this.logger.log(
-        `[${correlationId}] Successfully deleted subscription ${subscriptionId} at Microsoft`
+        this.logger.log(
+          `[${correlationId}] Successfully deleted subscription ${subscriptionId} at Microsoft`
+        );
+      } catch (deleteError: unknown) {
+        if (axios.isAxiosError(deleteError) && deleteError.response?.status === 404) {
+          this.logger.log(
+            `[${correlationId}] Subscription ${subscriptionId} not found at Microsoft (already deleted)`
+          );
+        } else {
+          const deleteErrorMsg =
+            deleteError instanceof Error ? deleteError.message : 'Unknown error';
+          this.logger.warn(
+            `[${correlationId}] Failed to delete subscription ${subscriptionId} at Microsoft: ` +
+            `${deleteErrorMsg}. Deactivating locally anyway.`
+          );
+        }
+      }
+    } else {
+      this.logger.warn(
+        `[${correlationId}] No access token available for subscription ${subscriptionId}; ` +
+        `deactivating locally only.`
       );
+    }
 
-      // Remove the subscription from our database (soft delete)
-      await this.webhookSubscriptionRepository.deactivateSubscription(
-        subscriptionId
+    // Local teardown always runs — this is what actually disconnects the user. A failure here
+    // means the disconnect genuinely did not happen, so it is allowed to propagate.
+    await this.webhookSubscriptionRepository.deactivateSubscription(
+      subscriptionId
+    );
+
+    this.logger.debug(
+      `[${correlationId}] Deactivated subscription in local database`
+    );
+
+    // Check if user has OTHER active subscriptions before marking inactive
+    const otherActiveSubscriptions = await this.webhookSubscriptionRepository.count({
+      where: {
+        userId: internalUserId,
+        isActive: true,
+        subscriptionId: Not(subscriptionId)
+      }
+    });
+
+    // Only mark user inactive if this was the LAST subscription
+    if (otherActiveSubscriptions === 0) {
+      const updateCriteria = typeof userId === 'string' ? { externalUserId: userId } : { id: userId };
+      await this.microsoftUserRepository.update(
+        updateCriteria,
+        { isActive: false }
       );
 
       this.logger.debug(
-        `[${correlationId}] Deactivated subscription in local database`
+        `[${correlationId}] Marked Microsoft user as inactive - no other subscriptions remain`
       );
-
-      // Check if user has OTHER active subscriptions before marking inactive
-      const otherActiveSubscriptions = await this.webhookSubscriptionRepository.count({
-        where: {
-          userId: internalUserId,
-          isActive: true,
-          subscriptionId: Not(subscriptionId)
-        }
-      });
-
-      // Only mark user inactive if this was the LAST subscription
-      if (otherActiveSubscriptions === 0) {
-        const updateCriteria = typeof userId === 'string' ? { externalUserId: userId } : { id: userId };
-        await this.microsoftUserRepository.update(
-          updateCriteria,
-          { isActive: false }
-        );
-
-        this.logger.debug(
-          `[${correlationId}] Marked Microsoft user as inactive - no other subscriptions remain`
-        );
-      } else {
-        this.logger.debug(
-          `[${correlationId}] User still has ${otherActiveSubscriptions} other active subscription(s), keeping user active`
-        );
-      }
-
-      this.logger.log(
-        `[${correlationId}] Successfully deleted calendar subscription ${subscriptionId}`
+    } else {
+      this.logger.debug(
+        `[${correlationId}] User still has ${otherActiveSubscriptions} other active subscription(s), keeping user active`
       );
-
-      return true;
-
-    } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : "Unknown error";
-
-      // If we get a 404, the subscription doesn't exist anymore at Microsoft,
-      // so we should still remove it from our database
-      if (axios.isAxiosError(error) && error.response?.status === 404) {
-        this.logger.log(
-          `[${correlationId}] Subscription ${subscriptionId} not found at Microsoft, ` +
-          `cleaning up local database`
-        );
-
-        await this.webhookSubscriptionRepository.deactivateSubscription(
-          subscriptionId
-        );
-
-        this.logger.log(
-          `[${correlationId}] Successfully cleaned up orphaned subscription ${subscriptionId}`
-        );
-
-        return true;
-      }
-
-      this.logger.error(
-        `[${correlationId}] Failed to delete subscription ${subscriptionId}: ${errorMessage}`
-      );
-
-      throw new Error(`Failed to delete webhook subscription: ${errorMessage}`);
     }
+
+    this.logger.log(
+      `[${correlationId}] Successfully deleted calendar subscription ${subscriptionId}`
+    );
+
+    return true;
   }
 
   /**
