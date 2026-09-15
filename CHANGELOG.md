@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.4.4](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.4.3...v10.4.4) (2026-09-15)
+
+
+### Bug Fixes
+
+* **subscription:** degrade deleteWebhookSubscription instead of throwing ([#211](https://github.com/checkfirst-ltd/nestjs-outlook/issues/211)) ([74d692d](https://github.com/checkfirst-ltd/nestjs-outlook/commit/74d692df2bc9ad18f7431925d88013929c68c263))
+
 ## [10.4.3](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.4.2...v10.4.3) (2026-09-14)
 
 
