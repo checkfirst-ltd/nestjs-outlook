@@ -58,13 +58,13 @@ describe('RecurrenceService.expandRecurringSeries', () => {
     } as Event;
     const instance = (id: string): Event => ({ id, type: 'occurrence', seriesMasterId: 'master' }) as Event;
 
-    const requestedRanges: Array<{ startDate?: Date; endDate?: Date }> = [];
+    const requestedRanges: Array<{ startDate: Date; endDate: Date }> = [];
     const calendarService = {
       getEventsBatch: jest.fn().mockResolvedValue([master]),
       getRecurringEventInstances: jest.fn(async function* (
         _seriesMasterId: string,
         _externalUserId: string,
-        options: { startDate?: Date; endDate?: Date },
+        options: { startDate: Date; endDate: Date },
       ) {
         requestedRanges.push(options);
         // Every slice returns the shared boundary instance plus one of its own.
@@ -76,7 +76,7 @@ describe('RecurrenceService.expandRecurringSeries', () => {
     const result = await service.expandRecurringSeries('master', '1350');
 
     for (const range of requestedRanges) {
-      const span = range.endDate!.getTime() - range.startDate!.getTime();
+      const span = range.endDate.getTime() - range.startDate.getTime();
       expect(span).toBeLessThanOrEqual(RecurrenceService.MAX_EXPANSION_SLICE_DAYS * DAY_MS);
     }
     expect(requestedRanges.length).toBeGreaterThan(2);
