@@ -1177,6 +1177,20 @@ export class CalendarService {
     this.logger.log(`[saveDeltaLink] Saved delta link for user ${externalUserId} (internal: ${internalUserId})`);
   }
 
+  /**
+   * Whether a calendar delta cursor is currently stored for the user.
+   *
+   * Callers that defer the cursor commit (saveDeltaLink=false) use this to tell an
+   * incremental run from one that started from scratch — a first sync, or a 410
+   * recovery, which deletes the expired cursor before re-streaming.
+   * @param externalUserId External user ID
+   */
+  async hasDeltaLink(externalUserId: string): Promise<boolean> {
+    const internalUserId = await this.userIdConverter.externalToInternal(externalUserId, {cache: false});
+    const deltaLink = await this.deltaLinkRepository.getDeltaLink(internalUserId, ResourceType.CALENDAR);
+    return !!deltaLink;
+  }
+
   async getEventDetails(
     resource: string,
     externalUserId: string

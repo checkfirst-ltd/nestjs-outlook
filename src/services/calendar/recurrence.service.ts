@@ -15,6 +15,9 @@ import {
 export class RecurrenceService {
   private readonly logger = new Logger(RecurrenceService.name);
 
+  /** Longest range requested from Graph's /instances endpoint in one call. */
+  static readonly MAX_EXPANSION_SLICE_DAYS = 365;
+
   constructor(private readonly calendarService: CalendarService) {}
 
   /**
@@ -100,28 +103,40 @@ export class RecurrenceService {
       seriesMaster.recurrenceRule,
     );
 
-    // 3. Fetch and process all instances within each window
-    const instances: ProcessedOutlookEvent[] = [];
+    // 3. Fetch and process all instances within each window. Each window is
+    // requested in slices of at most a year: asking /instances for a dense
+    // series over the full 5-year future window returned a 504 on every
+    // attempt, while shorter ranges of the same series came back normally.
+    const instancesById = new Map<string, ProcessedOutlookEvent>();
 
     for (const window of expansionWindows) {
       this.logger.log(
         `[expandRecurringSeries] Window: ${window.startDate.toISOString()} → ${window.endDate.toISOString()}`,
       );
 
-      for await (const batch of this.calendarService.getRecurringEventInstances(
-        seriesMasterId,
-        externalUserId,
-        {
-          startDate: window.startDate,
-          endDate: window.endDate,
-          batchSize: 100,
-        },
-      )) {
-        for (const event of batch) {
-          instances.push(this.processEvent(event));
+      for (const slice of this.sliceExpansionWindow(window)) {
+        for await (const batch of this.calendarService.getRecurringEventInstances(
+          seriesMasterId,
+          externalUserId,
+          {
+            startDate: slice.startDate,
+            endDate: slice.endDate,
+            batchSize: 100,
+          },
+        )) {
+          for (const event of batch) {
+            // getRecurringEventInstances widens endDate by a day to make it inclusive,
+            // so adjacent slices overlap by one day; keep the first copy of an instance.
+            const processed = this.processEvent(event);
+            if (!instancesById.has(processed.externalId)) {
+              instancesById.set(processed.externalId, processed);
+            }
+          }
         }
       }
     }
+
+    const instances = Array.from(instancesById.values());
 
     this.logger.log(
       `[expandRecurringSeries] Fetched ${instances.length} instances for series ${seriesMasterId}`,
@@ -199,6 +214,30 @@ export class RecurrenceService {
     }
 
     return windows;
+  }
+
+  /**
+   * Split an expansion window into consecutive slices of at most `maxDays`.
+   *
+   * Slices share their boundaries (one slice's endDate is the next one's
+   * startDate), so together they cover the window with no gap.
+   */
+  sliceExpansionWindow(
+    window: ExpansionWindow,
+    maxDays: number = RecurrenceService.MAX_EXPANSION_SLICE_DAYS,
+  ): ExpansionWindow[] {
+    const maxSpanMs = maxDays * 24 * 60 * 60 * 1000;
+    const endMs = window.endDate.getTime();
+    const slices: ExpansionWindow[] = [];
+
+    let startMs = window.startDate.getTime();
+    while (startMs < endMs) {
+      const sliceEndMs = Math.min(startMs + maxSpanMs, endMs);
+      slices.push({ startDate: new Date(startMs), endDate: new Date(sliceEndMs) });
+      startMs = sliceEndMs;
+    }
+
+    return slices;
   }
 
   /**
