@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.4.5](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.4.4...v10.4.5) (2026-09-23)
+
+
+### Bug Fixes
+
+* **recurrence:** expand recurring series in yearly slices ([#217](https://github.com/checkfirst-ltd/nestjs-outlook/issues/217)) ([259b3a4](https://github.com/checkfirst-ltd/nestjs-outlook/commit/259b3a4cb11eb39725ceda329bfaf5f4eddae711))
+
 ## [10.4.4](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.4.3...v10.4.4) (2026-09-15)
 
 
