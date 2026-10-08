@@ -1316,12 +1316,18 @@ export class MicrosoftSubscriptionService {
 
     try {
       // Find CORRUPTED users first so we can exclude their subs from the query
-      // instead of loading all subs then filtering in-memory.
-      const corruptedUsers = await this.microsoftUserRepository.find({
-        select: ['id'],
-        where: { status: MicrosoftUserStatus.CORRUPTED },
-      });
-      const corruptedUserIds = corruptedUsers.map((u) => u.id);
+      // instead of loading all subs then filtering in-memory. Tenant-mapped users are
+      // never excluded: CORRUPTED records a dead *delegated* token, while their app-only
+      // subscription is created and renewed with the tenant's token — skipping it would
+      // let a working subscription lapse unnoticed. "Tenant-mapped" = tenant AND
+      // microsoft_user_id, matching resolveGraphAuth.
+      const corruptedUsers = await this.microsoftUserRepository
+        .createQueryBuilder('u')
+        .select('u.id', 'id')
+        .where('u.status = :status', { status: MicrosoftUserStatus.CORRUPTED })
+        .andWhere('(u.tenant_id IS NULL OR u.microsoft_user_id IS NULL)')
+        .getRawMany<{ id: number | string }>();
+      const corruptedUserIds = corruptedUsers.map((u) => Number(u.id));
 
       if (corruptedUserIds.length > 0) {
         this.logger.log(

@@ -238,6 +238,33 @@ describe.each(backends)(
       );
       expect(revocationEmits).toHaveLength(0);
     });
+
+    it("never marks a tenant-mapped user CORRUPTED nor asks them to reconnect", async () => {
+      // The stored row is tenant-mapped (app-only); the dead token is a leftover from
+      // its delegated era, e.g. hit while a tenant connect removes the old delegated sub.
+      savedUser = Object.assign(savedUser, {
+        tenant: { id: 7 },
+        microsoftUserId: "00000000-0000-0000-0000-000000000001",
+      });
+      const user = makeUser();
+
+      await service.markUserAsCorrupted(user, "invalid_grant");
+
+      expect(savedUser.status).toBe(MicrosoftUserStatus.ACTIVE);
+      const revocationEmits = emit.mock.calls.filter(
+        (c) => c[0] === OutlookEventTypes.USER_REFRESH_TOKEN_INVALID,
+      );
+      expect(revocationEmits).toHaveLength(0);
+    });
+
+    it("still marks a tenant row with no Graph user id CORRUPTED (it syncs on the delegated token)", async () => {
+      savedUser = Object.assign(savedUser, { tenant: { id: 7 }, microsoftUserId: null });
+      const user = makeUser();
+
+      await service.markUserAsCorrupted(user, "invalid_grant");
+
+      expect(savedUser.status).toBe(MicrosoftUserStatus.CORRUPTED);
+    });
   },
 );
 

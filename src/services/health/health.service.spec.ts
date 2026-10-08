@@ -164,6 +164,18 @@ describe('HealthService', () => {
       expect(health.recoverable).toBe(false);
     });
 
+    it('ignores a stale CORRUPTED flag on an app-only user (judged on the tenant + subscription)', async () => {
+      tenantUserService.findUsersByExternalIds.mockResolvedValueOnce([
+        appOnlyUser(1, 'u1', { status: MicrosoftUserStatus.CORRUPTED }),
+      ]);
+      subscriptionRepo.findActiveByUserIds.mockResolvedValueOnce([calendarSub(1)]);
+
+      const health = await service.checkUser('u1');
+
+      expect(health.status).not.toBe(UserHealthStatus.NEEDS_REAUTH);
+      expect(health.authMode).toBe('app-only');
+    });
+
     it('NEEDS_ADMIN (not recoverable) when the app-only tenant is not ACTIVE', async () => {
       tenantUserService.findUsersByExternalIds.mockResolvedValueOnce([
         appOnlyUser(2, 'u2', {

@@ -1235,6 +1235,31 @@ export class MicrosoftAuthService {
    * carries a TTL (default one week) as a self-heal bound for users who never
    * reconnect; override via config.revocationEmitFlagTtlMs.
    */
+  /**
+   * Whether the user is mapped into a tenant for app-only access — the same test
+   * `resolveGraphAuth` uses to pick the app-only path (tenant AND microsoftUserId).
+   *
+   * Reloads the row because the token-refresh query deliberately does not load the
+   * `tenant` relation. Fail-closed to "not mapped": if the lookup fails we fall back
+   * to the old behaviour (mark CORRUPTED) rather than silently skipping it.
+   */
+  private async isTenantMapped(internalUserId: number): Promise<boolean> {
+    try {
+      const row = await this.microsoftUserRepository.findOne({
+        where: { id: internalUserId },
+        relations: ['tenant'],
+      });
+      return Boolean(row?.tenant && row.microsoftUserId);
+    } catch (error) {
+      this.logger.warn(
+        `Could not check tenant mapping for user ${String(internalUserId)}: ${
+          error instanceof Error ? error.message : 'unknown'
+        }`,
+      );
+      return false;
+    }
+  }
+
   private revocationEmitFlagKey(externalUserId: string): string {
     return `revocation-emit:${externalUserId}`;
   }
@@ -1243,6 +1268,19 @@ export class MicrosoftAuthService {
     user: MicrosoftUser,
     reason: string,
   ): Promise<void> {
+    // CORRUPTED means "delegated sync is dead until the user re-authenticates". A tenant-mapped
+    // user syncs on an app-only token, so a dead *leftover* delegated token says nothing about
+    // them — and flagging them is actively harmful: hosts skip CORRUPTED users from sync and
+    // health checks, and the event below asks the auditor to reconnect for no reason. This path
+    // is hit when a tenant connect cleans up the user's old delegated subscription and the
+    // delegated refresh token has long since expired.
+    if (await this.isTenantMapped(user.id)) {
+      this.logger.warn(
+        `User ${String(user.id)} is tenant-mapped; ignoring dead delegated token (reason: ${reason}), not marking CORRUPTED`,
+      );
+      return;
+    }
+
     try {
       user.status = MicrosoftUserStatus.CORRUPTED;
       // Targeted update. save(user) would rewrite the whole row, and if the

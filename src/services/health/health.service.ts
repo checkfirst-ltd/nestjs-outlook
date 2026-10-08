@@ -209,7 +209,9 @@ export class HealthService {
     const withIds = { ...base, authMode, microsoftUserId, tenantId };
 
     // Dead delegated token — needs the user to re-authenticate; not auto-recoverable.
-    if (user.status === MicrosoftUserStatus.CORRUPTED) {
+    // Only meaningful for delegated users: an app-only user may carry a stale CORRUPTED flag
+    // from before their tenant mapping, but syncs on the tenant's token, so judge it below.
+    if (user.status === MicrosoftUserStatus.CORRUPTED && authMode !== 'app-only') {
       return { ...withIds, status: UserHealthStatus.NEEDS_REAUTH, reason: 'Delegated token is invalid (CORRUPTED)' };
     }
 
