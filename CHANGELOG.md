@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.4.6](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.4.5...v10.4.6) (2026-10-08)
+
+
+### Bug Fixes
+
+* **auth:** never flag tenant-mapped users CORRUPTED ([#219](https://github.com/checkfirst-ltd/nestjs-outlook/issues/219)) ([c7fee36](https://github.com/checkfirst-ltd/nestjs-outlook/commit/c7fee3629e0ae3fc7a5b08afad30ba91a31dd1e6))
+
 ## [10.4.5](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.4.4...v10.4.5) (2026-09-23)
 
 
