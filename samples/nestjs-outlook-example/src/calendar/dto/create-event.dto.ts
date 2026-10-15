@@ -1,5 +1,14 @@
-import { IsNotEmpty, IsString, IsISO8601 } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
+import {
+  IsNotEmpty,
+  IsString,
+  IsISO8601,
+  IsOptional,
+  IsBoolean,
+  IsEnum,
+  ValidateIf,
+} from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ShowAsType } from '@checkfirst/nestjs-outlook';
 
 export class CreateEventDto {
   @ApiProperty({
@@ -19,10 +28,31 @@ export class CreateEventDto {
   startDateTime: string;
 
   @ApiProperty({
-    description: 'End date and time of the event in ISO 8601 format',
+    description:
+      'End date and time of the event in ISO 8601 format. When isAllDay is true, optional — calendar date is the last included day.',
     example: '2023-04-20T15:00:00Z',
   })
+  @ValidateIf((dto) => dto.isAllDay !== true)
   @IsNotEmpty()
   @IsISO8601()
-  endDateTime: string;
-} 
+  endDateTime?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'When true, startDateTime/endDateTime are interpreted as all-day calendar dates (date portion only)',
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  isAllDay?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Free/busy status in Outlook (Graph showAs). Independent of isAllDay — pass "free" when you want the Free control in Outlook.',
+    enum: ShowAsType,
+    example: ShowAsType.FREE,
+  })
+  @IsOptional()
+  @IsEnum(ShowAsType)
+  showAs?: ShowAsType;
+}

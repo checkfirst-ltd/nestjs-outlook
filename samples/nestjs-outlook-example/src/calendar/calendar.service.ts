@@ -4,6 +4,9 @@ import {
   OutlookEventTypes,
   OutlookResourceData,
   CalendarService as MicrosoftCalendarService,
+  buildAllDayDateTimeRange,
+  Event,
+  ShowAsType,
 } from "@checkfirst/nestjs-outlook";
 import { UserCalendarRepository } from "./repositories/user-calendar.repository";
 import { InjectRepository } from "@nestjs/typeorm";
@@ -26,7 +29,9 @@ export class CalendarService {
     eventData: {
       name: string;
       startDateTime: string;
-      endDateTime: string;
+      endDateTime?: string;
+      isAllDay?: boolean;
+      showAs?: ShowAsType;
     }
   ) {
     // Get the user's calendar data from database
@@ -39,18 +44,32 @@ export class CalendarService {
       );
     }
 
-    // Create the event object in Microsoft Graph format
-    const event = {
-      subject: eventData.name,
-      start: {
-        dateTime: eventData.startDateTime,
-        timeZone: "UTC",
-      },
-      end: {
-        dateTime: eventData.endDateTime,
-        timeZone: "UTC",
-      },
-    };
+    const showAsFields =
+      eventData.showAs !== undefined ? { showAs: eventData.showAs } : {};
+
+    const event: Partial<Event> = eventData.isAllDay
+      ? {
+          subject: eventData.name,
+          isAllDay: true,
+          ...buildAllDayDateTimeRange({
+            startDate: eventData.startDateTime,
+            endDateInclusive: eventData.endDateTime,
+            timeZone: "UTC",
+          }),
+          ...showAsFields,
+        }
+      : {
+          subject: eventData.name,
+          start: {
+            dateTime: eventData.startDateTime,
+            timeZone: "UTC",
+          },
+          end: {
+            dateTime: eventData.endDateTime!,
+            timeZone: "UTC",
+          },
+          ...showAsFields,
+        };
 
     try {
       // Create the event using the Microsoft service

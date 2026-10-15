@@ -4,7 +4,7 @@ dep:
   audience: [ai-agent, app-developer]
   owner: "@checkfirst-ltd"
   created: 2026-06-23
-  last_verified: 2026-06-23T12:00:00+03:00
+  last_verified: 2026-10-16T12:00:00+03:00
   confidence: high
   depends_on:
     - src/index.ts
@@ -38,6 +38,8 @@ dep:
     - target: ./shared-state-stores.md
       rel: USES
     - target: ./show-as-type.md
+      rel: USES
+    - target: ./all-day-event-helpers.md
       rel: USES
     - target: ./microsoft-user-status.md
       rel: USES
@@ -84,6 +86,15 @@ Additional exported services:
 | `OutlookEventTypes` | Emitted event names | [Event types](event-types.md) |
 | `ShowAsType` | Calendar free/busy status (mirrors Graph) | [Show-as type](show-as-type.md) |
 | `MicrosoftUserStatus` | Stored user account state (`ACTIVE`, `CORRUPTED`, `SUBSCRIPTION_FAILED`) | [User status](microsoft-user-status.md) |
+
+## Calendar helpers
+
+See [All-day event helpers](all-day-event-helpers.md).
+
+| Export | Purpose |
+|--------|---------|
+| `buildAllDayDateTimeRange` | Graph `start` / `end` at midnight with exclusive end date |
+| `calendarDateFromIso` / `addCalendarDays` / `assertCalendarDate` | Date parsing and calendar arithmetic |
 
 ## HTTP controllers
 
