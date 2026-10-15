@@ -32,7 +32,7 @@ export class CreateEventDto {
       'End date and time of the event in ISO 8601 format. When isAllDay is true, optional — calendar date is the last included day.',
     example: '2023-04-20T15:00:00Z',
   })
-  @ValidateIf((dto) => dto.isAllDay !== true)
+  @ValidateIf((dto: CreateEventDto) => dto.isAllDay !== true)
   @IsNotEmpty()
   @IsISO8601()
   endDateTime?: string;

@@ -1,4 +1,9 @@
-import { Injectable, Logger, NotFoundException } from "@nestjs/common";
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from "@nestjs/common";
 import { OnEvent } from "@nestjs/event-emitter";
 import {
   OutlookEventTypes,
@@ -47,6 +52,12 @@ export class CalendarService {
     const showAsFields =
       eventData.showAs !== undefined ? { showAs: eventData.showAs } : {};
 
+    if (!eventData.isAllDay && eventData.endDateTime === undefined) {
+      throw new BadRequestException(
+        "endDateTime is required for timed calendar events"
+      );
+    }
+
     const event: Partial<Event> = eventData.isAllDay
       ? {
           subject: eventData.name,
@@ -65,7 +76,7 @@ export class CalendarService {
             timeZone: "UTC",
           },
           end: {
-            dateTime: eventData.endDateTime!,
+            dateTime: eventData.endDateTime,
             timeZone: "UTC",
           },
           ...showAsFields,
