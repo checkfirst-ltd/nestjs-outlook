@@ -26,13 +26,12 @@ export class CalendarController {
     // In a real application, these would be stored securely and retrieved based on the authenticated user
     const mockUserId = 1;
 
-    return await this.calendarService.createCalendarEvent(
-      mockUserId,
-      {
-        name: eventData.name,
-        startDateTime: eventData.startDateTime,
-        endDateTime: eventData.endDateTime,
-      },
-    );
+    return await this.calendarService.createCalendarEvent(mockUserId, {
+      name: eventData.name,
+      startDateTime: eventData.startDateTime,
+      endDateTime: eventData.endDateTime,
+      isAllDay: eventData.isAllDay,
+      showAs: eventData.showAs,
+    });
   }
 } 

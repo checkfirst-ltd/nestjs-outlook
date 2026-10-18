@@ -12,6 +12,8 @@ dep:
   links:
     - target: ./calendar-service.md
       rel: USES
+    - target: ./all-day-event-helpers.md
+      rel: RELATED
     - target: ../how-to/manage-calendar-events.md
       rel: NEXT
 ---
@@ -35,6 +37,8 @@ shown for a calendar event. Exported from `@checkfirst/nestjs-outlook`.
 ## Notes
 
 - String values match Microsoft Graph exactly; assign them to an event's `showAs` field.
+- `showAs` is independent of `isAllDay`; use both on the event body when syncing free all-day
+  activities to Outlook (see [All-day event helpers](all-day-event-helpers.md)).
 - See the Graph [event resource](https://learn.microsoft.com/en-us/graph/api/resources/event)
   for the canonical definition.
 

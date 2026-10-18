@@ -92,6 +92,7 @@ Creates a calendar event for a user.
 | `attendees` | `Attendee[]` | No | List of attendees |
 | `isOnlineMeeting` | `boolean` | No | Create Teams meeting link |
 | `showAs` | `ShowAsType` | No | Free/busy status |
+| `isAllDay` | `boolean` | No | All-day event (use with `buildAllDayDateTimeRange` for `start` / `end`) |
 | `recurrence` | `RecurrencePattern` | No | Recurrence settings |
 
 **Returns:** `Promise<CalendarEvent>` — the created event with Graph-assigned ID.

@@ -36,6 +36,9 @@ export * from './enums/user-health-status.enum';
 // Export constants
 export * from './constants';
 
+// Calendar helpers
+export * from './utils/all-day-event.util';
+
 // Export errors
 export * from './errors/mailbox-inactive.error';
 export * from './errors/csrf-validation.error';

@@ -8,6 +8,7 @@ dep:
   confidence: high
   depends_on:
     - src/services/calendar/calendar.service.ts
+    - src/utils/all-day-event.util.ts
   tags: [calendar, service, events, api]
   links:
     - target: ../how-to/manage-calendar-events.md
@@ -38,6 +39,10 @@ Injectable service for calendar operations against Microsoft Graph. Exported fro
 | `calendarId` | `string` | Target calendar ID. |
 
 **Returns:** `Promise<{ event: Event }>`. Requests immutable IDs; retries on transient errors.
+
+For **all-day** events, use `buildAllDayDateTimeRange` for `start` / `end` only; set `isAllDay`
+and `showAs` on the event body. See [All-day event helpers](all-day-event-helpers.md) and
+[Manage calendar events](../how-to/manage-calendar-events.md).
 
 ### `updateEvent(eventId, updates, externalUserId, calendarId)`
 
