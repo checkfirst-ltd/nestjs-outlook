@@ -94,6 +94,7 @@ See [All-day event helpers](all-day-event-helpers.md).
 | Export | Purpose |
 |--------|---------|
 | `buildAllDayDateTimeRange` | Graph `start` / `end` at midnight with exclusive end date |
+| `normalizeAllDayEventTimes` | Enforce midnight all-day `start` / `end` (strips `Z`, etc.) |
 | `calendarDateFromIso` / `addCalendarDays` / `assertCalendarDate` | Date parsing and calendar arithmetic |
 
 ## HTTP controllers

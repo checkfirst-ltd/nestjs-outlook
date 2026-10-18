@@ -3,6 +3,7 @@ import {
   assertCalendarDate,
   buildAllDayDateTimeRange,
   calendarDateFromIso,
+  normalizeAllDayEventTimes,
 } from "./all-day-event.util";
 
 describe("assertCalendarDate", () => {
@@ -80,6 +81,32 @@ describe("buildAllDayDateTimeRange", () => {
         timeZone: "UTC",
       })
     ).toThrow(RangeError);
+  });
+});
+
+describe("normalizeAllDayEventTimes", () => {
+  it("strips Z suffix and non-midnight times for Graph all-day create", () => {
+    const normalized = normalizeAllDayEventTimes({
+      isAllDay: true,
+      subject: "Free block",
+      start: {
+        dateTime: "2026-10-21T14:30:00.000Z",
+        timeZone: "UTC",
+      },
+      end: {
+        dateTime: "2026-10-22T00:00:00.000Z",
+        timeZone: "UTC",
+      },
+    });
+
+    expect(normalized.start).toEqual({
+      dateTime: "2026-10-21T00:00:00",
+      timeZone: "UTC",
+    });
+    expect(normalized.end).toEqual({
+      dateTime: "2026-10-22T00:00:00",
+      timeZone: "UTC",
+    });
   });
 });
 

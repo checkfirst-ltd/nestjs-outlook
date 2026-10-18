@@ -58,10 +58,15 @@ buildAllDayDateTimeRange({
 Combine with `isAllDay: true` and optional `showAs` (e.g. `ShowAsType.FREE`) on
 `CalendarService.createEvent` / `updateEvent`. See [ShowAsType](show-as-type.md).
 
+`CalendarService` also runs `normalizeAllDayEventTimes` on create/update when `isAllDay` is
+true, so midnight `start` / `end` are enforced and `Z` suffixes are stripped (Graph rejects
+`dateTime` values like `2026-10-21T00:00:00.000Z` when `timeZone` is set separately).
+
 ## Other exports
 
 | Function | Purpose |
 |----------|---------|
+| `normalizeAllDayEventTimes` | Fix `start` / `end` on an all-day event payload before Graph |
 | `calendarDateFromIso` | Parse `YYYY-MM-DD` or ISO string to a calendar date |
 | `assertCalendarDate` | Validate `YYYY-MM-DD` |
 | `addCalendarDays` | Calendar-date arithmetic |

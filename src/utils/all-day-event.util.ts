@@ -1,4 +1,4 @@
-import { DateTimeTimeZone } from "../types";
+import { DateTimeTimeZone, Event } from "../types";
 
 const CALENDAR_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -87,12 +87,66 @@ export function buildAllDayDateTimeRange(
   const endExclusive = addCalendarDays(endInclusive, 1);
   return {
     start: {
-      dateTime: `${startDate}T00:00:00`,
+      dateTime: formatAllDayMidnightDateTime(startDate),
       timeZone: input.timeZone,
     },
     end: {
-      dateTime: `${endExclusive}T00:00:00`,
+      dateTime: formatAllDayMidnightDateTime(endExclusive),
       timeZone: input.timeZone,
     },
+  };
+}
+
+/** Graph all-day `dateTime` must be `YYYY-MM-DDT00:00:00` without a `Z` offset suffix. */
+export function formatAllDayMidnightDateTime(calendarDate: string): string {
+  assertCalendarDate(calendarDate);
+  return `${calendarDate}T00:00:00`;
+}
+
+function isMidnightDateTimeValue(dateTime: string): boolean {
+  return /T00:00:00(\.\d+)?(Z)?$/i.test(dateTime.trim());
+}
+
+/**
+ * Rebuilds `start` / `end` for an all-day Graph event (midnight, same zone, exclusive end).
+ * Use when callers pass ISO strings with `Z`, offsets, or non-midnight clock times.
+ */
+export function normalizeAllDayEventTimes(
+  event: Partial<Event>
+): Partial<Event> {
+  if (!event.isAllDay) {
+    return event;
+  }
+
+  const timeZone =
+    event.start?.timeZone ?? event.end?.timeZone ?? "UTC";
+
+  if (!event.start?.dateTime) {
+    return event;
+  }
+
+  const startDate = calendarDateFromIso(event.start.dateTime, "start");
+
+  let endDateInclusive = startDate;
+  if (event.end?.dateTime) {
+    const endRaw = event.end.dateTime;
+    const endDate = calendarDateFromIso(endRaw, "end");
+    if (isMidnightDateTimeValue(endRaw) && endDate > startDate) {
+      endDateInclusive = addCalendarDays(endDate, -1);
+    } else {
+      endDateInclusive = endDate;
+    }
+  }
+
+  const range = buildAllDayDateTimeRange({
+    startDate,
+    endDateInclusive,
+    timeZone,
+  });
+
+  return {
+    ...event,
+    start: range.start,
+    end: range.end,
   };
 }
