@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.5.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.4.6...v10.5.0) (2026-10-25)
+
+
+### Features
+
+* **calendar:** all-day event helpers for free Outlook sync ([#221](https://github.com/checkfirst-ltd/nestjs-outlook/issues/221)) ([6d0490c](https://github.com/checkfirst-ltd/nestjs-outlook/commit/6d0490cfbf3986f7af7a2c5ea56fb8e2de418220))
+
 ## [10.4.6](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.4.5...v10.4.6) (2026-10-08)
 
 
