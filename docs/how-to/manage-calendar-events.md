@@ -4,13 +4,18 @@ dep:
   audience: [app-developer]
   owner: "@checkfirst-ltd"
   created: 2026-06-23
-  last_verified: 2026-06-23T12:00:00+03:00
+  last_verified: 2026-10-16T12:00:00+03:00
   confidence: high
   depends_on:
     - src/services/calendar/calendar.service.ts
+    - src/utils/all-day-event.util.ts
   tags: [calendar, events, graph]
   links:
     - target: ../reference/calendar-service.md
+      rel: USES
+    - target: ../reference/all-day-event-helpers.md
+      rel: USES
+    - target: ../reference/show-as-type.md
       rel: USES
     - target: ../reference/permission-scopes.md
       rel: USES
@@ -49,6 +54,49 @@ const { event } = await this.calendarService.createEvent(
   calendarId,
 );
 ```
+
+### 2b. Create an all-day event (optional free/busy)
+
+`isAllDay` and `showAs` are **separate** Graph properties (all-day toggle vs Show as in Outlook).
+Use [all-day event helpers](../reference/all-day-event-helpers.md) only for `start` / `end`.
+
+`startDate` / `endDateInclusive` accept `YYYY-MM-DD` or ISO strings (the calendar date is used).
+
+```typescript
+import { buildAllDayDateTimeRange, ShowAsType } from '@checkfirst/nestjs-outlook';
+
+const { start, end } = buildAllDayDateTimeRange({
+  startDate: '2026-06-25',
+  timeZone: 'UTC',
+});
+
+const { event } = await this.calendarService.createEvent(
+  {
+    subject: 'Report deadline',
+    isAllDay: true,
+    showAs: ShowAsType.FREE,
+    start,
+    end,
+  },
+  externalUserId,
+  calendarId,
+);
+
+// Multi-day (25–27 June inclusive):
+const range = buildAllDayDateTimeRange({
+  startDate: '2026-06-25T00:00:00Z',
+  endDateInclusive: '2026-06-27',
+  timeZone: 'UTC',
+});
+
+await this.calendarService.createEvent(
+  { subject: 'Offsite', isAllDay: true, showAs: ShowAsType.FREE, ...range },
+  externalUserId,
+  calendarId,
+);
+```
+
+To update an existing all-day event, patch `start`, `end`, `isAllDay`, and/or `showAs` the same way.
 
 ### 3. Update an event
 

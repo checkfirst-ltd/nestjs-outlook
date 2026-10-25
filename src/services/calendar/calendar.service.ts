@@ -21,6 +21,7 @@ import { executeGraphApiCall } from "../../utils/outlook-api-executor.util";
 import { GraphRateLimiterService } from "../shared/graph-rate-limiter.service";
 import { extractErrorInfo, extractRetryAfterSeconds } from "../../utils/retry.util";
 import { TtlCache } from "../../utils/ttl-cache.util";
+import { normalizeAllDayEventTimes } from "../../utils/all-day-event.util";
 
 // Event type constants
 const OUTLOOK_EVENT_CREATED = OutlookEventTypes.EVENT_CREATED;
@@ -253,11 +254,15 @@ export class CalendarService {
         },
       });
 
+      const payload = event.isAllDay
+        ? normalizeAllDayEventTimes(event)
+        : event;
+
       // Create the event with retry and rate limiting
       const createdEvent = (await executeGraphApiCall(
         () => client.api(`${resourceBase}/calendars/${calendarId}/events`)
           .header('Prefer', 'IdType="ImmutableId"')
-          .post(event),
+          .post(payload),
         {
           logger: this.logger,
           resourceName: `create event in calendar ${calendarId} for user ${externalUserId}`,
@@ -310,11 +315,16 @@ export class CalendarService {
 
       this.logger.log(`Updating event ${eventId} in calendar ${calendarId} for user ${externalUserId}`);
 
+      const payload =
+        updates.isAllDay === true
+          ? normalizeAllDayEventTimes(updates)
+          : updates;
+
       // PATCH the existing event with retry and rate limiting
       const updatedEvent = (await executeGraphApiCall(
         () => client.api(`${resourceBase}/calendars/${calendarId}/events/${eventId}`)
           .header('Prefer', 'IdType="ImmutableId"')
-          .patch(updates),
+          .patch(payload),
         {
           logger: this.logger,
           resourceName: `update event ${eventId} in calendar ${calendarId} for user ${externalUserId}`,

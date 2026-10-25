@@ -8,6 +8,7 @@ import { MICROSOFT_CONFIG } from '../../constants';
 import { MicrosoftOutlookConfig } from '../../interfaces/config/outlook-config.interface';
 import { OutlookEventTypes } from '../../enums/event-types.enum';
 import { executeGraphApiCall } from '../../utils/outlook-api-executor.util';
+import { normalizeAllDayEventTimes } from '../../utils/all-day-event.util';
 import { TtlCache } from '../../utils/ttl-cache.util';
 import { AppOnlyAuthService } from '../auth/app-only-auth.service';
 import { MicrosoftUser } from '../../entities/microsoft-user.entity';
@@ -183,10 +184,14 @@ export class TenantCalendarService {
       // Get app-only access token for the tenant
       const accessToken = await this.appOnlyAuthService.getAccessToken(tenantId);
 
+      const payload = event.isAllDay
+        ? normalizeAllDayEventTimes(event)
+        : event;
+
       const createdEvent = await executeGraphApiCall(
         () => axios.post<Event>(
           `https://graph.microsoft.com/v1.0/users/${microsoftUserId}/calendars/${calendarId}/events`,
-          event,
+          payload,
           {
             headers: this.buildHeaders(accessToken),
           }
@@ -235,10 +240,15 @@ export class TenantCalendarService {
       // Get app-only access token for the tenant
       const accessToken = await this.appOnlyAuthService.getAccessToken(tenantId);
 
+      const payload =
+        updates.isAllDay === true
+          ? normalizeAllDayEventTimes(updates)
+          : updates;
+
       const updatedEvent = await executeGraphApiCall(
         () => axios.patch<Event>(
           `https://graph.microsoft.com/v1.0/users/${microsoftUserId}/calendars/${calendarId}/events/${eventId}`,
-          updates,
+          payload,
           {
             headers: this.buildHeaders(accessToken),
           }
