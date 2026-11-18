@@ -44,6 +44,76 @@ function isGraphErrorWithStatus(error: unknown, statusCode: number): boolean {
   return false;
 }
 
+/** Graph's error code when a create reuses a transactionId that already belongs to an event. */
+export const DUPLICATE_TRANSACTION_ID_CODE = 'ErrorDuplicateTransactionId';
+
+/** Graph's field, on the duplicate-transactionId error, that names the event already holding it. */
+const EXISTING_EVENT_ID_FIELD = '@event.existingEventId';
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'string') {
+    return asRecord(value);
+  }
+  try {
+    return asRecord(JSON.parse(value));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Find Graph's error object (`{ code, message, innererror, ... }`) wherever it travels:
+ * - a Graph SDK `GraphError`, which carries `code` and a JSON string of the object in `body`
+ * - an axios error, at `response.data.error`
+ * - the body of one `$batch` item, `{ error: {...} }`
+ */
+function readGraphErrorObject(source: unknown): Record<string, unknown> | null {
+  const record = asRecord(source);
+  if (!record) {
+    return null;
+  }
+
+  const sdkBody = parseJsonRecord(record.body);
+  if (sdkBody) {
+    return asRecord(sdkBody.error) ?? sdkBody;
+  }
+
+  const axiosError = asRecord(asRecord(asRecord(record.response)?.data)?.error);
+  if (axiosError) {
+    return axiosError;
+  }
+
+  return asRecord(record.error) ?? (typeof record.code === 'string' ? record : null);
+}
+
+/**
+ * True when Graph refused a create because the transactionId is already used by another event.
+ * Accepts a thrown error or the body of a single `$batch` response.
+ */
+export function isDuplicateTransactionIdError(source: unknown): boolean {
+  const record = asRecord(source);
+  if (record?.code === DUPLICATE_TRANSACTION_ID_CODE) {
+    return true;
+  }
+  return readGraphErrorObject(source)?.code === DUPLICATE_TRANSACTION_ID_CODE;
+}
+
+/**
+ * The id of the event that already holds the transactionId, read from a duplicate-transactionId
+ * error. Null when the source is not that error or Graph did not name the event.
+ */
+export function extractExistingEventId(source: unknown): string | null {
+  if (!isDuplicateTransactionIdError(source)) {
+    return null;
+  }
+  const existingEventId = readGraphErrorObject(source)?.[EXISTING_EVENT_ID_FIELD];
+  return typeof existingEventId === 'string' && existingEventId.length > 0 ? existingEventId : null;
+}
+
 /**
  * Check if an error is non-retryable (permanent failure)
  * Non-retryable errors include:
@@ -51,6 +121,8 @@ function isGraphErrorWithStatus(error: unknown, statusCode: number): boolean {
  * - 403 Forbidden (insufficient permissions)
  * - 404 Not Found (resource doesn't exist)
  * - 410 Gone (sync state/delta token expired)
+ * - 400 ErrorDuplicateTransactionId (the event already exists; resending the same create
+ *   can only get the same answer)
  * @param error - The error to check
  * @returns True if the error should not be retried
  */
@@ -59,7 +131,8 @@ export function isNonRetryableError(error: unknown): boolean {
     isGraphErrorWithStatus(error, 401) ||
     isGraphErrorWithStatus(error, 403) ||
     isGraphErrorWithStatus(error, 404) ||
-    isGraphErrorWithStatus(error, 410)
+    isGraphErrorWithStatus(error, 410) ||
+    isDuplicateTransactionIdError(error)
   );
 }
 
@@ -268,7 +341,7 @@ export async function retryWithBackoff<T>(
       const errorSummary =
         `status=${errorDetails.statusCode} code=${errorDetails.code} type=${errorDetails.type}`;
 
-      // Don't retry non-retryable errors (401, 403, 404, 410)
+      // Don't retry non-retryable errors (401, 403, 404, 410, duplicate transactionId)
       if (isNonRetryableError(error)) {
         if (logger) {
           logger.warn(
