@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.5.1](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.5.0...v10.5.1) (2026-11-19)
+
+
+### Bug Fixes
+
+* **calendar:** adopt the event that already holds a create's transactionId ([#223](https://github.com/checkfirst-ltd/nestjs-outlook/issues/223)) ([022211f](https://github.com/checkfirst-ltd/nestjs-outlook/commit/022211f8435e2952bf2e4bf4b5c6bec195c2ef86))
+
 ## [10.5.0](https://github.com/checkfirst-ltd/nestjs-outlook/compare/v10.4.6...v10.5.0) (2026-10-25)
 
 
