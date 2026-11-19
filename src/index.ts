@@ -43,6 +43,7 @@ export * from './utils/all-day-event.util';
 export * from './errors/mailbox-inactive.error';
 export * from './errors/csrf-validation.error';
 export * from './errors/subscription-setup.error';
+export * from './errors/duplicate-transaction-id.error';
 export * from './errors/delta-resync-required.error';
 
 // Export controllers

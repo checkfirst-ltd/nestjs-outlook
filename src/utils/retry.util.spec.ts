@@ -1,4 +1,11 @@
-import { extractErrorInfo, retryWithBackoff } from './retry.util';
+import {
+  extractErrorInfo,
+  extractExistingEventId,
+  isDuplicateTransactionIdError,
+  isNonRetryableError,
+  retryWithBackoff,
+} from './retry.util';
+import { duplicateTransactionIdBody } from '../mock/fake-graph-mailbox';
 
 /** Graph SDK shaped error — detail lives on statusCode/code/body, not on .message. */
 const graphError = (statusCode: number, code = 'unknownError') =>
@@ -29,6 +36,49 @@ describe('extractErrorInfo', () => {
       message: 'try later',
       type: 'axios_api_error',
     });
+  });
+});
+
+describe('duplicate transactionId errors', () => {
+  const holder = 'AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0AJJkdosW_s0W4i4lznQ-ntQAEbw5cqAAA';
+
+  /** What the Graph SDK throws: `body` is the JSON of Graph's error object. */
+  const sdkDuplicate = (existingEventId: string | null = holder) =>
+    Object.assign(new Error('already used'), {
+      statusCode: 400,
+      code: 'ErrorDuplicateTransactionId',
+      body: JSON.stringify(duplicateTransactionIdBody(existingEventId)),
+    });
+
+  it('recognises the Graph SDK error and reads the holder from its body', () => {
+    expect(isDuplicateTransactionIdError(sdkDuplicate())).toBe(true);
+    expect(extractExistingEventId(sdkDuplicate())).toBe(holder);
+  });
+
+  it('recognises the body of a $batch item, { error: {...} }', () => {
+    const body = { error: duplicateTransactionIdBody(holder) };
+
+    expect(isDuplicateTransactionIdError(body)).toBe(true);
+    expect(extractExistingEventId(body)).toBe(holder);
+  });
+
+  it('recognises an axios error', () => {
+    const axiosError = { response: { status: 400, data: { error: duplicateTransactionIdBody(holder) } } };
+
+    expect(isDuplicateTransactionIdError(axiosError)).toBe(true);
+    expect(extractExistingEventId(axiosError)).toBe(holder);
+  });
+
+  it('returns no holder when Graph names none, and ignores other errors', () => {
+    expect(extractExistingEventId(sdkDuplicate(null))).toBeNull();
+    expect(isDuplicateTransactionIdError(graphError(400, 'ErrorInvalidRequest'))).toBe(false);
+    expect(extractExistingEventId(graphError(400, 'ErrorInvalidRequest'))).toBeNull();
+    expect(isDuplicateTransactionIdError(new Error('boom'))).toBe(false);
+  });
+
+  it('is non-retryable, while other 400s stay retryable as before', () => {
+    expect(isNonRetryableError(sdkDuplicate())).toBe(true);
+    expect(isNonRetryableError(graphError(400, 'ErrorInvalidRequest'))).toBe(false);
   });
 });
 
@@ -83,6 +133,19 @@ describe('retryWithBackoff', () => {
     // object, so anything only present there never reaches the log line.
     expect(messages.some((m) => m.includes('status=429') && m.includes('ApplicationThrottled'))).toBe(true);
     expect(messages.some((m) => m.includes('Max retries (1) exceeded for series fetch'))).toBe(true);
+  });
+
+  it('does not retry a duplicate transactionId: the create already happened', async () => {
+    const duplicate = Object.assign(new Error('already used'), {
+      statusCode: 400,
+      code: 'ErrorDuplicateTransactionId',
+      body: JSON.stringify(duplicateTransactionIdBody('evt-1')),
+    });
+    const operation = jest.fn().mockRejectedValue(duplicate);
+
+    await expect(settle(retryWithBackoff(operation, { maxRetries: 7, logger }))).resolves.toBe(duplicate);
+    expect(operation).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('Non-retryable');
   });
 
   it('returns the value as soon as an attempt succeeds', async () => {

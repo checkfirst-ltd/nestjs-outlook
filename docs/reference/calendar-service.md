@@ -1,15 +1,23 @@
 ---
 dep:
   type: reference
-  audience: [app-developer, ai-agent]
+  audience:
+    - app-developer
+    - ai-agent
   owner: "@checkfirst-ltd"
   created: 2026-06-23
-  last_verified: 2026-06-23T12:00:00+03:00
+  last_verified: 2026-11-18T22:38:11.432+02:00
   confidence: high
   depends_on:
     - src/services/calendar/calendar.service.ts
     - src/utils/all-day-event.util.ts
-  tags: [calendar, service, events, api]
+    - src/utils/retry.util.ts
+    - src/errors/duplicate-transaction-id.error.ts
+  tags:
+    - calendar
+    - service
+    - events
+    - api
   links:
     - target: ../how-to/manage-calendar-events.md
       rel: NEXT
@@ -38,7 +46,14 @@ Injectable service for calendar operations against Microsoft Graph. Exported fro
 | `externalUserId` | `string` | Host application user ID. |
 | `calendarId` | `string` | Target calendar ID. |
 
-**Returns:** `Promise<{ event: Event }>`. Requests immutable IDs; retries on transient errors.
+**Returns:** `Promise<{ event: Event; adoptedExisting?: boolean }>`. Requests immutable IDs;
+retries on transient errors.
+
+A create is idempotent on `event.transactionId`. If Graph answers `ErrorDuplicateTransactionId`
+(an earlier attempt already made the event, e.g. its answer was lost to a 5xx), the method
+does not retry. It updates the event Graph names in `@event.existingEventId` with this payload
+and returns it with `adoptedExisting: true`. If that event is gone, or Graph names none, it
+throws `DuplicateTransactionIdError`.
 
 For **all-day** events, use `buildAllDayDateTimeRange` for `start` / `end` only; set `isAllDay`
 and `showAs` on the event body. See [All-day event helpers](all-day-event-helpers.md) and
@@ -69,6 +84,19 @@ and `showAs` on the event body. See [All-day event helpers](all-day-event-helper
 
 **Returns:** `Promise<void>`.
 
+### `findEventsByTransactionId(externalUserId, transactionId, window)`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `externalUserId` | `string` | Host application user ID. |
+| `transactionId` | `string` | The full transactionId the event was created with. |
+| `window` | `{ start: string \| Date; end: string \| Date }` | Roughly where the event is. Times without an offset are read as UTC; the window is widened by a day each side. |
+
+**Returns:** `Promise<Event[]>`, every event in the window with that transactionId.
+
+Graph cannot `$filter` events by `transactionId`, so this reads the calendar view of the window
+and compares. Use it to find an event whose id was never stored.
+
 ## Batch methods
 
 | Method | Signature | Returns |
@@ -78,7 +106,9 @@ and `showAs` on the event body. See [All-day event helpers](all-day-event-helper
 | `deleteBatchEvents` | `(eventIds, externalUserId, calendarId)` | Per-item delete results. |
 | `getEventsBatch` | `(externalUserId, eventIds)` | Multiple events (max 20 IDs per call). |
 
-Batch methods chunk requests into Graph `$batch` calls (20 items per batch).
+Batch methods chunk requests into Graph `$batch` calls (20 items per batch). Graph may answer
+the items of a batch in any order, so each answer is matched to its request by its `id`.
+`createBatchEvents` adopts an item whose transactionId is taken, as `createEvent` does.
 
 ## Other methods
 

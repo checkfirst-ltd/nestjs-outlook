@@ -19,7 +19,13 @@ import { ResourceType } from "../../enums/resource-type.enum";
 import { MicrosoftSubscriptionService } from "../subscription/microsoft-subscription.service";
 import { executeGraphApiCall } from "../../utils/outlook-api-executor.util";
 import { GraphRateLimiterService } from "../shared/graph-rate-limiter.service";
-import { extractErrorInfo, extractRetryAfterSeconds } from "../../utils/retry.util";
+import {
+  extractErrorInfo,
+  extractExistingEventId,
+  extractRetryAfterSeconds,
+  isDuplicateTransactionIdError,
+} from "../../utils/retry.util";
+import { DuplicateTransactionIdError } from "../../errors/duplicate-transaction-id.error";
 import { TtlCache } from "../../utils/ttl-cache.util";
 import { normalizeAllDayEventTimes } from "../../utils/all-day-event.util";
 
@@ -36,6 +42,50 @@ const OUTLOOK_EVENT_DELETED = OutlookEventTypes.EVENT_DELETED;
  * scheduled reconcile. See the call site in getRecurringEventInstances.
  */
 const RECURRING_INSTANCE_MAX_RETRIES = 2;
+
+/** Fields read when scanning a calendar view for an event by its transactionId. */
+const CALENDAR_VIEW_LOOKUP_FIELDS =
+  'id,subject,start,end,isAllDay,showAs,type,changeKey,transactionId';
+const CALENDAR_VIEW_PAGE_SIZE = 100;
+/** Bounds a transactionId scan; 20 pages is 2,000 events in a window of a few days. */
+const CALENDAR_VIEW_MAX_PAGES = 20;
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Read a time as UTC when it carries no offset, as the payloads this library builds do. */
+function parseAsUtc(value: string | Date): Date {
+  if (value instanceof Date) {
+    return value;
+  }
+  const hasOffset = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(value.trim());
+  return new Date(hasOffset ? value : `${value}Z`);
+}
+
+/** A calendar-view window around an event's time, padded a day each side. */
+function toPaddedCalendarViewWindow(window: { start: string | Date; end: string | Date }): {
+  startDateTime: string;
+  endDateTime: string;
+} {
+  const start = parseAsUtc(window.start).getTime();
+  const end = parseAsUtc(window.end).getTime();
+  if (Number.isNaN(start) || Number.isNaN(end)) {
+    throw new Error(
+      `Invalid window for a transactionId lookup: ${String(window.start)}..${String(window.end)}`,
+    );
+  }
+  return {
+    startDateTime: new Date(Math.min(start, end) - ONE_DAY_MS).toISOString(),
+    endDateTime: new Date(Math.max(start, end) + ONE_DAY_MS).toISOString(),
+  };
+}
+
+/**
+ * The request a `$batch` answer belongs to. Graph may answer the items of a batch in any order,
+ * so the answer's id (the request's position, as sent) is the only reliable link.
+ */
+function batchRequestIndex(response: { id: string }, position: number): number {
+  const index = Number.parseInt(response.id, 10);
+  return Number.isNaN(index) ? position : index;
+}
 
 // Change type mapping
 const EVENT_TYPE_TO_CHANGE_TYPE: Record<string, "created" | "updated" | "deleted"> = {
@@ -242,7 +292,7 @@ export class CalendarService {
     event: Partial<Event>,
     externalUserId: string,
     calendarId: string
-  ): Promise<{ event: Event }> {
+  ): Promise<{ event: Event; adoptedExisting?: boolean }> {
     try {
       // Get a valid access token + resource base (delegated `/me` or app-only `/users/{id}`)
       const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
@@ -259,24 +309,42 @@ export class CalendarService {
         : event;
 
       // Create the event with retry and rate limiting
-      const createdEvent = (await executeGraphApiCall(
-        () => client.api(`${resourceBase}/calendars/${calendarId}/events`)
-          .header('Prefer', 'IdType="ImmutableId"')
-          .post(payload),
-        {
-          logger: this.logger,
-          resourceName: `create event in calendar ${calendarId} for user ${externalUserId}`,
-          maxRetries: 7,
-          rateLimiter: this.rateLimiter,
-          userId: externalUserId,
-        }
-      )) as Event;
+      try {
+        const createdEvent = (await executeGraphApiCall(
+          () => client.api(`${resourceBase}/calendars/${calendarId}/events`)
+            .header('Prefer', 'IdType="ImmutableId"')
+            .post(payload),
+          {
+            logger: this.logger,
+            resourceName: `create event in calendar ${calendarId} for user ${externalUserId}`,
+            maxRetries: 7,
+            rateLimiter: this.rateLimiter,
+            userId: externalUserId,
+          }
+        )) as Event;
 
-      // Return just the event
-      return {
-        event: createdEvent,
-      };
+        return { event: createdEvent };
+      } catch (error: unknown) {
+        if (!isDuplicateTransactionIdError(error)) {
+          throw error;
+        }
+        // The event already exists: an earlier attempt landed but its answer was lost (a 5xx or
+        // timeout after Graph wrote it), or its id was never stored. Adopt it, so the caller
+        // links the one event the mailbox already has instead of failing and trying again later.
+        const adopted = await this.adoptEventHoldingTransactionId(
+          client,
+          resourceBase,
+          payload,
+          error,
+          externalUserId,
+        );
+        return { event: adopted, adoptedExisting: true };
+      }
     } catch (error: unknown) {
+      if (error instanceof DuplicateTransactionIdError) {
+        this.logger.error(`Failed to create Outlook calendar event: ${error.message}`);
+        throw error;
+      }
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error";
       this.logger.error(
@@ -446,6 +514,125 @@ export class CalendarService {
   }
 
   /**
+   * Take over the event that already holds a create's transactionId.
+   *
+   * Graph answers a create whose transactionId is taken with `ErrorDuplicateTransactionId` and
+   * names the holder in `@event.existingEventId`. That holder is this create's own earlier
+   * attempt, so the event is brought up to date with the payload and returned as if this
+   * create had made it. The transactionId stays as it is: Graph does not let it change.
+   *
+   * @throws DuplicateTransactionIdError when Graph named no holder, or the holder is gone
+   */
+  private async adoptEventHoldingTransactionId(
+    client: Client,
+    resourceBase: string,
+    payload: Partial<Event>,
+    duplicateError: unknown,
+    externalUserId: string,
+  ): Promise<Event> {
+    const transactionId = payload.transactionId ?? undefined;
+    const existingEventId = extractExistingEventId(duplicateError);
+    if (!existingEventId) {
+      throw new DuplicateTransactionIdError(transactionId, null, 'Graph did not say which event holds it');
+    }
+
+    this.logger.warn(
+      `TransactionId ${transactionId} for user ${externalUserId} already belongs to event ` +
+        `${existingEventId}; adopting that event instead of creating a copy`,
+    );
+
+    const updates: Partial<Event> = { ...payload };
+    delete updates.transactionId;
+
+    const adopted = (await executeGraphApiCall(
+      () => client.api(`${resourceBase}/events/${existingEventId}`)
+        .header('Prefer', 'IdType="ImmutableId"')
+        .patch(updates),
+      {
+        logger: this.logger,
+        resourceName: `adopt event ${existingEventId} for user ${externalUserId}`,
+        maxRetries: 7,
+        rateLimiter: this.rateLimiter,
+        userId: externalUserId,
+        return404AsNull: true,
+      },
+    )) as Event | null;
+
+    if (!adopted) {
+      throw new DuplicateTransactionIdError(
+        transactionId,
+        existingEventId,
+        'that event no longer exists in the mailbox',
+      );
+    }
+
+    // Callers recognise their own events by transactionId, so keep it on the result even when
+    // Graph leaves it out of the PATCH response.
+    return { ...adopted, transactionId: adopted.transactionId ?? transactionId };
+  }
+
+  /**
+   * Find the events in a time window that carry a transactionId.
+   *
+   * Graph cannot filter events by transactionId, so this reads the calendar view of the window
+   * and compares each event's transactionId. Use it when an event's id is unknown but its
+   * transactionId and rough time are, e.g. to delete an event whose id was never stored.
+   *
+   * @param externalUserId - External user ID
+   * @param transactionId - The full transactionId the event was created with
+   * @param window - Where the event should be. Times without an offset are read as UTC, and
+   *   the window is widened by a day on each side to absorb time-zone and all-day shifts.
+   * @returns Every event in the window with that transactionId (normally zero or one)
+   */
+  async findEventsByTransactionId(
+    externalUserId: string,
+    transactionId: string,
+    window: { start: string | Date; end: string | Date },
+  ): Promise<Event[]> {
+    const { startDateTime, endDateTime } = toPaddedCalendarViewWindow(window);
+    const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
+    const client = Client.init({
+      authProvider: (done) => {
+        done(null, accessToken);
+      },
+    });
+
+    const matches: Event[] = [];
+    let nextLink: string | undefined =
+      `${resourceBase}/calendarView?startDateTime=${encodeURIComponent(startDateTime)}` +
+      `&endDateTime=${encodeURIComponent(endDateTime)}` +
+      `&$select=${CALENDAR_VIEW_LOOKUP_FIELDS}&$top=${CALENDAR_VIEW_PAGE_SIZE}`;
+
+    for (let page = 0; nextLink && page < CALENDAR_VIEW_MAX_PAGES; page++) {
+      const link: string = nextLink;
+      const response = (await executeGraphApiCall(
+        () => client.api(link)
+          .header('Prefer', 'IdType="ImmutableId"')
+          .get(),
+        {
+          logger: this.logger,
+          resourceName: `find events by transactionId for user ${externalUserId}`,
+          maxRetries: 7,
+          rateLimiter: this.rateLimiter,
+          userId: externalUserId,
+        },
+      )) as { value?: Event[]; '@odata.nextLink'?: string } | null;
+
+      matches.push(...(response?.value ?? []).filter((e) => e.transactionId === transactionId));
+      nextLink = response?.['@odata.nextLink'];
+    }
+
+    if (nextLink) {
+      this.logger.warn(
+        `Stopped looking for transactionId ${transactionId} for user ${externalUserId} after ` +
+          `${CALENDAR_VIEW_MAX_PAGES} pages; the window ${startDateTime}..${endDateTime} is too busy`,
+      );
+    }
+
+    return matches;
+  }
+
+  /**
    * Delete multiple events in a single batch request
    * Uses Microsoft Graph $batch API for efficient batch deletion
    *
@@ -472,12 +659,14 @@ export class CalendarService {
    * - Processes up to 20 events per batch (Microsoft Graph limit)
    * - Returns created event data for successful creations
    * - Continues processing even if some creations fail
+   * - An item refused because its transactionId is taken adopts the event holding it, as
+   *   {@link createEvent} does, and is reported as a success with `adoptedExisting: true`
    */
   async createBatchEvents(
     events: Partial<Event>[],
     externalUserId: string,
     calendarId: string
-  ): Promise<{ index: number; success: boolean; event?: Event; error?: string }[]> {
+  ): Promise<{ index: number; success: boolean; event?: Event; error?: string; adoptedExisting?: boolean }[]> {
     if (events.length === 0) {
       return [];
     }
@@ -486,7 +675,9 @@ export class CalendarService {
       // Get a valid access token + resource base (delegated `/me` or app-only `/users/{id}`)
       const { accessToken, resourceBase } = await this.resolveGraphAuth(externalUserId);
 
-      const results: { index: number; success: boolean; event?: Event; error?: string }[] = [];
+      const results: { index: number; success: boolean; event?: Event; error?: string; adoptedExisting?: boolean }[] = [];
+      // Items whose transactionId is already taken, adopted once every chunk has been sent.
+      const duplicates: Array<{ index: number; body: unknown }> = [];
 
       // Microsoft Graph batch API has a limit of 20 requests per batch
       const BATCH_SIZE = 20;
@@ -543,8 +734,8 @@ export class CalendarService {
           }
 
           // Process batch results
-          batchResponse.responses.forEach((response, batchIndex) => {
-            const globalIndex = i + batchIndex;
+          batchResponse.responses.forEach((response, position) => {
+            const globalIndex = i + batchRequestIndex(response, position);
 
             // Success: 201 (Created)
             if (response.status === 201) {
@@ -555,6 +746,8 @@ export class CalendarService {
               });
 
               this.logger.debug(`Successfully created event at index ${globalIndex}`);
+            } else if (isDuplicateTransactionIdError(response.body)) {
+              duplicates.push({ index: globalIndex, body: response.body });
             } else {
               // Failure: any other status code
               const errorMessage = JSON.stringify(response.body);
@@ -588,6 +781,31 @@ export class CalendarService {
           this.rateLimiter.releasePermit(externalUserId);
         }
       }
+
+      if (duplicates.length > 0) {
+        const client = Client.init({
+          authProvider: (done) => {
+            done(null, accessToken);
+          },
+        });
+        for (const duplicate of duplicates) {
+          try {
+            const adopted = await this.adoptEventHoldingTransactionId(
+              client,
+              resourceBase,
+              events[duplicate.index],
+              duplicate.body,
+              externalUserId,
+            );
+            results.push({ index: duplicate.index, success: true, event: adopted, adoptedExisting: true });
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            results.push({ index: duplicate.index, success: false, error: `HTTP 400: ${errorMessage}` });
+            this.logger.error(`Failed to create event at index ${duplicate.index}: ${errorMessage}`);
+          }
+        }
+      }
+      results.sort((a, b) => a.index - b.index);
 
       const successCount = results.filter(r => r.success).length;
       const failCount = results.filter(r => !r.success).length;
@@ -692,8 +910,8 @@ export class CalendarService {
           }
 
           // Process batch results
-          batchResponse.responses.forEach((response, batchIndex) => {
-            const globalIndex = i + batchIndex;
+          batchResponse.responses.forEach((response, position) => {
+            const globalIndex = i + batchRequestIndex(response, position);
 
             // Success: 200 (OK)
             if (response.status === 200) {
@@ -823,8 +1041,8 @@ export class CalendarService {
           }
 
           // Process batch results
-          batchResponse.responses.forEach((response, index) => {
-            const eventId = batchEventIds[index];
+          batchResponse.responses.forEach((response, position) => {
+            const eventId = batchEventIds[batchRequestIndex(response, position)];
 
             // Success: 204 (No Content) or 404 (already deleted)
             if (response.status === 204 || response.status === 404) {
